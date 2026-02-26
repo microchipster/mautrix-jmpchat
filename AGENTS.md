@@ -11,7 +11,7 @@
 ## Build, Test, and Development Commands
 - `go run . -g -c config.yaml -r registration.yaml` generates `registration.yaml`.
 - `go run . -c config.yaml -r registration.yaml` runs the bridge from source.
-- `go build` builds the binary (default name `minibridge`).
+- `go build` builds the binary (default name `jmpchat`).
 - `go test ./...` runs tests (currently no test files).
 - Toolchain: `mise install` and `mise exec go@1.25.5 -- <cmd>`.
 

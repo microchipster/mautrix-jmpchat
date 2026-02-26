@@ -3,7 +3,7 @@ package main
 import (
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 
-	"github.com/dvcrn/matrix-bridge-quickstart/connector"
+	"jmpchat/connector"
 )
 
 var (
@@ -16,8 +16,8 @@ func main() {
 	connector := &connector.MyConnector{}
 
 	m := mxmain.BridgeMain{
-		Name:        "minibridge",
-		Description: "A minimal mautrix-go bridge example.",
+		Name:        "jmpchat",
+		Description: "A Matrix-XMPP bridge for JMP.chat/Cheogram",
 		Version:     "0.1.0",
 		URL:         "",
 		Connector:   connector,

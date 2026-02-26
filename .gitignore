@@ -5,4 +5,4 @@ config.yaml
 *.db-wal
 logs/
 cheogram
-matrix-bridge-quickstart
+jmpchat

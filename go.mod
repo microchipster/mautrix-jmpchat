@@ -1,4 +1,4 @@
-module github.com/dvcrn/matrix-bridge-quickstart
+module jmpchat
 
 go 1.25
 
