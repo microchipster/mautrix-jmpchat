@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"gosrc.io/xmpp/stanza"
+	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -19,25 +22,58 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	log.Info().Msg("HandleMatrixMessage called")
 
-	_, err := nc.bridge.GetExistingUserByMXID(ctx, msg.Event.Sender)
-	if err != nil {
-		log.Err(err).Str("user_mxid", string(msg.Event.Sender)).Msg("Failed to get user object, ignoring message")
-		return nil, nil
+	if nc.xmppClient == nil {
+		return nil, fmt.Errorf("XMPP client not connected")
+	}
+	
+	jid := string(msg.Portal.ID)
+
+	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
+	isMUC := meta != nil && meta.IsMUC
+
+	var msgType stanza.StanzaType = stanza.MessageTypeChat
+	if isMUC {
+		msgType = stanza.MessageTypeGroupchat
 	}
 
-	nc.QueueRemoteMessage(ctx, msg.Portal.ID, "Hi there too")
+	// Send message to XMPP
+	m := stanza.NewMessage(stanza.Attrs{
+		To:   jid,
+		Type: msgType,
+	})
+	m.Body = msg.Content.Body
+
+	err := nc.xmppClient.Send(m)
+	if err != nil {
+		log.Err(err).Msg("Failed to send XMPP message")
+		return nil, fmt.Errorf("failed to send XMPP message: %w", err)
+	}
 
 	return &bridgev2.MatrixMessageResponse{}, nil
 }
 
 // GetUserInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	return nil, fmt.Errorf("user info not available")
+	name := string(ghost.ID)
+	return &bridgev2.UserInfo{
+		Name: &name,
+	}, nil
 }
 
 // GetChatInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	return nil, fmt.Errorf("chat info not available")
+	name := string(portal.ID)
+	
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	roomType := ptr.Ptr(database.RoomTypeDM)
+	if meta != nil && meta.IsMUC {
+		roomType = ptr.Ptr(database.RoomTypeDefault)
+	}
+
+	return &bridgev2.ChatInfo{
+		Name: &name,
+		Type: roomType,
+	}, nil
 }
 
 // GetCapabilities returns the supported features for chats handled by this client.

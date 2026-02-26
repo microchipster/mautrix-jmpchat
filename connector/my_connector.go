@@ -41,10 +41,10 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 // GetName implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
-		DisplayName:          "Simple Bridge",
+		DisplayName:          "XMPP Bridge",
 		NetworkURL:           "https://example.org",
 		NetworkIcon:          "",
-		NetworkID:            "simplenetwork",
+		NetworkID:            "xmpp",
 		BeeperBridgeType:     "simple",
 		DefaultPort:          29319,
 		DefaultCommandPrefix: "!simple",

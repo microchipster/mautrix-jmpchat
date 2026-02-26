@@ -10,8 +10,8 @@ import (
 // LoginMetadata stores additional remote-auth/session data in the bridge database.
 // Use this for connector-specific fields that don't fit in core bridge tables.
 type LoginMetadata struct {
-	RemoteUserID string     `json:"remote_user_id,omitempty"`
-	AccessToken  string     `json:"access_token,omitempty"`
+	RemoteUserID string     `json:"remote_user_id,omitempty"` // XMPP JID
+	AccessToken  string     `json:"access_token,omitempty"`   // XMPP Password
 	ExpiresAt    time.Time  `json:"expires_at,omitempty"`
 	DeviceID     string     `json:"device_id,omitempty"`
 	Scopes       []string   `json:"scopes,omitempty"`
@@ -38,7 +38,7 @@ func (m *GhostMetadata) New() any {
 // PortalMetadata stores additional remote metadata for a Matrix portal (room).
 type PortalMetadata struct {
 	RemoteRoomID  string              `json:"remote_room_id,omitempty"`
-	OtherUserID   networkid.UserID    `json:"other_user_id,omitempty"`
+	OtherUserID   networkid.UserID    `json:"other_user_id,omitempty"` // For DMs
 	InitialName   string              `json:"initial_name,omitempty"`
 	InitialAvatar id.ContentURIString `json:"initial_avatar_mxc,omitempty"`
 	CreatedAt     time.Time           `json:"created_at,omitempty"`
@@ -47,6 +47,7 @@ type PortalMetadata struct {
 	LastMessageID string              `json:"last_message_id,omitempty"`
 	Tags          []string            `json:"tags,omitempty"`
 	Notes         map[string]string   `json:"notes,omitempty"`
+	IsMUC         bool                `json:"is_muc,omitempty"`
 }
 
 // New creates a new instance for database registration.

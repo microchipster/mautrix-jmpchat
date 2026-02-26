@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"gosrc.io/xmpp"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -14,8 +15,8 @@ import (
 )
 
 const (
-	LoginFlowIDUsernamePassword = "user-pass"
-	LoginStepIDUsernamePassword = "user-pass-input"
+	LoginFlowIDUsernamePassword = "xmpp-pass"
+	LoginStepIDUsernamePassword = "xmpp-pass-input"
 	LoginStepIDComplete         = "complete"
 )
 
@@ -35,13 +36,13 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
 		StepID:       LoginStepIDUsernamePassword,
-		Instructions: "Enter your username and password for the 'Simple Network'.",
+		Instructions: "Enter your XMPP JID (e.g., user@cheogram.com) and password.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{
 				{
 					Type: bridgev2.LoginInputFieldTypeUsername,
 					ID:   "username",
-					Name: "Username",
+					Name: "JID",
 				},
 				{
 					Type: bridgev2.LoginInputFieldTypePassword,
@@ -57,13 +58,36 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	username := input["username"]
 	password := input["password"]
-	_ = password
 
 	if username == "" {
 		return nil, fmt.Errorf("username cannot be empty")
 	}
 
-	sl.Log.Info().Str("username", username).Msg("Received login credentials (no actual validation performed)")
+	sl.Log.Info().Str("username", username).Msg("Received login credentials, testing XMPP connection")
+
+	// Verify XMPP credentials by making a test connection
+	config := xmpp.Config{
+		TransportConfiguration: xmpp.TransportConfiguration{},
+		Jid:        username,
+		Credential: xmpp.Password(password),
+		Insecure:   true, // might need to be false for production
+	}
+	
+	router := xmpp.NewRouter()
+	client, err := xmpp.NewClient(&config, router, func(err error) {
+		sl.Log.Err(err).Msg("XMPP Error during login test")
+	})
+	if err != nil {
+		sl.Log.Err(err).Msg("Failed to connect to XMPP during login test")
+		return nil, fmt.Errorf("failed to connect to XMPP: %w", err)
+	}
+	
+	err = client.Connect()
+	if err != nil {
+		sl.Log.Err(err).Msg("Failed to establish XMPP connection")
+		return nil, fmt.Errorf("invalid credentials or connection error: %w", err)
+	}
+	client.Disconnect()
 
 	namespace := uuid.MustParse("f7a4f3e3-5d5a-4a9e-8d8a-3b0b9e8a1b2c")
 	loginIDStr := uuid.NewSHA1(namespace, []byte(strings.ToLower(username))).String()
@@ -75,8 +99,12 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 		RemoteProfile: status.RemoteProfile{
 			Name: username,
 		},
+		Metadata: &LoginMetadata{
+			RemoteUserID: username,
+			AccessToken:  password,
+		},
 	}, &bridgev2.NewLoginParams{
-		DeleteOnConflict: false,
+		DeleteOnConflict: true,
 	})
 	if err != nil {
 		sl.Log.Err(err).Msg("Failed to create user login entry")
@@ -89,8 +117,6 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	if err != nil {
 		sl.Log.Err(err).Msg("Failed to load user login after creation (this might indicate an issue)")
 	}
-
-	go sl.Main.createWelcomeRoomAndSendIntro(ul)
 
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
