@@ -6,4 +6,4 @@ config.yaml
 logs/
 cheogram
 jmpchat
-mautrix-jmpchat
+/mautrix-jmpchat
