@@ -4,16 +4,12 @@ RUN apk add --no-cache git ca-certificates build-base olm-dev zlib-dev
 
 WORKDIR /build
 # Copy all files needed for Go build
-COPY *.go go.* *.yaml *.sh ./
-COPY go.mod go.sum ./
-RUN go mod download
-COPY main.go ./
-COPY connector ./connector/
+COPY go.mod go.sum *.yaml *.sh ./
+COPY cmd/. cmd/.
+COPY connector/. connector/.
 COPY .git .git
 
-ENV LIBRARY_PATH=.
 RUN ./build-go.sh
-#RUN go build -o /jmpchat .
 
 # -- Run mautrix-jmpchat --
 FROM alpine:3.23

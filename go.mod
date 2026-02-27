@@ -8,6 +8,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.34.0
 	go.mau.fi/util v0.9.4
+	gosrc.io/xmpp v0.5.1
 	maunium.net/go/mautrix v0.26.1
 )
 
@@ -30,6 +31,7 @@ require (
 	go.mau.fi/zeroconfig v0.2.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
+	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
@@ -37,7 +39,8 @@ require (
 	golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gosrc.io/xmpp v0.5.1 // indirect
 	maunium.net/go/mauflag v1.0.0 // indirect
 	nhooyr.io/websocket v1.6.5 // indirect
 )
+
+tool go.mau.fi/util/cmd/maubuild
