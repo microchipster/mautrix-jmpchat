@@ -3,16 +3,13 @@ package connector
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/configupgrade"
-	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
-	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -38,8 +35,9 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 	c.log = c.bridge.Log
 	c.log.Info().Msg("MyConnector Init called")
 	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
-		proc.AddHandler(CommandSyncGroups)
-		c.log.Info().Msg("Registered sync-groups command")
+		proc.AddHandler(CommandSync)
+		proc.AddHandler(CommandCreate)
+		c.log.Info().Msg("Registered sync command")
 	} else {
 		c.log.Warn().Msg("Command processor not available for custom commands")
 	}
@@ -149,95 +147,44 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Interface("client_type", client).
 		Msg("Created and stored MyNetworkClient")
 
-	go c.createWelcomeRoomAndSendIntro(login)
+	go c.ensureManagementRoomInSpace(login)
 
 	return nil
 }
 
-// createWelcomeRoomAndSendIntro performs the room creation and ghost interaction logic.
-func (c *MyConnector) createWelcomeRoomAndSendIntro(login *bridgev2.UserLogin) {
+func (c *MyConnector) ensureManagementRoomInSpace(login *bridgev2.UserLogin) {
+	if !c.bridge.Config.PersonalFilteringSpaces {
+		return
+	}
 	ctx := context.Background()
 	user := login.User
 	log := c.log.With().Str("user_mxid", string(user.MXID)).Str("login_id", string(login.ID)).Logger()
 	ctx = log.WithContext(ctx)
 
-	rand.Seed(time.Now().UnixNano())
-
-	log.Info().Msg("Starting welcome room creation process")
-
-	portalID := MakePortalID("welcome-room")
-	portalKey := networkid.PortalKey{
-		ID: portalID,
-	}
-
-	portal, err := c.bridge.GetPortalByKey(ctx, portalKey)
+	spaceRoom, err := login.GetSpaceRoom(ctx)
 	if err != nil {
-		log.Err(err).Str("portal_key", string(portalKey.ID)).Msg("Failed to get portal")
+		log.Err(err).Msg("Failed to get space room")
 		return
 	}
-
-	log.Info().Str("portal_id", string(portal.ID)).Msg("Successfully retrieved portal")
-
-	ghostNetworkUserID := MakeUserID(fmt.Sprintf("%s_ghosty_ghost", c.GetNetworkID()))
-	ghostDisplayName := "Ghosty Ghost"
-
-	ghost, err := c.bridge.GetGhostByID(ctx, ghostNetworkUserID)
-	if err != nil {
-		log.Err(err).Str("ghost_network_user_id", string(ghostNetworkUserID)).Msg("Failed to get ghost")
+	if spaceRoom == "" {
 		return
 	}
-
-	ghostInfo := &bridgev2.UserInfo{
-		Name: &ghostDisplayName,
-	}
-	ghost.UpdateInfo(ctx, ghostInfo)
-
-	log = log.With().Str("ghost_mxid", string(ghost.ID)).Logger()
-	log.Info().Msg("Successfully retrieved/provisioned ghost")
-
-	err = portal.CreateMatrixRoom(ctx, user.GetDefaultLogin(), &bridgev2.ChatInfo{
-		Name:  ptr.Ptr(fmt.Sprintf("Welcome %s!", login.RemoteName)),
-		Topic: ptr.Ptr("Your special welcome room."),
-		Members: &bridgev2.ChatMemberList{Members: []bridgev2.ChatMember{
-			{
-				EventSender: bridgev2.EventSender{
-					Sender:      networkid.UserID(user.MXID),
-					SenderLogin: networkid.UserLoginID(user.GetDefaultLogin().ID),
-				},
-				Membership: event.MembershipJoin,
-				Nickname:   ptr.Ptr(login.RemoteName),
-				PowerLevel: ptr.Ptr(100),
-				UserInfo: &bridgev2.UserInfo{
-					Name: ptr.Ptr(login.RemoteName),
-				},
-			},
-		}},
-	})
+	mgmtRoom, err := user.GetManagementRoom(ctx)
 	if err != nil {
-		log.Err(err).Msg("Failed to create matrix room")
+		log.Err(err).Msg("Failed to get management room")
 		return
 	}
-	log.Info().Msg("Successfully created matrix room")
-
-	err = ghost.Intent.EnsureJoined(ctx, portal.MXID)
-	if err != nil {
-		log.Err(err).Msg("Failed to ensure ghost was joined before sending message")
+	if mgmtRoom == "" {
 		return
 	}
-
-	greetings := []string{"Hello there!", "Welcome!", "Greetings!", "Hi!", "Hey!"}
-	randomGreeting := greetings[rand.Intn(len(greetings))]
-	messageContent := &event.MessageEventContent{
-		MsgType: event.MsgText,
-		Body:    fmt.Sprintf("%s I'm %s, your friendly welcome bot for the %s bridge.", randomGreeting, ghostDisplayName, c.GetName().DisplayName),
-	}
-
-	content := &event.Content{Parsed: messageContent}
-
-	_, err = ghost.Intent.SendMessage(ctx, portal.MXID, event.EventMessage, content, nil)
+	_, err = c.bridge.Bot.SendState(ctx, spaceRoom, event.StateSpaceChild, mgmtRoom.String(), &event.Content{
+		Parsed: &event.SpaceChildEventContent{
+			Via: []string{c.bridge.Matrix.ServerName()},
+		},
+	}, time.Now())
 	if err != nil {
-		log.Err(err).Msg("Failed to send welcome message from ghost")
+		log.Err(err).Stringer("space_room", spaceRoom).Stringer("mgmt_room", mgmtRoom).Msg("Failed to add management room to space")
 		return
 	}
-	log.Info().Msg("Successfully sent welcome message from ghost")
+	log.Debug().Stringer("space_room", spaceRoom).Stringer("mgmt_room", mgmtRoom).Msg("Added management room to space")
 }

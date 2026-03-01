@@ -1,0 +1,181 @@
+package connector
+
+import (
+	"context"
+	"encoding/xml"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"go.mau.fi/util/ptr"
+	"gosrc.io/xmpp/stanza"
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/simplevent"
+)
+
+const (
+	NSMUC       = "http://jabber.org/protocol/muc"
+	NSMUCOwner  = "http://jabber.org/protocol/muc#owner"
+	NSMUCConfig = "http://jabber.org/protocol/muc#roomconfig"
+)
+
+type MUCOwnerQuery struct {
+	XMLName xml.Name `xml:"http://jabber.org/protocol/muc#owner query"`
+	Form    XData    `xml:"x"`
+}
+
+func (q *MUCOwnerQuery) Namespace() string {
+	return q.XMLName.Space
+}
+
+func (q *MUCOwnerQuery) GetSet() *stanza.ResultSet {
+	return nil
+}
+
+func init() {
+	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMUCOwner, Local: "query"}, MUCOwnerQuery{})
+}
+
+func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, participants []string) error {
+	service, err := nc.getMUCService(ctx)
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = "JMPChat Group"
+	}
+	roomNode := "jmpchat-" + uuid.NewString()
+	roomJID := fmt.Sprintf("%s@%s", roomNode, service)
+
+	nc.joinMUC(roomJID, "", "")
+	if err := nc.configureMUC(ctx, roomJID, name); err != nil {
+		return err
+	}
+	portalID := MakePortalID(roomJID)
+	resync := &simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type:         bridgev2.RemoteEventChatResync,
+			PortalKey:    networkid.PortalKey{ID: portalID},
+			CreatePortal: true,
+			Timestamp:    time.Now(),
+		},
+		ChatInfo: &bridgev2.ChatInfo{
+			Name: &name,
+			Type: ptr.Ptr(database.RoomTypeDefault),
+		},
+	}
+	nc.bridge.QueueRemoteEvent(nc.login, resync)
+	for _, participant := range participants {
+		if err := nc.inviteToMUC(roomJID, participant, "JMPChat group chat"); err != nil {
+			nc.log.Err(err).Str("jid", participant).Msg("Failed to invite participant")
+		}
+	}
+
+	if nc.bookmarkedRooms != nil {
+		nc.bookmarkedRooms[roomJID] = true
+	}
+	return nil
+}
+
+func (nc *MyNetworkClient) getMUCService(ctx context.Context) (string, error) {
+	for jid := range nc.mucServices {
+		return jid, nil
+	}
+	server := nc.serverDomain()
+	if server == "" {
+		return "", fmt.Errorf("unable to determine server domain")
+	}
+	items, err := nc.requestDiscoItems(ctx, server)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range items.Items {
+		if item.JID == "" {
+			continue
+		}
+		info, err := nc.requestDiscoInfo(ctx, item.JID)
+		if err != nil {
+			continue
+		}
+		if isMUCService(info) {
+			if nc.mucServices != nil {
+				nc.mucServices[item.JID] = true
+			}
+			return item.JID, nil
+		}
+	}
+	return "", fmt.Errorf("no MUC service discovered")
+}
+
+func isMUCService(info *stanza.DiscoInfo) bool {
+	if info == nil {
+		return false
+	}
+	for _, identity := range info.Identity {
+		if identity.Category == "conference" {
+			return true
+		}
+	}
+	for _, feature := range info.Features {
+		if feature.Var == NSMUC {
+			return true
+		}
+	}
+	return false
+}
+
+func (nc *MyNetworkClient) configureMUC(ctx context.Context, roomJID string, name string) error {
+	if nc.xmppClient == nil {
+		return fmt.Errorf("XMPP client not connected")
+	}
+	fields := []XDataField{
+		{Var: "FORM_TYPE", Type: "hidden", Values: []string{NSMUCConfig}},
+		{Var: "muc#roomconfig_roomname", Values: []string{name}},
+		{Var: "muc#roomconfig_membersonly", Values: []string{"1"}},
+		{Var: "muc#roomconfig_persistentroom", Values: []string{"1"}},
+		{Var: "muc#roomconfig_allowinvites", Values: []string{"1"}},
+		{Var: "muc#roomconfig_publicroom", Values: []string{"0"}},
+	}
+	q := &MUCOwnerQuery{
+		Form: XData{Type: "submit", Fields: fields},
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	iq, _ := stanza.NewIQ(stanza.Attrs{Type: stanza.IQTypeSet, To: roomJID, Id: fmt.Sprintf("muc_config_%d", time.Now().UnixNano())})
+	iq.Payload = q
+	ch, err := nc.xmppClient.SendIQ(ctx, iq)
+	if err != nil {
+		return err
+	}
+	select {
+	case resp := <-ch:
+		if resp.Type != stanza.IQTypeResult {
+			return fmt.Errorf("muc config failed: %s", resp.Type)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (nc *MyNetworkClient) inviteToMUC(roomJID string, jid string, reason string) error {
+	if nc.xmppClient == nil {
+		return fmt.Errorf("XMPP client not connected")
+	}
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return fmt.Errorf("jid is empty")
+	}
+	msg := stanza.NewMessage(stanza.Attrs{To: roomJID})
+	msg.Extensions = append(msg.Extensions, MUCUserInvite{
+		Invite: &MUCInvite{
+			To:     jid,
+			Reason: reason,
+		},
+	})
+	return nc.xmppClient.Send(msg)
+}

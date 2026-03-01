@@ -82,11 +82,16 @@ func init() {
 }
 
 func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max int, start time.Time) error {
+	_, err := nc.requestMAMPage(ctx, roomJID, "", max, start, nil)
+	return err
+}
+
+func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before *string) (*MAMFin, error) {
 	if nc.xmppClient == nil {
-		return fmt.Errorf("XMPP client not connected")
+		return nil, fmt.Errorf("XMPP client not connected")
 	}
-	if roomJID == "" {
-		return fmt.Errorf("MAM room JID is empty")
+	if toJID == "" {
+		return nil, fmt.Errorf("MAM target JID is empty")
 	}
 	if max <= 0 {
 		max = 100
@@ -96,8 +101,16 @@ func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max i
 	fields := []XDataField{
 		{Var: "FORM_TYPE", Type: "hidden", Values: []string{NSMAM}},
 	}
+	if withJID != "" {
+		fields = append(fields, XDataField{Var: "with", Values: []string{withJID}})
+	}
 	if !start.IsZero() {
 		fields = append(fields, XDataField{Var: "start", Values: []string{start.UTC().Format(time.RFC3339)}})
+	}
+
+	set := &stanza.ResultSet{Max: &max}
+	if before != nil {
+		set.Before = before
 	}
 
 	q := &MAMQuery{
@@ -106,18 +119,69 @@ func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max i
 			Type:   "submit",
 			Fields: fields,
 		},
-		Set: &stanza.ResultSet{Max: &max},
+		Set: set,
 	}
 
 	iq, _ := stanza.NewIQ(stanza.Attrs{
 		Type: stanza.IQTypeSet,
-		To:   roomJID,
+		To:   toJID,
 		Id:   queryID,
 	})
 	iq.Payload = q
 
-	if err := nc.xmppClient.Send(iq); err != nil {
-		return err
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ch, err := nc.xmppClient.SendIQ(ctx, iq)
+	if err != nil {
+		return nil, err
+	}
+	select {
+	case resp := <-ch:
+		if resp.Type != stanza.IQTypeResult {
+			return nil, fmt.Errorf("MAM request failed: %s", resp.Type)
+		}
+		fin, ok := resp.Payload.(*MAMFin)
+		if !ok || fin == nil {
+			return nil, fmt.Errorf("unexpected MAM fin payload")
+		}
+		return fin, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (nc *MyNetworkClient) backfillMUC(ctx context.Context, roomJID string, start time.Time) error {
+	return nc.backfillMAM(ctx, roomJID, "", start)
+}
+
+func (nc *MyNetworkClient) backfillDM(ctx context.Context, withJID string) error {
+	meta, ok := nc.login.Metadata.(*LoginMetadata)
+	if !ok || meta == nil || meta.RemoteUserID == "" {
+		return fmt.Errorf("login metadata missing remote user id")
+	}
+	if withJID == "" {
+		return fmt.Errorf("DM MAM target is empty")
+	}
+	return nc.backfillMAM(ctx, meta.RemoteUserID, withJID, time.Time{})
+}
+
+func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJID string, start time.Time) error {
+	const pageSize = 100
+	const maxPages = 10000
+
+	before := ""
+	for page := 0; page < maxPages; page++ {
+		fin, err := nc.requestMAMPage(ctx, toJID, withJID, pageSize, start, &before)
+		if err != nil {
+			return err
+		}
+		if fin == nil || fin.Set == nil || fin.Set.First == nil || fin.Set.First.Content == "" {
+			break
+		}
+		if fin.Complete {
+			break
+		}
+		before = fin.Set.First.Content
 	}
 	return nil
 }

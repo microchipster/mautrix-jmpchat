@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 type CarbonsEnable struct {
@@ -48,9 +51,15 @@ type MyNetworkClient struct {
 	xmppRouter  *xmpp.Router
 	xmppLogFile *os.File
 
-	httpUploadServiceJID string
-	mucRooms             map[string]bool
-	mucOccupants         map[string]map[string]bool
+	httpUploadServiceJID     string
+	mucRooms                 map[string]bool
+	mucOccupants             map[string]map[string]bool
+	mucServices              map[string]bool
+	rosterItems              map[string]bool
+	bookmarkedRooms          map[string]bool
+	fullSyncRequested        bool
+	fullSyncRosterPending    bool
+	fullSyncBookmarksPending bool
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -76,6 +85,21 @@ func (nc *MyNetworkClient) requestBookmarks() error {
 	})
 	bookmarksIq.Payload = &PrivateBookmarkQuery{Storage: &BookmarkStorage{}}
 	if err := nc.xmppClient.Send(bookmarksIq); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (nc *MyNetworkClient) requestRoster() error {
+	if nc.xmppClient == nil {
+		return fmt.Errorf("XMPP client not connected")
+	}
+	iq, _ := stanza.NewIQ(stanza.Attrs{
+		Type: stanza.IQTypeGet,
+		Id:   fmt.Sprintf("roster_%d", time.Now().UnixNano()),
+	})
+	iq.Payload = &stanza.Roster{}
+	if err := nc.xmppClient.Send(iq); err != nil {
 		return err
 	}
 	return nil
@@ -110,6 +134,29 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	nc.log.Info().Str("room_jid", roomJID).Str("nick", nickname).Msg("Sent MUC join presence")
 }
 
+func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return fmt.Errorf("jid is empty")
+	}
+	name := jid
+	portalID := MakePortalID(jid)
+	resync := &simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type:         bridgev2.RemoteEventChatResync,
+			PortalKey:    networkid.PortalKey{ID: portalID},
+			CreatePortal: true,
+			Timestamp:    time.Now(),
+		},
+		ChatInfo: &bridgev2.ChatInfo{
+			Name: &name,
+			Type: ptr.Ptr(database.RoomTypeDM),
+		},
+	}
+	nc.bridge.QueueRemoteEvent(nc.login, resync)
+	return nil
+}
+
 // Connect is called to establish the connection to XMPP.
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.log.Info().Msg("MyNetworkClient Connect called")
@@ -118,6 +165,15 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 	if nc.mucOccupants == nil {
 		nc.mucOccupants = map[string]map[string]bool{}
+	}
+	if nc.mucServices == nil {
+		nc.mucServices = map[string]bool{}
+	}
+	if nc.rosterItems == nil {
+		nc.rosterItems = map[string]bool{}
+	}
+	if nc.bookmarkedRooms == nil {
+		nc.bookmarkedRooms = map[string]bool{}
 	}
 
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
@@ -337,6 +393,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if bareJID == "" {
 					continue
 				}
+				if nc.rosterItems != nil {
+					nc.rosterItems[bareJID] = true
+				}
 				name := item.Name
 				if name == "" {
 					name = bareJID
@@ -356,6 +415,15 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing roster chat resync")
 				nc.bridge.QueueRemoteEvent(nc.login, resync)
+				if nc.fullSyncRequested {
+					if err := nc.backfillDM(context.Background(), bareJID); err != nil {
+						nc.log.Err(err).Str("jid", bareJID).Msg("Failed to request DM MAM history")
+					}
+				}
+			}
+			if nc.fullSyncRosterPending {
+				nc.fullSyncRosterPending = false
+				nc.maybeClearFullSync()
 			}
 		case *stanza.Roster:
 			nc.log.Debug().Msg("Received roster result without items")
@@ -365,6 +433,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				roomJID := strings.TrimSpace(conf.JID)
 				if roomJID == "" {
 					continue
+				}
+				if nc.bookmarkedRooms != nil {
+					nc.bookmarkedRooms[roomJID] = true
 				}
 				name := conf.Name
 				if name == "" {
@@ -392,9 +463,19 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nick = nc.defaultMUCNick()
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
-				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
-					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+				if nc.fullSyncRequested {
+					if err := nc.backfillMUC(context.Background(), roomJID, time.Time{}); err != nil {
+						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MAM history")
+					}
+				} else {
+					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+					}
 				}
+			}
+			if nc.fullSyncBookmarksPending {
+				nc.fullSyncBookmarksPending = false
+				nc.maybeClearFullSync()
 			}
 		case *PrivateBookmarkQuery:
 			if payload.Storage == nil {
@@ -407,6 +488,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if roomJID == "" {
 					continue
 				}
+				if nc.bookmarkedRooms != nil {
+					nc.bookmarkedRooms[roomJID] = true
+				}
 				name := conf.Name
 				if name == "" {
 					name = roomJID
@@ -433,9 +517,19 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nick = nc.defaultMUCNick()
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
-				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
-					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+				if nc.fullSyncRequested {
+					if err := nc.backfillMUC(context.Background(), roomJID, time.Time{}); err != nil {
+						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MAM history")
+					}
+				} else {
+					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+					}
 				}
+			}
+			if nc.fullSyncBookmarksPending {
+				nc.fullSyncBookmarksPending = false
+				nc.maybeClearFullSync()
 			}
 		case *stanza.DiscoItems:
 			if len(payload.Items) == 0 {
@@ -457,6 +551,14 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 			}
 		case *stanza.DiscoInfo:
+			for _, identity := range payload.Identity {
+				if identity.Category == "conference" && iq.From != "" {
+					if nc.mucServices != nil {
+						nc.mucServices[iq.From] = true
+					}
+					break
+				}
+			}
 			for _, feature := range payload.Features {
 				if feature.Var == NSHTTPUpload {
 					if iq.From != "" && nc.httpUploadServiceJID == "" {
@@ -498,21 +600,21 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 				isFromMe = true
 			}
 		}
-		nc.handleIncomingXMPPMessage(fwd, timestamp, idOverride, isFromMe)
+		nc.handleIncomingXMPPMessage(fwd, timestamp, idOverride, isFromMe, true)
 		return
 	}
 
 	var carbonSent XMPCarbonSent
 	if msg.Get(&carbonSent) && carbonSent.Forwarded != nil {
 		if forwarded, ok := carbonSent.Forwarded.Stanza.(stanza.Message); ok {
-			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", true)
+			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", true, false)
 			return
 		}
 	}
 	var carbonReceived XMPCarbonReceived
 	if msg.Get(&carbonReceived) && carbonReceived.Forwarded != nil {
 		if forwarded, ok := carbonReceived.Forwarded.Stanza.(stanza.Message); ok {
-			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", false)
+			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", false, false)
 			return
 		}
 	}
@@ -594,10 +696,10 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		Msg("Received XMPP message")
 	nc.log.Debug().Interface("message", msg).Msg("Message details")
 
-	nc.handleIncomingXMPPMessage(msg, time.Now(), "", false)
+	nc.handleIncomingXMPPMessage(msg, time.Now(), "", false, false)
 }
 
-func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timestamp time.Time, idOverride string, isFromMe bool) {
+func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timestamp time.Time, idOverride string, isFromMe bool, fromMAM bool) {
 	// XMPP JIDs look like user@domain.com/resource
 	fromJidStr := msg.From
 	fromParts := strings.Split(fromJidStr, "/")
@@ -606,6 +708,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		if msg.To != "" {
 			bareFromJid = strings.Split(msg.To, "/")[0]
 		}
+	}
+	if bareFromJid == "" {
+		return
 	}
 
 	// Ignore empty bodies unless we have OOB
@@ -641,6 +746,16 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			}
 		}
 	}
+	if isMUC && !fromMAM {
+		if nc.mucRooms == nil || !nc.mucRooms[bareFromJid] {
+			nc.joinMUC(bareFromJid, "", "")
+			go func(roomJID string) {
+				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+				}
+			}(bareFromJid)
+		}
+	}
 
 	// First send a ChatResync to create or update the portal with correct info
 	resync := &simplevent.ChatResync{
@@ -658,6 +773,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing chat resync for incoming message")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
+	msgID := nc.extractMessageID(msg)
+	if msgID == "" {
+		msgID = idOverride
+	}
+
 	evt := &simplevent.Message[string]{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessage,
@@ -669,7 +789,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			Timestamp: timestamp,
 		},
 		Data: msg.Body,
-		ID:   networkid.MessageID(msg.Id),
+		ID:   networkid.MessageID(msgID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data string) (*bridgev2.ConvertedMessage, error) {
 			// Save the room type metadata inside the ConvertMessageFunc as we have the portal
 			meta, _ := portal.Metadata.(*PortalMetadata)
@@ -680,31 +800,71 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 
 			msgType := event.MsgText
 			body := data
+			var info *event.FileInfo
+			var mediaURL string
 			if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
 				if u, err := url.Parse(data); err == nil && u.Scheme != "" && u.Host != "" {
 					resp, err := http.Head(data)
-					if err == nil && resp.StatusCode == http.StatusOK {
-						contentType := resp.Header.Get("Content-Type")
-						if strings.HasPrefix(contentType, "image/") {
-							msgType = event.MsgImage
-						} else if strings.HasPrefix(contentType, "video/") {
-							msgType = event.MsgVideo
-						} else if strings.HasPrefix(contentType, "audio/") {
-							msgType = event.MsgAudio
-						} else {
-							msgType = event.MsgFile
+					contentType := ""
+					if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
+						contentType = resp.Header.Get("Content-Type")
+					}
+					if strings.HasPrefix(contentType, "image/") {
+						msgType = event.MsgImage
+					} else if strings.HasPrefix(contentType, "video/") {
+						msgType = event.MsgVideo
+					} else if strings.HasPrefix(contentType, "audio/") {
+						msgType = event.MsgAudio
+					} else if contentType != "" {
+						msgType = event.MsgFile
+					}
+
+					if msgType != event.MsgText {
+						const maxMediaSize = 50 * 1024 * 1024
+						client := &http.Client{Timeout: 60 * time.Second}
+						getResp, err := client.Get(data)
+						if err == nil && getResp != nil {
+							defer getResp.Body.Close()
+							if getResp.StatusCode == http.StatusOK {
+								if contentType == "" {
+									contentType = getResp.Header.Get("Content-Type")
+								}
+								limited := io.LimitReader(getResp.Body, maxMediaSize+1)
+								dataBytes, err := io.ReadAll(limited)
+								if err == nil && int64(len(dataBytes)) <= maxMediaSize {
+									fileName := path.Base(u.Path)
+									if fileName == "" || fileName == "/" || fileName == "." {
+										fileName = "file"
+									}
+									mediaMxc, _, err := intent.UploadMedia(ctx, portal.MXID, dataBytes, fileName, contentType)
+									if err == nil {
+										mediaURL = string(mediaMxc)
+										body = fileName
+										info = &event.FileInfo{
+											MimeType: contentType,
+											Size:     len(dataBytes),
+										}
+									}
+								}
+							}
 						}
 					}
 				}
 			}
 
+			content := &event.MessageEventContent{
+				MsgType: msgType,
+				Body:    body,
+			}
+			if mediaURL != "" {
+				content.URL = id.ContentURIString(mediaURL)
+				content.Info = info
+			}
+
 			return &bridgev2.ConvertedMessage{
 				Parts: []*bridgev2.ConvertedMessagePart{{
-					Type: event.EventMessage,
-					Content: &event.MessageEventContent{
-						MsgType: msgType,
-						Body:    body,
-					},
+					Type:    event.EventMessage,
+					Content: content,
 				}},
 			}, nil
 		},
@@ -712,11 +872,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 
 	// Ensure that if it has no ID, we generate one
 	if evt.ID == "" {
-		if idOverride != "" {
-			evt.ID = networkid.MessageID(idOverride)
-		} else {
-			evt.ID = networkid.MessageID(fmt.Sprintf("remote-%s-%d", portalID, time.Now().UnixNano()))
-		}
+		evt.ID = networkid.MessageID(fmt.Sprintf("remote-%s-%d", portalID, time.Now().UnixNano()))
 	}
 
 	nc.log.Debug().
@@ -725,6 +881,31 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		Str("message_id", string(evt.ID)).
 		Msg("Queueing incoming XMPP message")
 	nc.bridge.QueueRemoteEvent(nc.login, evt)
+}
+
+func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
+	var origin XMPPOriginID
+	if msg.Get(&origin) && origin.ID != "" {
+		return origin.ID
+	}
+	var stanzaID XMPPStanzaID
+	if msg.Get(&stanzaID) && stanzaID.ID != "" {
+		return stanzaID.ID
+	}
+	if msg.Id != "" {
+		return msg.Id
+	}
+	return ""
+}
+
+func (nc *MyNetworkClient) maybeClearFullSync() {
+	if !nc.fullSyncRequested {
+		return
+	}
+	if nc.fullSyncRosterPending || nc.fullSyncBookmarksPending {
+		return
+	}
+	nc.fullSyncRequested = false
 }
 
 // Disconnect cleans up the XMPP connection.

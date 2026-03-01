@@ -116,14 +116,15 @@ type XMPPMarkerAcknowledged struct {
 
 type XMPPOriginID struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:origin-id:0 origin-id"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:origin-id:0 origin-id"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPStanzaID struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:stanza-id:0 stanza-id"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:stanza-id:0 stanza-id"`
+	ID      string   `xml:"id,attr,omitempty"`
+	By      string   `xml:"by,attr,omitempty"`
 }
 
 type XMPOccupantID struct {
