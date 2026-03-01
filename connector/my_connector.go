@@ -10,6 +10,7 @@ import (
 	"go.mau.fi/util/configupgrade"
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
@@ -36,6 +37,12 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 	c.bridge = br
 	c.log = c.bridge.Log
 	c.log.Info().Msg("MyConnector Init called")
+	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
+		proc.AddHandler(CommandSyncGroups)
+		c.log.Info().Msg("Registered sync-groups command")
+	} else {
+		c.log.Warn().Msg("Command processor not available for custom commands")
+	}
 }
 
 // GetName implements bridgev2.NetworkConnector.

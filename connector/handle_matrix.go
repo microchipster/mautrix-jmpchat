@@ -3,9 +3,10 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 
-	"gosrc.io/xmpp/stanza"
 	"go.mau.fi/util/ptr"
+	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
@@ -25,7 +26,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	if nc.xmppClient == nil {
 		return nil, fmt.Errorf("XMPP client not connected")
 	}
-	
+
 	jid := string(msg.Portal.ID)
 
 	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
@@ -55,6 +56,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 // GetUserInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	name := string(ghost.ID)
+	if parts := strings.Split(name, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
+		name = parts[len(parts)-1]
+	}
 	return &bridgev2.UserInfo{
 		Name: &name,
 	}, nil
@@ -63,7 +67,7 @@ func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 // GetChatInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	name := string(portal.ID)
-	
+
 	meta, _ := portal.Metadata.(*PortalMetadata)
 	roomType := ptr.Ptr(database.RoomTypeDM)
 	if meta != nil && meta.IsMUC {
