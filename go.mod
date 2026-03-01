@@ -1,8 +1,6 @@
 module jmpchat
 
-go 1.24.0
-
-toolchain go1.24.2
+go 1.24.2
 
 require (
 	github.com/google/uuid v1.6.0
@@ -11,6 +9,8 @@ require (
 	gosrc.io/xmpp v0.5.1
 	maunium.net/go/mautrix v0.26.1
 )
+
+replace gosrc.io/xmpp => ./patched-xmpp
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
@@ -29,18 +29,18 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	go.mau.fi/zeroconfig v0.2.0 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
+	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/exp v0.0.0-20251219203646-944ab1f22d93 // indirect
-	golang.org/x/mod v0.31.0 // indirect
-	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/mod v0.32.0 // indirect
+	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/text v0.32.0 // indirect
-	golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	maunium.net/go/mauflag v1.0.0 // indirect
-	nhooyr.io/websocket v1.6.5 // indirect
+	nhooyr.io/websocket v1.8.17 // indirect
 )
 
 tool go.mau.fi/util/cmd/maubuild

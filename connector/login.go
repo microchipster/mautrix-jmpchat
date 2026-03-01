@@ -68,11 +68,12 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	// Verify XMPP credentials by making a test connection
 	config := xmpp.Config{
 		TransportConfiguration: xmpp.TransportConfiguration{},
-		Jid:        username,
-		Credential: xmpp.Password(password),
-		Insecure:   true, // might need to be false for production
+		Jid:                    username,
+		Credential:             xmpp.Password(password),
+		Insecure:               false,
+		StreamManagementEnable: true,
 	}
-	
+
 	router := xmpp.NewRouter()
 	client, err := xmpp.NewClient(&config, router, func(err error) {
 		sl.Log.Err(err).Msg("XMPP Error during login test")
@@ -81,7 +82,7 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 		sl.Log.Err(err).Msg("Failed to connect to XMPP during login test")
 		return nil, fmt.Errorf("failed to connect to XMPP: %w", err)
 	}
-	
+
 	err = client.Connect()
 	if err != nil {
 		sl.Log.Err(err).Msg("Failed to establish XMPP connection")

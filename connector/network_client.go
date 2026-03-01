@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"strings"
 	"time"
@@ -16,6 +17,14 @@ import (
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
 )
+
+type CarbonsEnable struct {
+	XMLName xml.Name `xml:"urn:xmpp:carbons:2 enable"`
+}
+
+func (c *CarbonsEnable) Namespace() string {
+	return "urn:xmpp:carbons:2"
+}
 
 // Ensure MyNetworkClient implements NetworkAPI.
 var _ bridgev2.NetworkAPI = (*MyNetworkClient)(nil)
@@ -35,7 +44,7 @@ type MyNetworkClient struct {
 // Connect is called to establish the connection to XMPP.
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.log.Info().Msg("MyNetworkClient Connect called")
-	
+
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if !ok || meta == nil {
 		nc.log.Error().Msg("LoginMetadata is missing or invalid")
@@ -44,14 +53,17 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 	config := xmpp.Config{
 		TransportConfiguration: xmpp.TransportConfiguration{},
-		Jid:        meta.RemoteUserID,
-		Credential: xmpp.Password(meta.AccessToken),
-		Insecure:   true,
+		Jid:                    meta.RemoteUserID,
+		Credential:             xmpp.Password(meta.AccessToken),
+		Insecure:               false,
+		StreamManagementEnable: true,
 	}
 
 	nc.xmppRouter = xmpp.NewRouter()
 	nc.xmppRouter.HandleFunc("message", nc.handleXMPPMessage)
-	
+	nc.xmppRouter.HandleFunc("presence", nc.handleXMPPPresence)
+	nc.xmppRouter.HandleFunc("iq", nc.handleXMPPIq)
+
 	client, err := xmpp.NewClient(&config, nc.xmppRouter, func(err error) {
 		nc.log.Err(err).Msg("XMPP Error")
 	})
@@ -59,9 +71,52 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.log.Err(err).Msg("Failed to create XMPP client")
 		return
 	}
-	
+
 	nc.xmppClient = client
 	nc.bridge.Log.Info().Str("jid", config.Jid).Msg("Connecting to XMPP...")
+
+	client.PostConnectHook = func() error {
+		nc.log.Info().Msg("XMPP connected, running post connect hook")
+
+		// 1. Request Roster
+		iq, _ := stanza.NewIQ(stanza.Attrs{
+			Type: stanza.IQTypeGet,
+			Id:   "roster_1",
+		})
+		iq.Payload = &stanza.Roster{}
+		if err := nc.xmppClient.Send(iq); err != nil {
+			nc.log.Err(err).Msg("Failed to send roster request")
+		}
+
+		// 2. Request Server Disco Info
+		if nc.xmppClient.Session != nil {
+			serverDomain := strings.Split(nc.xmppClient.Session.BindJid, "@")[1]
+			serverDomain = strings.Split(serverDomain, "/")[0]
+			discoIq, _ := stanza.NewIQ(stanza.Attrs{
+				Type: stanza.IQTypeGet,
+				To:   serverDomain,
+				Id:   "disco_1",
+			})
+			discoIq.Payload = &stanza.DiscoInfo{}
+			if err := nc.xmppClient.Send(discoIq); err != nil {
+				nc.log.Err(err).Msg("Failed to send disco info request")
+			}
+		}
+
+		// 3. Enable Message Carbons
+		carbonsIq, _ := stanza.NewIQ(stanza.Attrs{
+			Type: stanza.IQTypeSet,
+			Id:   "carbons_1",
+		})
+		carbonsIq.Payload = &CarbonsEnable{}
+		if err := nc.xmppClient.Send(carbonsIq); err != nil {
+			nc.log.Err(err).Msg("Failed to enable message carbons")
+		}
+
+		// Initial Presence is sent automatically by the library
+
+		return nil
+	}
 
 	// Run in goroutine
 	go func() {
@@ -71,6 +126,29 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			nc.log.Err(err).Msg("Failed to establish XMPP connection")
 		}
 	}()
+}
+
+func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
+	pres, ok := p.(stanza.Presence)
+	if !ok {
+		return
+	}
+	nc.log.Info().
+		Str("from", pres.From).
+		Str("type", string(pres.Type)).
+		Msg("Received XMPP presence")
+}
+
+func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
+	iq, ok := p.(*stanza.IQ)
+	if !ok {
+		return
+	}
+	nc.log.Info().
+		Str("from", iq.From).
+		Str("type", string(iq.Type)).
+		Str("id", iq.Id).
+		Msg("Received XMPP IQ")
 }
 
 func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
@@ -96,11 +174,11 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		Msg("Received XMPP message")
 
 	portalID := networkid.PortalID(bareFromJid)
-	
+
 	var senderID string
 	var roomType *database.RoomType
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
-	
+
 	if isMUC {
 		// For MUCs, the sender is identified by the resource
 		if len(fromParts) > 1 {
@@ -118,10 +196,10 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	// First send a ChatResync to create or update the portal with correct info
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventChatResync,
-			PortalKey: networkid.PortalKey{ID: portalID},
+			Type:         bridgev2.RemoteEventChatResync,
+			PortalKey:    networkid.PortalKey{ID: portalID},
 			CreatePortal: true,
-			Timestamp: time.Now(),
+			Timestamp:    time.Now(),
 		},
 		ChatInfo: &bridgev2.ChatInfo{
 			Name: &bareFromJid,
@@ -138,7 +216,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 				Sender:   networkid.UserID(senderID),
 				IsFromMe: false,
 			},
-			Timestamp:    time.Now(),
+			Timestamp: time.Now(),
 		},
 		Data: msg.Body,
 		ID:   networkid.MessageID(msg.Id),
@@ -149,7 +227,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 				meta.IsMUC = isMUC
 				portal.Save(ctx)
 			}
-		
+
 			return &bridgev2.ConvertedMessage{
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					Type: event.EventMessage,
@@ -161,7 +239,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			}, nil
 		},
 	}
-	
+
 	// Ensure that if it has no ID, we generate one
 	if evt.ID == "" {
 		evt.ID = networkid.MessageID(fmt.Sprintf("remote-%s-%d", portalID, time.Now().UnixNano()))

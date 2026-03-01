@@ -7,6 +7,7 @@ WORKDIR /build
 COPY go.mod go.sum *.yaml *.sh ./
 COPY cmd/. cmd/.
 COPY connector/. connector/.
+COPY patched-xmpp/. patched-xmpp/.
 COPY .git .git
 
 RUN ./build-go.sh

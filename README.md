@@ -101,6 +101,10 @@ Generate an example config file at the path you pass to `-c`/`--config`:
 go run . --generate-example-config -c config.yaml
 ```
 
+## 🐳 Docker Builds
+
+The Docker build uses a vendored module directory so patched dependencies (like XMPP auth) are included in the image.
+
 🎉 **Congratulations!** You have a running (though perhaps very basic) Matrix bridge.
 
 ---
