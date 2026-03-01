@@ -26,6 +26,10 @@ func (c *CarbonsEnable) Namespace() string {
 	return "urn:xmpp:carbons:2"
 }
 
+func (c *CarbonsEnable) GetSet() *stanza.ResultSet {
+	return nil
+}
+
 // Ensure MyNetworkClient implements NetworkAPI.
 var _ bridgev2.NetworkAPI = (*MyNetworkClient)(nil)
 
