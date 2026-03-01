@@ -53,12 +53,20 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		if desc != "" && desc != uploadedURL {
 			oob.Desc = desc
 		}
-		m.Extensions = append(m.Extensions, oob)
+
+		body := uploadedURL
+		fallback := XMPPFallback{For: "jabber:x:oob"}
 		if desc != "" {
-			m.Body = desc
+			body = desc + "\n" + uploadedURL
+			start := len(desc) + 1
+			end := start + len(uploadedURL)
+			fallback.Body = []XMPPFallbackBody{{Start: start, End: end}}
 		} else {
-			m.Body = uploadedURL
+			fallback.Body = []XMPPFallbackBody{{Start: 0, End: len(uploadedURL)}}
 		}
+
+		m.Extensions = append(m.Extensions, oob, fallback)
+		m.Body = body
 	} else {
 		m.Body = msg.Content.Body
 	}

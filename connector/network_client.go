@@ -92,6 +92,9 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	pres := stanza.NewPresence(stanza.Attrs{To: fullJID})
 	pres.Extensions = append(pres.Extensions, stanza.MucPresence{
 		Password: password,
+		History: stanza.History{
+			MaxStanzas: stanza.NewNullableInt(50),
+		},
 	})
 
 	if err := nc.xmppClient.Send(pres); err != nil {
@@ -336,6 +339,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nick = nc.defaultMUCNick()
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
+				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+				}
 			}
 		case *PrivateBookmarkQuery:
 			if payload.Storage == nil {
@@ -374,6 +380,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nick = nc.defaultMUCNick()
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
+				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
+				}
 			}
 		case *stanza.DiscoItems:
 			if len(payload.Items) == 0 {
