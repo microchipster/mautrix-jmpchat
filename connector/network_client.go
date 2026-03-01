@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -88,9 +90,6 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	pres := stanza.NewPresence(stanza.Attrs{To: fullJID})
 	pres.Extensions = append(pres.Extensions, stanza.MucPresence{
 		Password: password,
-		History: stanza.History{
-			MaxStanzas: stanza.NewNullableInt(0),
-		},
 	})
 
 	if err := nc.xmppClient.Send(pres); err != nil {
@@ -470,12 +469,32 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 				portal.Save(ctx)
 			}
 
+			msgType := event.MsgText
+			body := data
+			if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
+				if u, err := url.Parse(data); err == nil && u.Scheme != "" && u.Host != "" {
+					resp, err := http.Head(data)
+					if err == nil && resp.StatusCode == http.StatusOK {
+						contentType := resp.Header.Get("Content-Type")
+						if strings.HasPrefix(contentType, "image/") {
+							msgType = event.MsgImage
+						} else if strings.HasPrefix(contentType, "video/") {
+							msgType = event.MsgVideo
+						} else if strings.HasPrefix(contentType, "audio/") {
+							msgType = event.MsgAudio
+						} else {
+							msgType = event.MsgFile
+						}
+					}
+				}
+			}
+
 			return &bridgev2.ConvertedMessage{
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					Type: event.EventMessage,
 					Content: &event.MessageEventContent{
-						MsgType: event.MsgText,
-						Body:    data,
+						MsgType: msgType,
+						Body:    body,
 					},
 				}},
 			}, nil

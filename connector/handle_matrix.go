@@ -42,7 +42,27 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		To:   jid,
 		Type: msgType,
 	})
-	m.Body = msg.Content.Body
+	if msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile {
+		domain := nc.connector.bridge.Matrix.ServerName()
+		parsed, err := msg.Content.URL.Parse()
+		fallbackURL := string(msg.Content.URL)
+		if err == nil && parsed.Homeserver != "" {
+			fallbackURL = fmt.Sprintf("https://%s/_matrix/media/v3/download/%s/%s", domain, parsed.Homeserver, parsed.FileID)
+		}
+
+		if pm, ok := nc.connector.bridge.Matrix.(bridgev2.MatrixConnectorWithPublicMedia); ok {
+			url, err := pm.GetPublicMediaAddressForEvent(ctx, msg.Content)
+			if err == nil && url != "" {
+				m.Body = url
+			} else {
+				m.Body = fallbackURL
+			}
+		} else {
+			m.Body = fallbackURL
+		}
+	} else {
+		m.Body = msg.Content.Body
+	}
 
 	err := nc.xmppClient.Send(m)
 	if err != nil {
@@ -91,6 +111,20 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 			event.FmtStrikethrough: event.CapLevelFullySupported,
 			event.FmtInlineCode:    event.CapLevelFullySupported,
 			event.FmtCodeBlock:     event.CapLevelFullySupported,
+		},
+		File: map[event.CapabilityMsgType]*event.FileFeatures{
+			event.MsgImage: {
+				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+			},
+			event.MsgVideo: {
+				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+			},
+			event.MsgAudio: {
+				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+			},
+			event.MsgFile: {
+				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+			},
 		},
 		Edit:   event.CapLevelFullySupported,
 		Reply:  event.CapLevelFullySupported,
