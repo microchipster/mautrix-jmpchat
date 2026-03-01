@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"go.mau.fi/util/ptr"
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 )
 
@@ -43,22 +45,19 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		Type: msgType,
 	})
 	if msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile {
-		domain := nc.connector.bridge.Matrix.ServerName()
-		parsed, err := msg.Content.URL.Parse()
-		fallbackURL := string(msg.Content.URL)
-		if err == nil && parsed.Homeserver != "" {
-			fallbackURL = fmt.Sprintf("https://%s/_matrix/media/v3/download/%s/%s", domain, parsed.Homeserver, parsed.FileID)
+		uploadedURL, desc, err := nc.uploadMatrixMediaToXMPP(ctx, msg)
+		if err != nil {
+			return nil, err
 		}
-
-		if pm, ok := nc.connector.bridge.Matrix.(bridgev2.MatrixConnectorWithPublicMedia); ok {
-			url, err := pm.GetPublicMediaAddressForEvent(ctx, msg.Content)
-			if err == nil && url != "" {
-				m.Body = url
-			} else {
-				m.Body = fallbackURL
-			}
+		oob := stanza.OOB{URL: uploadedURL}
+		if desc != "" && desc != uploadedURL {
+			oob.Desc = desc
+		}
+		m.Extensions = append(m.Extensions, oob)
+		if desc != "" {
+			m.Body = desc
 		} else {
-			m.Body = fallbackURL
+			m.Body = uploadedURL
 		}
 	} else {
 		m.Body = msg.Content.Body
@@ -70,7 +69,20 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		return nil, fmt.Errorf("failed to send XMPP message: %w", err)
 	}
 
-	return &bridgev2.MatrixMessageResponse{}, nil
+	metaLogin, _ := nc.login.Metadata.(*LoginMetadata)
+	senderID := networkid.UserID(msg.Event.Sender)
+	if metaLogin != nil && metaLogin.RemoteUserID != "" {
+		senderID = MakeUserID(metaLogin.RemoteUserID)
+	}
+
+	return &bridgev2.MatrixMessageResponse{
+		DB: &database.Message{
+			ID:         networkid.MessageID(msg.Event.ID),
+			SenderID:   senderID,
+			SenderMXID: msg.Event.Sender,
+			Timestamp:  time.UnixMilli(msg.Event.Timestamp),
+		},
+	}, nil
 }
 
 // GetUserInfo is not implemented for this simple connector.

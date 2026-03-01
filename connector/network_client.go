@@ -47,6 +47,8 @@ type MyNetworkClient struct {
 	xmppClient  *xmpp.Client
 	xmppRouter  *xmpp.Router
 	xmppLogFile *os.File
+
+	httpUploadServiceJID string
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -70,7 +72,7 @@ func (nc *MyNetworkClient) requestBookmarks() error {
 		Type: stanza.IQTypeGet,
 		Id:   fmt.Sprintf("bookmarks_%d", time.Now().UnixNano()),
 	})
-	bookmarksIq.Payload = &BookmarkStorage{}
+	bookmarksIq.Payload = &PrivateBookmarkQuery{Storage: &BookmarkStorage{}}
 	if err := nc.xmppClient.Send(bookmarksIq); err != nil {
 		return err
 	}
@@ -185,6 +187,18 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 				nc.log.Err(err).Msg("Failed to send disco info request")
 			} else {
 				nc.log.Debug().Str("to", serverDomain).Msg("Sent disco info request")
+			}
+
+			discoItemsIq, _ := stanza.NewIQ(stanza.Attrs{
+				Type: stanza.IQTypeGet,
+				To:   serverDomain,
+				Id:   "disco_items_1",
+			})
+			discoItemsIq.Payload = &stanza.DiscoItems{}
+			if err := nc.xmppClient.Send(discoItemsIq); err != nil {
+				nc.log.Err(err).Msg("Failed to send disco items request")
+			} else {
+				nc.log.Debug().Str("to", serverDomain).Msg("Sent disco items request")
 			}
 		}
 
@@ -322,6 +336,73 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nick = nc.defaultMUCNick()
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
+			}
+		case *PrivateBookmarkQuery:
+			if payload.Storage == nil {
+				nc.log.Info().Msg("Received empty bookmark storage")
+				return
+			}
+			nc.log.Info().Int("items", len(payload.Storage.Conferences)).Msg("Received bookmarks")
+			for _, conf := range payload.Storage.Conferences {
+				roomJID := strings.TrimSpace(conf.JID)
+				if roomJID == "" {
+					continue
+				}
+				name := conf.Name
+				if name == "" {
+					name = roomJID
+				}
+
+				portalID := MakePortalID(roomJID)
+				resync := &simplevent.ChatResync{
+					EventMeta: simplevent.EventMeta{
+						Type:         bridgev2.RemoteEventChatResync,
+						PortalKey:    networkid.PortalKey{ID: portalID},
+						CreatePortal: true,
+						Timestamp:    time.Now(),
+					},
+					ChatInfo: &bridgev2.ChatInfo{
+						Name: &name,
+						Type: ptr.Ptr(database.RoomTypeDefault),
+					},
+				}
+				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
+				nc.bridge.QueueRemoteEvent(nc.login, resync)
+
+				nick := strings.TrimSpace(conf.Nick)
+				if nick == "" {
+					nick = nc.defaultMUCNick()
+				}
+				nc.joinMUC(roomJID, nick, conf.Password)
+			}
+		case *stanza.DiscoItems:
+			if len(payload.Items) == 0 {
+				nc.log.Debug().Msg("Received disco items result with no items")
+				return
+			}
+			for _, item := range payload.Items {
+				if item.JID == "" {
+					continue
+				}
+				discoIq, _ := stanza.NewIQ(stanza.Attrs{
+					Type: stanza.IQTypeGet,
+					To:   item.JID,
+					Id:   fmt.Sprintf("disco_info_%d", time.Now().UnixNano()),
+				})
+				discoIq.Payload = &stanza.DiscoInfo{}
+				if err := nc.xmppClient.Send(discoIq); err != nil {
+					nc.log.Err(err).Str("to", item.JID).Msg("Failed to send disco info request")
+				}
+			}
+		case *stanza.DiscoInfo:
+			for _, feature := range payload.Features {
+				if feature.Var == NSHTTPUpload {
+					if iq.From != "" && nc.httpUploadServiceJID == "" {
+						nc.httpUploadServiceJID = iq.From
+						nc.log.Info().Str("service", iq.From).Msg("Discovered HTTP upload service")
+					}
+					break
+				}
 			}
 		}
 	}

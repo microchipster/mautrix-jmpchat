@@ -14,6 +14,20 @@ type BookmarkStorage struct {
 	Conferences []BookmarkConference `xml:"conference"`
 }
 
+// PrivateBookmarkQuery wraps BookmarkStorage for XEP-0048 private XML storage.
+type PrivateBookmarkQuery struct {
+	XMLName xml.Name         `xml:"jabber:iq:private query"`
+	Storage *BookmarkStorage `xml:"storage:bookmarks storage"`
+}
+
+func (b *PrivateBookmarkQuery) Namespace() string {
+	return b.XMLName.Space
+}
+
+func (b *PrivateBookmarkQuery) GetSet() *stanza.ResultSet {
+	return nil
+}
+
 func (b *BookmarkStorage) Namespace() string {
 	return b.XMLName.Space
 }
@@ -44,5 +58,10 @@ func init() {
 		stanza.PKTIQ,
 		xml.Name{Space: "storage:bookmarks", Local: "storage"},
 		BookmarkStorage{},
+	)
+	stanza.TypeRegistry.MapExtension(
+		stanza.PKTIQ,
+		xml.Name{Space: "jabber:iq:private", Local: "query"},
+		PrivateBookmarkQuery{},
 	)
 }
