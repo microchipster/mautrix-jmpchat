@@ -49,6 +49,8 @@ type MyNetworkClient struct {
 	xmppLogFile *os.File
 
 	httpUploadServiceJID string
+	mucRooms             map[string]bool
+	mucOccupants         map[string]map[string]bool
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -96,6 +98,9 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 			MaxStanzas: stanza.NewNullableInt(50),
 		},
 	})
+	if nc.mucRooms != nil {
+		nc.mucRooms[roomJID] = true
+	}
 
 	if err := nc.xmppClient.Send(pres); err != nil {
 		nc.log.Err(err).Str("room_jid", roomJID).Str("nick", nickname).Msg("Failed to join MUC")
@@ -108,6 +113,12 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 // Connect is called to establish the connection to XMPP.
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.log.Info().Msg("MyNetworkClient Connect called")
+	if nc.mucRooms == nil {
+		nc.mucRooms = map[string]bool{}
+	}
+	if nc.mucOccupants == nil {
+		nc.mucOccupants = map[string]map[string]bool{}
+	}
 
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if !ok || meta == nil {
@@ -259,6 +270,48 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 			Str("reason", pres.Error.Reason).
 			Str("text", pres.Error.Text).
 			Msg("Presence error received")
+	}
+
+	bareFrom := strings.Split(pres.From, "/")[0]
+	if bareFrom != "" && nc.mucRooms != nil && nc.mucRooms[bareFrom] {
+		if nc.mucOccupants == nil {
+			nc.mucOccupants = map[string]map[string]bool{}
+		}
+		occupants := nc.mucOccupants[bareFrom]
+		if occupants == nil {
+			occupants = map[string]bool{}
+			nc.mucOccupants[bareFrom] = occupants
+		}
+		if pres.Type == stanza.PresenceTypeUnavailable {
+			delete(occupants, pres.From)
+		} else if pres.From != "" && strings.Contains(pres.From, "/") {
+			occupants[pres.From] = true
+		}
+
+		memberMap := bridgev2.ChatMemberMap{}
+		for occupant := range occupants {
+			memberMap[MakeUserID(occupant)] = bridgev2.ChatMember{
+				EventSender: bridgev2.EventSender{Sender: MakeUserID(occupant)},
+				Membership:  event.MembershipJoin,
+			}
+		}
+		members := &bridgev2.ChatMemberList{
+			IsFull:                     true,
+			CheckAllLogins:             true,
+			ExcludeChangesFromTimeline: true,
+			TotalMemberCount:           len(memberMap),
+			MemberMap:                  memberMap,
+		}
+		chatInfo := &bridgev2.ChatInfo{Members: members}
+		change := &simplevent.ChatInfoChange{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatInfoChange,
+				PortalKey: networkid.PortalKey{ID: MakePortalID(bareFrom)},
+				Timestamp: time.Now(),
+			},
+			ChatInfoChange: &bridgev2.ChatInfoChange{ChatInfo: chatInfo},
+		}
+		nc.bridge.QueueRemoteEvent(nc.login, change)
 	}
 }
 
@@ -423,6 +476,46 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		nc.log.Debug().Type("packet_type", p).Msg("Received non-message packet on message handler")
 		return
 	}
+	var mam MAMResult
+	if msg.Get(&mam) && mam.Forwarded != nil && mam.Forwarded.Message != nil {
+		timestamp := time.Now()
+		if mam.Forwarded.Delay != nil && mam.Forwarded.Delay.Stamp != "" {
+			if parsed, err := time.Parse(time.RFC3339, mam.Forwarded.Delay.Stamp); err == nil {
+				timestamp = parsed
+			} else if parsed, err := time.Parse(time.RFC3339Nano, mam.Forwarded.Delay.Stamp); err == nil {
+				timestamp = parsed
+			}
+		}
+		fwd := *mam.Forwarded.Message
+		idOverride := mam.ID
+		if fwd.Id != "" {
+			idOverride = fwd.Id
+		}
+		isFromMe := false
+		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
+			bareFrom := strings.Split(fwd.From, "/")[0]
+			if bareFrom == meta.RemoteUserID {
+				isFromMe = true
+			}
+		}
+		nc.handleIncomingXMPPMessage(fwd, timestamp, idOverride, isFromMe)
+		return
+	}
+
+	var carbonSent XMPCarbonSent
+	if msg.Get(&carbonSent) && carbonSent.Forwarded != nil {
+		if forwarded, ok := carbonSent.Forwarded.Stanza.(stanza.Message); ok {
+			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", true)
+			return
+		}
+	}
+	var carbonReceived XMPCarbonReceived
+	if msg.Get(&carbonReceived) && carbonReceived.Forwarded != nil {
+		if forwarded, ok := carbonReceived.Forwarded.Stanza.(stanza.Message); ok {
+			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", false)
+			return
+		}
+	}
 
 	// XMPP JIDs look like user@domain.com/resource
 	fromJidStr := msg.From
@@ -501,10 +594,29 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		Msg("Received XMPP message")
 	nc.log.Debug().Interface("message", msg).Msg("Message details")
 
-	// Ignore empty bodies
+	nc.handleIncomingXMPPMessage(msg, time.Now(), "", false)
+}
+
+func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timestamp time.Time, idOverride string, isFromMe bool) {
+	// XMPP JIDs look like user@domain.com/resource
+	fromJidStr := msg.From
+	fromParts := strings.Split(fromJidStr, "/")
+	bareFromJid := fromParts[0]
+	if isFromMe {
+		if msg.To != "" {
+			bareFromJid = strings.Split(msg.To, "/")[0]
+		}
+	}
+
+	// Ignore empty bodies unless we have OOB
 	if msg.Body == "" {
-		nc.log.Debug().Str("from", fromJidStr).Str("type", string(msg.Type)).Msg("Skipping XMPP message with empty body")
-		return
+		var oob stanza.OOB
+		if msg.Get(&oob) && oob.URL != "" {
+			msg.Body = oob.URL
+		} else {
+			nc.log.Debug().Str("from", fromJidStr).Str("type", string(msg.Type)).Msg("Skipping XMPP message with empty body")
+			return
+		}
 	}
 
 	portalID := MakePortalID(bareFromJid)
@@ -522,6 +634,13 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		senderID = bareFromJid
 		roomType = ptr.Ptr(database.RoomTypeDM)
 	}
+	if isFromMe {
+		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
+			if !isMUC {
+				senderID = meta.RemoteUserID
+			}
+		}
+	}
 
 	// First send a ChatResync to create or update the portal with correct info
 	resync := &simplevent.ChatResync{
@@ -529,7 +648,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			Type:         bridgev2.RemoteEventChatResync,
 			PortalKey:    networkid.PortalKey{ID: portalID},
 			CreatePortal: true,
-			Timestamp:    time.Now(),
+			Timestamp:    timestamp,
 		},
 		ChatInfo: &bridgev2.ChatInfo{
 			Name: &bareFromJid,
@@ -545,9 +664,9 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			PortalKey: networkid.PortalKey{ID: portalID},
 			Sender: bridgev2.EventSender{
 				Sender:   MakeUserID(senderID),
-				IsFromMe: false,
+				IsFromMe: isFromMe,
 			},
-			Timestamp: time.Now(),
+			Timestamp: timestamp,
 		},
 		Data: msg.Body,
 		ID:   networkid.MessageID(msg.Id),
@@ -593,7 +712,11 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 
 	// Ensure that if it has no ID, we generate one
 	if evt.ID == "" {
-		evt.ID = networkid.MessageID(fmt.Sprintf("remote-%s-%d", portalID, time.Now().UnixNano()))
+		if idOverride != "" {
+			evt.ID = networkid.MessageID(idOverride)
+		} else {
+			evt.ID = networkid.MessageID(fmt.Sprintf("remote-%s-%d", portalID, time.Now().UnixNano()))
+		}
 	}
 
 	nc.log.Debug().
