@@ -165,7 +165,7 @@ func (c *MyConnector) createWelcomeRoomAndSendIntro(login *bridgev2.UserLogin) {
 
 	log.Info().Msg("Starting welcome room creation process")
 
-	portalID := networkid.PortalID("welcome-room")
+	portalID := MakePortalID("welcome-room")
 	portalKey := networkid.PortalKey{
 		ID: portalID,
 	}
@@ -178,7 +178,7 @@ func (c *MyConnector) createWelcomeRoomAndSendIntro(login *bridgev2.UserLogin) {
 
 	log.Info().Str("portal_id", string(portal.ID)).Msg("Successfully retrieved portal")
 
-	ghostNetworkUserID := networkid.UserID(fmt.Sprintf("%s_ghosty_ghost", c.GetNetworkID()))
+	ghostNetworkUserID := MakeUserID(fmt.Sprintf("%s_ghosty_ghost", c.GetNetworkID()))
 	ghostDisplayName := "Ghosty Ghost"
 
 	ghost, err := c.bridge.GetGhostByID(ctx, ghostNetworkUserID)

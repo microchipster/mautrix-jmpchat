@@ -8,17 +8,14 @@ import (
 
 // EscapeJID converts an XMPP JID into a format that is safe for Matrix User IDs,
 // since mautrix-go's EncodeUserLocalpart currently leaves '+' unescaped, which Synapse rejects.
+// EncodeUserLocalpart will encode '=' into '=3d', so we cannot use '=' to escape.
 func EscapeJID(jid string) string {
-	jid = strings.ReplaceAll(jid, "=", "=3d")
-	jid = strings.ReplaceAll(jid, "+", "=2b")
-	return jid
+	return strings.ReplaceAll(jid, "+", "._plus_.")
 }
 
 // UnescapeJID converts an escaped JID back to its original form.
 func UnescapeJID(escaped string) string {
-	escaped = strings.ReplaceAll(escaped, "=2b", "+")
-	escaped = strings.ReplaceAll(escaped, "=3d", "=")
-	return escaped
+	return strings.ReplaceAll(escaped, "._plus_.", "+")
 }
 
 func MakeUserID(jid string) networkid.UserID {
