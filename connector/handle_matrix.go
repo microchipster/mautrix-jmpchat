@@ -27,7 +27,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		return nil, fmt.Errorf("XMPP client not connected")
 	}
 
-	jid := string(msg.Portal.ID)
+	jid := UnescapeJID(string(msg.Portal.ID))
 
 	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
 	isMUC := meta != nil && meta.IsMUC
@@ -55,7 +55,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 // GetUserInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	name := string(ghost.ID)
+	name := UnescapeJID(string(ghost.ID))
 	if parts := strings.Split(name, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
 		name = parts[len(parts)-1]
 	}
@@ -66,7 +66,7 @@ func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 
 // GetChatInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	name := string(portal.ID)
+	name := UnescapeJID(string(portal.ID))
 
 	meta, _ := portal.Metadata.(*PortalMetadata)
 	roomType := ptr.Ptr(database.RoomTypeDM)

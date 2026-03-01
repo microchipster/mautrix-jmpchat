@@ -272,7 +272,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if name == "" {
 					name = bareJID
 				}
-				portalID := networkid.PortalID(bareJID)
+				portalID := MakePortalID(bareJID)
 				resync := &simplevent.ChatResync{
 					EventMeta: simplevent.EventMeta{
 						Type:         bridgev2.RemoteEventChatResync,
@@ -302,7 +302,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					name = roomJID
 				}
 
-				portalID := networkid.PortalID(roomJID)
+				portalID := MakePortalID(roomJID)
 				resync := &simplevent.ChatResync{
 					EventMeta: simplevent.EventMeta{
 						Type:         bridgev2.RemoteEventChatResync,
@@ -347,7 +347,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			roomJID = strings.TrimSpace(mucInvite.Invite.From)
 		}
 		if roomJID != "" {
-			portalID := networkid.PortalID(roomJID)
+			portalID := MakePortalID(roomJID)
 			roomName := roomJID
 			resync := &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
@@ -378,7 +378,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	if msg.Get(&directInvite) && directInvite.JID != "" {
 		roomJID := strings.TrimSpace(directInvite.JID)
 		if roomJID != "" {
-			portalID := networkid.PortalID(roomJID)
+			portalID := MakePortalID(roomJID)
 			roomName := roomJID
 			resync := &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
@@ -418,7 +418,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		return
 	}
 
-	portalID := networkid.PortalID(bareFromJid)
+	portalID := MakePortalID(bareFromJid)
 
 	var senderID string
 	var roomType *database.RoomType
@@ -455,7 +455,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			Type:      bridgev2.RemoteEventMessage,
 			PortalKey: networkid.PortalKey{ID: portalID},
 			Sender: bridgev2.EventSender{
-				Sender:   networkid.UserID(senderID),
+				Sender:   MakeUserID(senderID),
 				IsFromMe: false,
 			},
 			Timestamp: time.Now(),
@@ -521,7 +521,7 @@ func (nc *MyNetworkClient) IsThisUser(ctx context.Context, userID networkid.User
 	if !ok || meta == nil {
 		return false
 	}
-	bareUserID := strings.Split(string(userID), "/")[0]
+	bareUserID := strings.Split(UnescapeJID(string(userID)), "/")[0]
 	return bareUserID == meta.RemoteUserID
 }
 
