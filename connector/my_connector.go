@@ -39,6 +39,8 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandCreate)
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandSetName)
+		proc.AddHandler(CommandNuke)
+		proc.AddHandler(CommandLogoutSoft)
 		c.log.Info().Msg("Registered sync command")
 	} else {
 		c.log.Warn().Msg("Command processor not available for custom commands")

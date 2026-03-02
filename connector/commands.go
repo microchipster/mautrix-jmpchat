@@ -7,6 +7,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/status"
 )
 
 var CommandSync = &commands.FullHandler{
@@ -187,6 +188,82 @@ var CommandSetName = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Set a custom display name for a user",
+	},
+	RequiresLogin: true,
+}
+
+var CommandNuke = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		if len(ce.Args) == 0 || (ce.Args[0] != "yes" && ce.Args[0] != "--yes") {
+			ce.Reply("This will remove all bridged rooms, the space, and log you out. Run: uninstall yes")
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+		portals := make([]*bridgev2.Portal, 0, len(userPortals))
+		for _, up := range userPortals {
+			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+			if err != nil || portal == nil {
+				continue
+			}
+			portals = append(portals, portal)
+		}
+
+		bridgev2.DeleteManyPortals(ce.Ctx, portals, nil)
+		for _, up := range userPortals {
+			_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
+		}
+
+		if mgmtRoom, err := ce.User.GetManagementRoom(ce.Ctx); err == nil && mgmtRoom != "" {
+			_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, mgmtRoom, false)
+		}
+		if spaceRoom, err := login.GetSpaceRoom(ce.Ctx); err == nil && spaceRoom != "" {
+			_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, spaceRoom, false)
+		}
+
+		login.Delete(ce.Ctx, status.BridgeState{StateEvent: status.StateLoggedOut}, bridgev2.DeleteOpts{
+			LogoutRemote:     true,
+			DontCleanupRooms: true,
+			BlockingCleanup:  true,
+		})
+		ce.Reply("Bridge uninstall complete. You can log in again with !login.")
+	},
+	Name:    "uninstall",
+	Aliases: []string{"nuke", "wipe"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Remove all bridged rooms, delete the space, and log out (use: uninstall yes)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandLogoutSoft = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		login.Delete(ce.Ctx, status.BridgeState{StateEvent: status.StateLoggedOut}, bridgev2.DeleteOpts{
+			LogoutRemote:     true,
+			DontCleanupRooms: true,
+			BlockingCleanup:  true,
+		})
+		ce.Reply("Logged out without removing rooms. You can log in again with !login.")
+	},
+	Name:    "logout-soft",
+	Aliases: []string{"logout-keep", "logout-only"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Log out without removing rooms or the space",
 	},
 	RequiresLogin: true,
 }
