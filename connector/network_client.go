@@ -60,6 +60,8 @@ type MyNetworkClient struct {
 	fullSyncRequested        bool
 	fullSyncRosterPending    bool
 	fullSyncBookmarksPending bool
+	connected                bool
+	connectedCh              chan struct{}
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -175,6 +177,10 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	if nc.bookmarkedRooms == nil {
 		nc.bookmarkedRooms = map[string]bool{}
 	}
+	nc.connected = false
+	nc.connectedCh = make(chan struct{})
+	nc.connected = false
+	nc.connectedCh = make(chan struct{})
 
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if !ok || meta == nil {
@@ -230,6 +236,18 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 	client.PostConnectHook = func() error {
 		nc.log.Info().Msg("XMPP connected, running post connect hook")
+		if !nc.connected {
+			nc.connected = true
+			if nc.connectedCh != nil {
+				close(nc.connectedCh)
+			}
+		}
+		if !nc.connected {
+			nc.connected = true
+			if nc.connectedCh != nil {
+				close(nc.connectedCh)
+			}
+		}
 
 		// 1. Request Roster
 		iq, _ := stanza.NewIQ(stanza.Attrs{
@@ -959,9 +977,25 @@ func (nc *MyNetworkClient) maybeClearFullSync() {
 	nc.fullSyncRequested = false
 }
 
+func (nc *MyNetworkClient) WaitForConnected(ctx context.Context) bool {
+	if nc.connected {
+		return true
+	}
+	if nc.connectedCh == nil {
+		return false
+	}
+	select {
+	case <-nc.connectedCh:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Disconnect cleans up the XMPP connection.
 func (nc *MyNetworkClient) Disconnect() {
 	nc.log.Info().Msg("MyNetworkClient Disconnect called")
+	nc.connected = false
 	if nc.xmppClient != nil {
 		nc.xmppClient.Disconnect()
 	}

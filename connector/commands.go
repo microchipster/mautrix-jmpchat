@@ -1,8 +1,10 @@
 package connector
 
 import (
+	"context"
 	"sort"
 	"strings"
+	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
@@ -20,6 +22,12 @@ var CommandSync = &commands.FullHandler{
 		client, ok := login.Client.(*MyNetworkClient)
 		if !ok || client == nil {
 			ce.Reply("Network client not available")
+			return
+		}
+		ctx, cancel := context.WithTimeout(ce.Ctx, 30*time.Second)
+		defer cancel()
+		if !client.WaitForConnected(ctx) {
+			ce.Reply("XMPP client not connected yet. Please retry in a few seconds.")
 			return
 		}
 		client.fullSyncRequested = true
