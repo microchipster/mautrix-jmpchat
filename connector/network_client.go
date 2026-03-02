@@ -731,8 +731,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
 
 	if isMUC {
-		// For MUCs, include the room and occupant nickname for uniqueness
-		senderID = fromJidStr
+		senderID = nc.resolveMUCSenderID(msg, bareFromJid)
+		if senderID == "" {
+			// For MUCs, include the room and occupant nickname for uniqueness
+			senderID = fromJidStr
+		}
 		roomType = ptr.Ptr(database.RoomTypeDefault)
 	} else {
 		// DMs
@@ -745,6 +748,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				senderID = meta.RemoteUserID
 			}
 		}
+	}
+	if isMUC {
+		msg.Body = stripMUCSenderPrefix(msg.Body, senderID)
 	}
 	if isMUC && !fromMAM {
 		if nc.mucRooms == nil || !nc.mucRooms[bareFromJid] {
@@ -896,6 +902,51 @@ func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
 		return msg.Id
 	}
 	return ""
+}
+
+func (nc *MyNetworkClient) resolveMUCSenderID(msg stanza.Message, roomJID string) string {
+	var mucUser MUCUserInvite
+	if msg.Get(&mucUser) && mucUser.Item != nil {
+		if mucUser.Item.JID != "" {
+			return mucUser.Item.JID
+		}
+		if mucUser.Item.Nick != "" {
+			return roomJID + "/" + mucUser.Item.Nick
+		}
+	}
+	var occ XMPOccupantID
+	if msg.Get(&occ) && occ.ID != "" {
+		return roomJID + "/occ-" + occ.ID
+	}
+	if strings.Contains(msg.From, "/") {
+		return msg.From
+	}
+	return ""
+}
+
+func stripMUCSenderPrefix(body string, senderID string) string {
+	if body == "" || senderID == "" {
+		return body
+	}
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return body
+	}
+	prefixes := []string{
+		"<xmpp:" + senderID + ">",
+		"xmpp:" + senderID + ":",
+		senderID + ":",
+	}
+	if parts := strings.Split(senderID, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
+		nick := parts[len(parts)-1]
+		prefixes = append(prefixes, nick+":")
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		}
+	}
+	return body
 }
 
 func (nc *MyNetworkClient) maybeClearFullSync() {

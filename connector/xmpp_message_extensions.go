@@ -129,8 +129,8 @@ type XMPPStanzaID struct {
 
 type XMPOccupantID struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:occupant-id:0 occupant-id"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:occupant-id:0 occupant-id"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPDelayOld struct {

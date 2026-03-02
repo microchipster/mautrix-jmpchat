@@ -12,6 +12,14 @@ type MUCUserInvite struct {
 	Invite   *MUCInvite        `xml:"invite,omitempty"`
 	Decline  *MUCInviteDecline `xml:"decline,omitempty"`
 	Password string            `xml:"password,omitempty"`
+	Item     *MUCUserItem      `xml:"item,omitempty"`
+}
+
+type MUCUserItem struct {
+	JID         string `xml:"jid,attr,omitempty"`
+	Nick        string `xml:"nick,attr,omitempty"`
+	Affiliation string `xml:"affiliation,attr,omitempty"`
+	Role        string `xml:"role,attr,omitempty"`
 }
 
 type MUCInvite struct {
