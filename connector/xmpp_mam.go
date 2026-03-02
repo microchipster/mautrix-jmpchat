@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rs/zerolog"
 	"gosrc.io/xmpp/stanza"
 )
 
@@ -90,7 +91,7 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	if nc.xmppClient == nil {
 		return nil, fmt.Errorf("XMPP client not connected")
 	}
-	if toJID == "" {
+	if toJID == "" && withJID == "" {
 		return nil, fmt.Errorf("MAM target JID is empty")
 	}
 	if max <= 0 {
@@ -98,6 +99,21 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	}
 
 	queryID := fmt.Sprintf("mam_%d", time.Now().UnixNano())
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		beforeValue := ""
+		if before != nil {
+			beforeValue = *before
+		}
+		nc.log.Debug().
+			Str("query_id", queryID).
+			Str("to_jid", toJID).
+			Str("with_jid", withJID).
+			Int("max", max).
+			Str("before", beforeValue).
+			Time("start", start).
+			Bool("start_zero", start.IsZero()).
+			Msg("Sending MAM query")
+	}
 	fields := []XDataField{
 		{Var: "FORM_TYPE", Type: "hidden", Values: []string{NSMAM}},
 	}
@@ -122,11 +138,14 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 		Set: set,
 	}
 
-	iq, _ := stanza.NewIQ(stanza.Attrs{
+	attrs := stanza.Attrs{
 		Type: stanza.IQTypeSet,
-		To:   toJID,
 		Id:   queryID,
-	})
+	}
+	if toJID != "" {
+		attrs.To = toJID
+	}
+	iq, _ := stanza.NewIQ(attrs)
 	iq.Payload = q
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -143,6 +162,30 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 		fin, ok := resp.Payload.(*MAMFin)
 		if !ok || fin == nil {
 			return nil, fmt.Errorf("unexpected MAM fin payload")
+		}
+		if nc.log.GetLevel() <= zerolog.DebugLevel {
+			set := fin.Set
+			first := ""
+			last := ""
+			count := ""
+			if set != nil {
+				if set.First != nil {
+					first = set.First.Content
+				}
+				if set.Last != nil {
+					last = *set.Last
+				}
+				if set.Count != nil {
+					count = fmt.Sprintf("%d", *set.Count)
+				}
+			}
+			nc.log.Debug().
+				Str("query_id", queryID).
+				Bool("complete", fin.Complete).
+				Str("first", first).
+				Str("last", last).
+				Str("count", count).
+				Msg("Received MAM fin")
 		}
 		return fin, nil
 	case <-ctx.Done():
@@ -162,7 +205,7 @@ func (nc *MyNetworkClient) backfillDM(ctx context.Context, withJID string, start
 	if withJID == "" {
 		return fmt.Errorf("DM MAM target is empty")
 	}
-	return nc.backfillMAM(ctx, meta.RemoteUserID, withJID, start)
+	return nc.backfillMAM(ctx, "", withJID, start)
 }
 
 func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJID string, start time.Time) error {
@@ -170,18 +213,63 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 	const maxPages = 10000
 
 	before := ""
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("to_jid", toJID).
+			Str("with_jid", withJID).
+			Int("page_size", pageSize).
+			Time("start", start).
+			Bool("start_zero", start.IsZero()).
+			Msg("Starting MAM backfill")
+	}
 	for page := 0; page < maxPages; page++ {
 		fin, err := nc.requestMAMPage(ctx, toJID, withJID, pageSize, start, &before)
 		if err != nil {
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("to_jid", toJID).
+					Str("with_jid", withJID).
+					Int("page", page).
+					Err(err).
+					Msg("MAM backfill request failed")
+			}
 			return err
 		}
 		if fin == nil || fin.Set == nil || fin.Set.First == nil || fin.Set.First.Content == "" {
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("to_jid", toJID).
+					Str("with_jid", withJID).
+					Int("page", page).
+					Msg("MAM backfill ended: missing result set or first")
+			}
 			break
 		}
 		if fin.Complete {
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("to_jid", toJID).
+					Str("with_jid", withJID).
+					Int("page", page).
+					Msg("MAM backfill complete")
+			}
 			break
 		}
 		before = fin.Set.First.Content
+		if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().
+				Str("to_jid", toJID).
+				Str("with_jid", withJID).
+				Int("page", page).
+				Str("next_before", before).
+				Msg("MAM backfill page scheduled")
+		}
+	}
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("to_jid", toJID).
+			Str("with_jid", withJID).
+			Msg("Finished MAM backfill")
 	}
 	return nil
 }

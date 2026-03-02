@@ -133,9 +133,16 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	pres.Extensions = append(pres.Extensions, stanza.MucPresence{
 		Password: password,
 		History: stanza.History{
-			MaxStanzas: stanza.NewNullableInt(50),
+			MaxChars: stanza.NewNullableInt(0),
 		},
 	})
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("room_jid", roomJID).
+			Str("nick", nickname).
+			Bool("history_disabled", true).
+			Msg("Joining MUC with history disabled to rely on MAM")
+	}
 	if nc.mucRooms != nil {
 		nc.mucRooms[roomJID] = true
 	}
