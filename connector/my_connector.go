@@ -156,7 +156,7 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 	client.connectMu.Lock()
 	if !client.connectStarted {
 		client.connectStarted = true
-		go client.Connect(ctx)
+		go client.Connect(context.Background())
 	}
 	client.connectMu.Unlock()
 

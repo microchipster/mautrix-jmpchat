@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -114,31 +113,6 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	}
 
 	sl.Log.Info().Str("login_id", string(ul.ID)).Msg("Successfully 'logged in' and created user login")
-
-	err = sl.Main.LoadUserLogin(ctx, ul)
-	if err != nil {
-		sl.Log.Err(err).Msg("Failed to load user login after creation (this might indicate an issue)")
-	}
-
-	if client, ok := ul.Client.(*MyNetworkClient); ok && client != nil {
-		client.connectMu.Lock()
-		if !client.connectStarted {
-			client.connectStarted = true
-			go client.Connect(ctx)
-		}
-		client.connectMu.Unlock()
-
-		waitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		if !client.WaitForConnected(waitCtx) {
-			ul.Delete(ctx, status.BridgeState{StateEvent: status.StateLoggedOut}, bridgev2.DeleteOpts{
-				LogoutRemote:     true,
-				DontCleanupRooms: true,
-				BlockingCleanup:  true,
-			})
-			return nil, fmt.Errorf("XMPP connection timed out after login")
-		}
-	}
 
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,
