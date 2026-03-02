@@ -28,6 +28,7 @@ type GhostMetadata struct {
 	RemoteUserID string `json:"remote_user_id,omitempty"`
 	RemoteName   string `json:"remote_name,omitempty"`
 	AvatarURL    string `json:"avatar_url,omitempty"`
+	CustomName   string `json:"custom_name,omitempty"`
 }
 
 // New creates a new instance for database registration.

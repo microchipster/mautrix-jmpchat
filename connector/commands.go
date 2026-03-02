@@ -1,9 +1,12 @@
 package connector
 
 import (
+	"sort"
 	"strings"
 
+	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
+	"maunium.net/go/mautrix/bridgev2/database"
 )
 
 var CommandSync = &commands.FullHandler{
@@ -98,6 +101,92 @@ var CommandCreate = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Create a DM or group chat with phone numbers or JIDs",
+	},
+	RequiresLogin: true,
+}
+
+var CommandListUsers = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		rows, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+		users := map[string]bool{}
+		for _, row := range rows {
+			portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, row.Portal)
+			if err != nil || portal == nil {
+				continue
+			}
+			if portal.RoomType != database.RoomTypeDM {
+				continue
+			}
+			jid := string(portal.OtherUserID)
+			if jid == "" {
+				jid = string(portal.ID)
+			}
+			jid = UnescapeJID(jid)
+			users[jid] = true
+		}
+		if len(users) == 0 {
+			ce.Reply("No users found")
+			return
+		}
+		list := make([]string, 0, len(users))
+		for jid := range users {
+			list = append(list, jid)
+		}
+		sort.Strings(list)
+		ce.Reply(strings.Join(list, "\n"))
+	},
+	Name: "list-users",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List users you have DMs with",
+	},
+	RequiresLogin: true,
+}
+
+var CommandSetName = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		if len(ce.Args) < 2 {
+			ce.Reply("Usage: set-name <phone or JID> <display name>")
+			return
+		}
+		jid := normalizeJID(ce.Args[0])
+		if jid == "" {
+			ce.Reply("Invalid JID")
+			return
+		}
+		name := strings.TrimSpace(strings.Join(ce.Args[1:], " "))
+		if name == "" {
+			ce.Reply("Display name cannot be empty")
+			return
+		}
+		ghostID := MakeUserID(jid)
+		ghost, err := ce.Bridge.GetGhostByID(ce.Ctx, ghostID)
+		if err != nil {
+			ce.Reply("Failed to load ghost: %v", err)
+			return
+		}
+		meta, _ := ghost.Metadata.(*GhostMetadata)
+		if meta == nil {
+			meta = &GhostMetadata{}
+		}
+		meta.CustomName = name
+		ghost.Metadata = meta
+		ghost.UpdateInfo(ce.Ctx, &bridgev2.UserInfo{Name: &name})
+		ce.Reply("Set display name for %s", jid)
+	},
+	Name: "set-name",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Set a custom display name for a user",
 	},
 	RequiresLogin: true,
 }

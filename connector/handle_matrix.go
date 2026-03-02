@@ -96,7 +96,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 // GetUserInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	name := UnescapeJID(string(ghost.ID))
-	if parts := strings.Split(name, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
+	if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil && meta.CustomName != "" {
+		name = meta.CustomName
+	} else if parts := strings.Split(name, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
 		name = parts[len(parts)-1]
 	}
 	return &bridgev2.UserInfo{
