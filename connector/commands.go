@@ -10,6 +10,8 @@ import (
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/status"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 var CommandSync = &commands.FullHandler{
@@ -24,30 +26,54 @@ var CommandSync = &commands.FullHandler{
 			ce.Reply("Network client not available")
 			return
 		}
-		ctx, cancel := context.WithTimeout(ce.Ctx, 30*time.Second)
-		defer cancel()
-		if !client.WaitForConnected(ctx) {
-			ce.Reply("XMPP client not connected yet. Please retry in a few seconds.")
+		notify := func(msg string) {
+			sendNotice(ce.Bot, ce.OrigRoomID, msg)
+		}
+		if err := client.StartFullSync(ce.Ctx, notify); err != nil {
+			ce.Reply("%v", err)
 			return
 		}
-		client.fullSyncRequested = true
-		client.fullSyncRosterPending = true
-		client.fullSyncBookmarksPending = true
-		if err := client.requestRoster(); err != nil {
-			ce.Reply("Failed to request roster: %v", err)
-			return
-		}
-		if err := client.requestBookmarks(); err != nil {
-			ce.Reply("Failed to request bookmarks: %v", err)
-			return
-		}
-		ce.Reply("Requested full sync (roster + bookmarks). MAM backfill will start as results arrive.")
+		ce.Reply("Sync queued. I will post progress here.")
 	},
 	Name:    "sync",
 	Aliases: []string{"sync-groups"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Full sync of roster + bookmarks and MAM backfill",
+	},
+	RequiresLogin: true,
+}
+
+var CommandSyncStatus = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		running, status, lastErr, startedAt := client.SyncStatus()
+		if status == "" {
+			status = "idle"
+		}
+		if running {
+			ce.Reply("Sync status: %s (running for %s)", status, time.Since(startedAt).Truncate(time.Second))
+			return
+		}
+		if lastErr != "" {
+			ce.Reply("Sync status: %s (last error: %s)", status, lastErr)
+			return
+		}
+		ce.Reply("Sync status: %s", status)
+	},
+	Name: "sync-status",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Show full sync progress",
 	},
 	RequiresLogin: true,
 }
@@ -288,4 +314,15 @@ func normalizeJID(input string) string {
 		val = "+" + val
 	}
 	return val + "@cheogram.com"
+}
+
+func sendNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) {
+	if bot == nil || roomID == "" || msg == "" {
+		return
+	}
+	content := &event.MessageEventContent{
+		MsgType: event.MsgNotice,
+		Body:    msg,
+	}
+	_, _ = bot.SendMessage(context.Background(), roomID, event.EventMessage, &event.Content{Parsed: content}, nil)
 }

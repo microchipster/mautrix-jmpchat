@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -62,6 +63,11 @@ type MyNetworkClient struct {
 	fullSyncBookmarksPending bool
 	connected                bool
 	connectedCh              chan struct{}
+	syncMu                   sync.Mutex
+	syncRunning              bool
+	syncStatus               string
+	syncLastErr              string
+	syncStartedAt            time.Time
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -990,6 +996,116 @@ func (nc *MyNetworkClient) WaitForConnected(ctx context.Context) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string)) error {
+	nc.syncMu.Lock()
+	if nc.syncRunning {
+		status := nc.syncStatus
+		nc.syncMu.Unlock()
+		if status == "" {
+			status = "in progress"
+		}
+		return fmt.Errorf("sync already running (%s)", status)
+	}
+	nc.syncRunning = true
+	nc.syncStatus = "queued"
+	nc.syncLastErr = ""
+	nc.syncStartedAt = time.Now()
+	nc.syncMu.Unlock()
+
+	go nc.runFullSync(ctx, notify)
+	return nil
+}
+
+func (nc *MyNetworkClient) SyncStatus() (bool, string, string, time.Time) {
+	nc.syncMu.Lock()
+	defer nc.syncMu.Unlock()
+	return nc.syncRunning, nc.syncStatus, nc.syncLastErr, nc.syncStartedAt
+}
+
+func (nc *MyNetworkClient) setSyncStatus(status string) {
+	nc.syncMu.Lock()
+	nc.syncStatus = status
+	nc.syncMu.Unlock()
+}
+
+func (nc *MyNetworkClient) setSyncError(err error) {
+	nc.syncMu.Lock()
+	if err != nil {
+		nc.syncLastErr = err.Error()
+	}
+	nc.syncMu.Unlock()
+}
+
+func (nc *MyNetworkClient) finishSync() {
+	nc.syncMu.Lock()
+	nc.syncRunning = false
+	nc.syncMu.Unlock()
+}
+
+func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string)) {
+	defer nc.finishSync()
+	update := func(msg string) {
+		nc.setSyncStatus(msg)
+		if notify != nil {
+			notify(msg)
+		}
+	}
+
+	update("Waiting for XMPP connection")
+	connectCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	if !nc.WaitForConnected(connectCtx) {
+		cancel()
+		err := fmt.Errorf("XMPP connection timed out")
+		nc.setSyncError(err)
+		if notify != nil {
+			notify(fmt.Sprintf("Sync failed: %s", err.Error()))
+		}
+		return
+	}
+	cancel()
+
+	update("Requesting roster and bookmarks")
+	nc.fullSyncRequested = true
+	nc.fullSyncRosterPending = true
+	nc.fullSyncBookmarksPending = true
+	if err := nc.requestRoster(); err != nil {
+		nc.setSyncError(err)
+		if notify != nil {
+			notify(fmt.Sprintf("Sync failed requesting roster: %s", err.Error()))
+		}
+		return
+	}
+	if err := nc.requestBookmarks(); err != nil {
+		nc.setSyncError(err)
+		if notify != nil {
+			notify(fmt.Sprintf("Sync failed requesting bookmarks: %s", err.Error()))
+		}
+		return
+	}
+
+	update("Backfill in progress (MAM)")
+	deadline := time.Now().Add(30 * time.Minute)
+	for time.Now().Before(deadline) {
+		if !nc.fullSyncRequested {
+			update("Sync complete")
+			return
+		}
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			err := ctx.Err()
+			nc.setSyncError(err)
+			if notify != nil {
+				notify(fmt.Sprintf("Sync cancelled: %s", err.Error()))
+			}
+			return
+		}
+	}
+
+	nc.fullSyncRequested = false
+	update("Sync timed out (backfill may still be running)")
 }
 
 // Disconnect cleans up the XMPP connection.

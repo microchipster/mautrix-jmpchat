@@ -36,6 +36,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 	c.log.Info().Msg("MyConnector Init called")
 	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
 		proc.AddHandler(CommandSync)
+		proc.AddHandler(CommandSyncStatus)
 		proc.AddHandler(CommandCreate)
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandSetName)
