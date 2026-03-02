@@ -154,7 +154,7 @@ func (nc *MyNetworkClient) backfillMUC(ctx context.Context, roomJID string, star
 	return nc.backfillMAM(ctx, roomJID, "", start)
 }
 
-func (nc *MyNetworkClient) backfillDM(ctx context.Context, withJID string) error {
+func (nc *MyNetworkClient) backfillDM(ctx context.Context, withJID string, start time.Time) error {
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if !ok || meta == nil || meta.RemoteUserID == "" {
 		return fmt.Errorf("login metadata missing remote user id")
@@ -162,7 +162,7 @@ func (nc *MyNetworkClient) backfillDM(ctx context.Context, withJID string) error
 	if withJID == "" {
 		return fmt.Errorf("DM MAM target is empty")
 	}
-	return nc.backfillMAM(ctx, meta.RemoteUserID, withJID, time.Time{})
+	return nc.backfillMAM(ctx, meta.RemoteUserID, withJID, start)
 }
 
 func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJID string, start time.Time) error {

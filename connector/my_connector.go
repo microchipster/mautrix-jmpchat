@@ -46,6 +46,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandSetName)
 		proc.AddHandler(CommandDeleteAllPortals)
+		proc.AddHandler(CommandLogout)
 		c.log.Info().Msg("Registered sync command")
 	} else {
 		c.log.Warn().Msg("Command processor not available for custom commands")
@@ -176,6 +177,7 @@ func (c *MyConnector) ensureSpaceRoomAndPopulate(login *bridgev2.UserLogin) {
 	log := c.log.With().Str("user_mxid", string(user.MXID)).Str("login_id", string(login.ID)).Logger()
 	ctx = log.WithContext(ctx)
 
+	hadMgmtRoom := user.ManagementRoom != ""
 	spaceRoom, err := login.GetSpaceRoom(ctx)
 	if err != nil {
 		log.Err(err).Msg("Failed to get space room")
@@ -187,11 +189,11 @@ func (c *MyConnector) ensureSpaceRoomAndPopulate(login *bridgev2.UserLogin) {
 	}
 	log.Info().Stringer("space_room", spaceRoom).Msg("Ensured personal space room")
 
-	c.ensureManagementRoomInSpace(ctx, login, spaceRoom)
+	c.ensureManagementRoomInSpace(ctx, login, spaceRoom, !hadMgmtRoom)
 	c.addExistingPortalsToSpace(ctx, login)
 }
 
-func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *bridgev2.UserLogin, spaceRoom id.RoomID) {
+func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *bridgev2.UserLogin, spaceRoom id.RoomID, sendHelp bool) {
 	user := login.User
 	log := zerolog.Ctx(ctx)
 
@@ -212,6 +214,9 @@ func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *br
 		log.Debug().Msg("Management room not available yet, skipping space link")
 		return
 	}
+	if sendHelp {
+		sendNotice(c.bridge.Bot, mgmtRoom, managementRoomHelpText())
+	}
 
 	_, err := c.bridge.Bot.SendState(ctx, spaceRoom, event.StateSpaceChild, mgmtRoom.String(), &event.Content{
 		Parsed: &event.SpaceChildEventContent{
@@ -223,6 +228,19 @@ func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *br
 		return
 	}
 	log.Debug().Stringer("space_room", spaceRoom).Stringer("mgmt_room", mgmtRoom).Msg("Added management room to space")
+}
+
+func managementRoomHelpText() string {
+	return "Quick help:\n" +
+		"- login <jid>\n" +
+		"- logout (soft)\n" +
+		"- logout purge (delete rooms + space)\n" +
+		"- delete-all-portals yes\n" +
+		"- sync [full|30d] (default 30d)\n" +
+		"- sync-status\n" +
+		"- create <jid> [jid...]\n" +
+		"- list-users\n" +
+		"- set-name <jid> <name>"
 }
 
 func (c *MyConnector) addExistingPortalsToSpace(ctx context.Context, login *bridgev2.UserLogin) {

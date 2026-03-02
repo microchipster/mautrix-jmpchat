@@ -2,7 +2,9 @@ package connector
 
 import (
 	"context"
+	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,10 +28,15 @@ var CommandSync = &commands.FullHandler{
 			ce.Reply("Network client not available")
 			return
 		}
+		full, lookback, err := parseSyncArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
 		notify := func(msg string) {
 			sendNotice(ce.Bot, ce.OrigRoomID, msg)
 		}
-		if err := client.StartFullSync(ce.Ctx, notify); err != nil {
+		if err := client.StartFullSync(ce.Ctx, notify, full, lookback); err != nil {
 			ce.Reply("%v", err)
 			return
 		}
@@ -39,7 +46,7 @@ var CommandSync = &commands.FullHandler{
 	Aliases: []string{"sync-groups"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Full sync of roster + bookmarks and MAM backfill",
+		Description: "Sync roster + bookmarks and MAM backfill. Usage: sync [full|<duration>] (default: 30d)",
 	},
 	RequiresLogin: true,
 }
@@ -237,43 +244,48 @@ var CommandDeleteAllPortals = &commands.FullHandler{
 			ce.Reply("No login found")
 			return
 		}
-		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
-		if err != nil {
-			ce.Reply("Failed to list portals: %v", err)
+		if err := deleteAllPortals(ce, login); err != nil {
+			ce.Reply("%v", err)
 			return
 		}
-		portals := make([]*bridgev2.Portal, 0, len(userPortals))
-		for _, up := range userPortals {
-			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
-			if err != nil || portal == nil {
-				continue
-			}
-			portals = append(portals, portal)
-		}
-
-		bridgev2.DeleteManyPortals(ce.Ctx, portals, nil)
-		for _, up := range userPortals {
-			_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
-		}
-
-		if mgmtRoom, err := ce.User.GetManagementRoom(ce.Ctx); err == nil && mgmtRoom != "" {
-			_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, mgmtRoom, false)
-		}
-		if spaceRoom, err := login.GetSpaceRoom(ce.Ctx); err == nil && spaceRoom != "" {
-			_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, spaceRoom, false)
-		}
-
-		login.Delete(ce.Ctx, status.BridgeState{StateEvent: status.StateLoggedOut}, bridgev2.DeleteOpts{
-			LogoutRemote:     true,
-			DontCleanupRooms: true,
-			BlockingCleanup:  true,
-		})
 		ce.Reply("Deleted all bridged rooms and the space. You can log in again with !login.")
 	},
 	Name: "delete-all-portals",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionAdmin,
 		Description: "Remove all bridged rooms, delete the space, and log out (use: delete-all-portals yes)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandLogout = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		if len(ce.Args) > 0 && strings.EqualFold(ce.Args[0], "purge") {
+			if err := deleteAllPortals(ce, login); err != nil {
+				ce.Reply("%v", err)
+				return
+			}
+			ce.Reply("Deleted all bridged rooms and the space. You can log in again with !login.")
+			return
+		}
+		if login.Client != nil {
+			login.Client.LogoutRemote(ce.Ctx)
+			login.Client.Disconnect()
+		}
+		if login.BridgeState != nil {
+			login.BridgeState.Send(status.BridgeState{StateEvent: status.StateLoggedOut})
+		}
+		ce.Reply("Logged out without removing rooms. Use `logout purge` to delete rooms and the space.")
+	},
+	Name: "logout",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Log out without removing rooms (use: logout purge to delete rooms and space)",
 	},
 	RequiresLogin: true,
 }
@@ -301,4 +313,71 @@ func sendNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) {
 		Body:    msg,
 	}
 	_, _ = bot.SendMessage(context.Background(), roomID, event.EventMessage, &event.Content{Parsed: content}, nil)
+}
+
+func parseSyncArgs(args []string) (bool, time.Duration, error) {
+	if len(args) == 0 {
+		return false, defaultMAMLookback, nil
+	}
+	if len(args) > 1 {
+		return false, 0, fmt.Errorf("Usage: sync [full|<duration>] (e.g. sync 30d, sync full)")
+	}
+	arg := strings.ToLower(strings.TrimSpace(args[0]))
+	if arg == "full" {
+		return true, 0, nil
+	}
+	lookback, err := parseLookbackDuration(arg)
+	if err != nil {
+		return false, 0, fmt.Errorf("Invalid duration %q (use 7d, 30d, 12h, or full)", arg)
+	}
+	return false, lookback, nil
+}
+
+func parseLookbackDuration(arg string) (time.Duration, error) {
+	if strings.HasSuffix(arg, "d") {
+		num := strings.TrimSuffix(arg, "d")
+		if num == "" {
+			return 0, fmt.Errorf("empty duration")
+		}
+		days, err := strconv.Atoi(num)
+		if err != nil || days <= 0 {
+			return 0, fmt.Errorf("invalid day value")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(arg)
+}
+
+func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {
+	userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+	if err != nil {
+		return fmt.Errorf("failed to list portals: %w", err)
+	}
+	portals := make([]*bridgev2.Portal, 0, len(userPortals))
+	for _, up := range userPortals {
+		portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+		if err != nil || portal == nil {
+			continue
+		}
+		portals = append(portals, portal)
+	}
+
+	bridgev2.DeleteManyPortals(ce.Ctx, portals, nil)
+	for _, up := range userPortals {
+		_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
+	}
+
+	if mgmtRoom, err := ce.User.GetManagementRoom(ce.Ctx); err == nil && mgmtRoom != "" {
+		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, mgmtRoom, false)
+	}
+	if spaceRoom, err := login.GetSpaceRoom(ce.Ctx); err == nil && spaceRoom != "" {
+		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, spaceRoom, false)
+	}
+
+	login.Delete(ce.Ctx, status.BridgeState{StateEvent: status.StateLoggedOut}, bridgev2.DeleteOpts{
+		LogoutRemote:     true,
+		DontCleanupRooms: true,
+		BlockingCleanup:  true,
+	})
+	return nil
 }

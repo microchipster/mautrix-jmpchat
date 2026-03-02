@@ -61,6 +61,8 @@ type MyNetworkClient struct {
 	fullSyncRequested        bool
 	fullSyncRosterPending    bool
 	fullSyncBookmarksPending bool
+	fullSyncStart            time.Time
+	fullSyncUseStart         bool
 	connected                bool
 	connectedCh              chan struct{}
 	syncMu                   sync.Mutex
@@ -71,6 +73,8 @@ type MyNetworkClient struct {
 	connectMu                sync.Mutex
 	connectStarted           bool
 }
+
+const defaultMAMLookback = 30 * 24 * time.Hour
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
@@ -440,7 +444,11 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing roster chat resync")
 				nc.bridge.QueueRemoteEvent(nc.login, resync)
 				if nc.fullSyncRequested {
-					if err := nc.backfillDM(context.Background(), bareJID); err != nil {
+					start := time.Time{}
+					if nc.fullSyncUseStart {
+						start = nc.fullSyncStart
+					}
+					if err := nc.backfillDM(context.Background(), bareJID, start); err != nil {
 						nc.log.Err(err).Str("jid", bareJID).Msg("Failed to request DM MAM history")
 					}
 				}
@@ -488,11 +496,15 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
 				if nc.fullSyncRequested {
-					if err := nc.backfillMUC(context.Background(), roomJID, time.Time{}); err != nil {
+					start := time.Time{}
+					if nc.fullSyncUseStart {
+						start = nc.fullSyncStart
+					}
+					if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
 						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MAM history")
 					}
 				} else {
-					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-defaultMAMLookback)); err != nil {
 						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
 					}
 				}
@@ -542,11 +554,15 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 				nc.joinMUC(roomJID, nick, conf.Password)
 				if nc.fullSyncRequested {
-					if err := nc.backfillMUC(context.Background(), roomJID, time.Time{}); err != nil {
+					start := time.Time{}
+					if nc.fullSyncUseStart {
+						start = nc.fullSyncStart
+					}
+					if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
 						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MAM history")
 					}
 				} else {
-					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-defaultMAMLookback)); err != nil {
 						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
 					}
 				}
@@ -780,7 +796,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		if nc.mucRooms == nil || !nc.mucRooms[bareFromJid] {
 			nc.joinMUC(bareFromJid, "", "")
 			go func(roomJID string) {
-				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-7*24*time.Hour)); err != nil {
+				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-defaultMAMLookback)); err != nil {
 					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
 				}
 			}(bareFromJid)
@@ -998,7 +1014,7 @@ func (nc *MyNetworkClient) WaitForConnected(ctx context.Context) bool {
 	}
 }
 
-func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string)) error {
+func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string), full bool, lookback time.Duration) error {
 	nc.syncMu.Lock()
 	if nc.syncRunning {
 		status := nc.syncStatus
@@ -1012,6 +1028,16 @@ func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string
 	nc.syncStatus = "queued"
 	nc.syncLastErr = ""
 	nc.syncStartedAt = time.Now()
+	if full {
+		nc.fullSyncUseStart = false
+		nc.fullSyncStart = time.Time{}
+	} else {
+		if lookback <= 0 {
+			lookback = defaultMAMLookback
+		}
+		nc.fullSyncUseStart = true
+		nc.fullSyncStart = time.Now().Add(-lookback)
+	}
 	nc.syncMu.Unlock()
 
 	go nc.runFullSync(ctx, notify)
