@@ -68,6 +68,8 @@ type MyNetworkClient struct {
 	syncStatus               string
 	syncLastErr              string
 	syncStartedAt            time.Time
+	connectMu                sync.Mutex
+	connectStarted           bool
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -183,8 +185,6 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	if nc.bookmarkedRooms == nil {
 		nc.bookmarkedRooms = map[string]bool{}
 	}
-	nc.connected = false
-	nc.connectedCh = make(chan struct{})
 	nc.connected = false
 	nc.connectedCh = make(chan struct{})
 

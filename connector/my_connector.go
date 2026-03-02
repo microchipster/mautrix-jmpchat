@@ -153,6 +153,12 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Msg("Created and stored MyNetworkClient")
 
 	go c.ensureManagementRoomInSpace(login)
+	client.connectMu.Lock()
+	if !client.connectStarted {
+		client.connectStarted = true
+		go client.Connect(ctx)
+	}
+	client.connectMu.Unlock()
 
 	return nil
 }
