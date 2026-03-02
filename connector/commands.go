@@ -226,10 +226,10 @@ var CommandSetName = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
-var CommandNuke = &commands.FullHandler{
+var CommandDeleteAllPortals = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		if len(ce.Args) == 0 || (ce.Args[0] != "yes" && ce.Args[0] != "--yes") {
-			ce.Reply("This will remove all bridged rooms, the space, and log you out. Run: uninstall yes")
+			ce.Reply("This will remove all bridged rooms, the space, and log you out. Run: delete-all-portals yes")
 			return
 		}
 		login := ce.User.GetDefaultLogin()
@@ -268,36 +268,12 @@ var CommandNuke = &commands.FullHandler{
 			DontCleanupRooms: true,
 			BlockingCleanup:  true,
 		})
-		ce.Reply("Bridge uninstall complete. You can log in again with !login.")
+		ce.Reply("Deleted all bridged rooms and the space. You can log in again with !login.")
 	},
-	Name:    "uninstall",
-	Aliases: []string{"nuke", "wipe"},
+	Name: "delete-all-portals",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionAdmin,
-		Description: "Remove all bridged rooms, delete the space, and log out (use: uninstall yes)",
-	},
-	RequiresLogin: true,
-}
-
-var CommandLogoutSoft = &commands.FullHandler{
-	Func: func(ce *commands.Event) {
-		login := ce.User.GetDefaultLogin()
-		if login == nil {
-			ce.Reply("No login found")
-			return
-		}
-		login.Delete(ce.Ctx, status.BridgeState{StateEvent: status.StateLoggedOut}, bridgev2.DeleteOpts{
-			LogoutRemote:     true,
-			DontCleanupRooms: true,
-			BlockingCleanup:  true,
-		})
-		ce.Reply("Logged out without removing rooms. You can log in again with !login.")
-	},
-	Name:    "logout-soft",
-	Aliases: []string{"logout-keep", "logout-only"},
-	Help: commands.HelpMeta{
-		Section:     commands.HelpSectionAdmin,
-		Description: "Log out without removing rooms or the space",
+		Description: "Remove all bridged rooms, delete the space, and log out (use: delete-all-portals yes)",
 	},
 	RequiresLogin: true,
 }

@@ -45,8 +45,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandCreate)
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandSetName)
-		proc.AddHandler(CommandNuke)
-		proc.AddHandler(CommandLogoutSoft)
+		proc.AddHandler(CommandDeleteAllPortals)
 		c.log.Info().Msg("Registered sync command")
 	} else {
 		c.log.Warn().Msg("Command processor not available for custom commands")
@@ -183,8 +182,10 @@ func (c *MyConnector) ensureSpaceRoomAndPopulate(login *bridgev2.UserLogin) {
 		return
 	}
 	if spaceRoom == "" {
+		log.Debug().Msg("Space room not available")
 		return
 	}
+	log.Info().Stringer("space_room", spaceRoom).Msg("Ensured personal space room")
 
 	c.ensureManagementRoomInSpace(ctx, login, spaceRoom)
 	c.addExistingPortalsToSpace(ctx, login)
