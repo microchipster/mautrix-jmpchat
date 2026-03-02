@@ -1090,6 +1090,7 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 	for time.Now().Before(deadline) {
 		if !nc.fullSyncRequested {
 			update("Sync complete")
+			go nc.connector.ensureSpaceRoomAndPopulate(nc.login)
 			return
 		}
 		select {
@@ -1106,6 +1107,7 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 
 	nc.fullSyncRequested = false
 	update("Sync timed out (backfill may still be running)")
+	go nc.connector.ensureSpaceRoomAndPopulate(nc.login)
 }
 
 // Disconnect cleans up the XMPP connection.

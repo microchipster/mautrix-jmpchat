@@ -11,6 +11,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 // Ensure MyConnector implements NetworkConnector.
@@ -34,6 +35,10 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 	c.bridge = br
 	c.log = c.bridge.Log
 	c.log.Info().Msg("MyConnector Init called")
+	if !c.bridge.Config.PersonalFilteringSpaces {
+		c.bridge.Config.PersonalFilteringSpaces = true
+		c.log.Info().Msg("Enabled personal_filtering_spaces by default")
+	}
 	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
 		proc.AddHandler(CommandSync)
 		proc.AddHandler(CommandSyncStatus)
@@ -152,7 +157,7 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Interface("client_type", client).
 		Msg("Created and stored MyNetworkClient")
 
-	go c.ensureManagementRoomInSpace(login)
+	go c.ensureSpaceRoomAndPopulate(login)
 	client.connectMu.Lock()
 	if !client.connectStarted {
 		client.connectStarted = true
@@ -163,7 +168,7 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 	return nil
 }
 
-func (c *MyConnector) ensureManagementRoomInSpace(login *bridgev2.UserLogin) {
+func (c *MyConnector) ensureSpaceRoomAndPopulate(login *bridgev2.UserLogin) {
 	if !c.bridge.Config.PersonalFilteringSpaces {
 		return
 	}
@@ -180,15 +185,34 @@ func (c *MyConnector) ensureManagementRoomInSpace(login *bridgev2.UserLogin) {
 	if spaceRoom == "" {
 		return
 	}
-	mgmtRoom, err := user.GetManagementRoom(ctx)
-	if err != nil {
-		log.Err(err).Msg("Failed to get management room")
-		return
+
+	c.ensureManagementRoomInSpace(ctx, login, spaceRoom)
+	c.addExistingPortalsToSpace(ctx, login)
+}
+
+func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *bridgev2.UserLogin, spaceRoom id.RoomID) {
+	user := login.User
+	log := zerolog.Ctx(ctx)
+
+	var mgmtRoom id.RoomID
+	for attempt := 0; attempt < 6; attempt++ {
+		room, err := user.GetManagementRoom(ctx)
+		if err != nil {
+			log.Err(err).Msg("Failed to get management room")
+			return
+		}
+		if room != "" {
+			mgmtRoom = room
+			break
+		}
+		time.Sleep(5 * time.Second)
 	}
 	if mgmtRoom == "" {
+		log.Debug().Msg("Management room not available yet, skipping space link")
 		return
 	}
-	_, err = c.bridge.Bot.SendState(ctx, spaceRoom, event.StateSpaceChild, mgmtRoom.String(), &event.Content{
+
+	_, err := c.bridge.Bot.SendState(ctx, spaceRoom, event.StateSpaceChild, mgmtRoom.String(), &event.Content{
 		Parsed: &event.SpaceChildEventContent{
 			Via: []string{c.bridge.Matrix.ServerName()},
 		},
@@ -198,4 +222,22 @@ func (c *MyConnector) ensureManagementRoomInSpace(login *bridgev2.UserLogin) {
 		return
 	}
 	log.Debug().Stringer("space_room", spaceRoom).Stringer("mgmt_room", mgmtRoom).Msg("Added management room to space")
+}
+
+func (c *MyConnector) addExistingPortalsToSpace(ctx context.Context, login *bridgev2.UserLogin) {
+	log := zerolog.Ctx(ctx)
+	userPortals, err := c.bridge.DB.UserPortal.GetAllForLogin(ctx, login.UserLogin)
+	if err != nil {
+		log.Err(err).Msg("Failed to list portals for space sync")
+		return
+	}
+	for _, userPortal := range userPortals {
+		portal, err := c.bridge.GetExistingPortalByKey(ctx, userPortal.Portal)
+		if err != nil || portal == nil {
+			continue
+		}
+		if err := login.AddPortalToSpace(ctx, portal, userPortal.CopyWithoutValues()); err != nil {
+			log.Err(err).Msg("Failed to add portal to space")
+		}
+	}
 }
