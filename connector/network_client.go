@@ -117,6 +117,9 @@ func (nc *MyNetworkClient) requestBookmarks() error {
 	if nc.xmppClient == nil {
 		return fmt.Errorf("XMPP client not connected")
 	}
+	if err := nc.requestBookmarks2(); err != nil {
+		nc.log.Err(err).Msg("Failed to send bookmarks2 request")
+	}
 	bookmarksIq, _ := stanza.NewIQ(stanza.Attrs{
 		Type: stanza.IQTypeGet,
 		Id:   fmt.Sprintf("bookmarks_%d", time.Now().UnixNano()),
@@ -124,6 +127,47 @@ func (nc *MyNetworkClient) requestBookmarks() error {
 	bookmarksIq.Payload = &PrivateBookmarkQuery{Storage: &BookmarkStorage{}}
 	if err := nc.xmppClient.Send(bookmarksIq); err != nil {
 		return err
+	}
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("id", bookmarksIq.Id).
+			Msg("Sent private bookmarks request")
+	}
+	return nil
+}
+
+func (nc *MyNetworkClient) requestBookmarks2() error {
+	if nc.xmppClient == nil {
+		return fmt.Errorf("XMPP client not connected")
+	}
+	remote := ""
+	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
+		remote = meta.RemoteUserID
+	}
+	if remote == "" {
+		return fmt.Errorf("remote user id missing")
+	}
+	bare := strings.Split(remote, "/")[0]
+	if bare == "" {
+		return fmt.Errorf("remote user id missing bare jid")
+	}
+	bookmarksIq, _ := stanza.NewIQ(stanza.Attrs{
+		Type: stanza.IQTypeGet,
+		Id:   fmt.Sprintf("bookmarks2_%d", time.Now().UnixNano()),
+		To:   bare,
+	})
+	bookmarksIq.Payload = &stanza.PubSubGeneric{
+		Items: &stanza.Items{Node: NSBookmarks2},
+	}
+	if err := nc.xmppClient.Send(bookmarksIq); err != nil {
+		return err
+	}
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("id", bookmarksIq.Id).
+			Str("to", bare).
+			Str("node", NSBookmarks2).
+			Msg("Sent bookmarks2 request")
 	}
 	return nil
 }
@@ -166,6 +210,9 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 			historyDisabled = true
 		}
 	}
+	maxChars, maxCharsSet := history.MaxChars.Get()
+	maxStanzas, maxStanzasSet := history.MaxStanzas.Get()
+	seconds, secondsSet := history.Seconds.Get()
 	pres.Extensions = append(pres.Extensions, stanza.MucPresence{
 		Password: password,
 		History:  history,
@@ -180,6 +227,13 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 			Str("nick", nickname).
 			Bool("history_disabled", historyDisabled).
 			Time("history_since", history.Since).
+			Int("history_maxchars", maxChars).
+			Bool("history_maxchars_set", maxCharsSet).
+			Int("history_maxstanzas", maxStanzas).
+			Bool("history_maxstanzas_set", maxStanzasSet).
+			Int("history_seconds", seconds).
+			Bool("history_seconds_set", secondsSet).
+			Bool("has_password", password != "").
 			Msg("Joining MUC")
 	}
 	if nc.mucRooms != nil {
@@ -244,11 +298,10 @@ func (nc *MyNetworkClient) scheduleMUCHistoryFallback(roomJID string, start time
 		return
 	}
 	history := stanza.History{}
-	if !start.IsZero() {
-		history.Since = start
-	} else {
-		history.MaxStanzas = stanza.NewNullableInt(200)
+	if start.IsZero() {
+		start = time.Unix(0, 0)
 	}
+	history.Since = start
 	nc.mucHistoryMu.Lock()
 	if nc.mucHistoryRequests == nil {
 		nc.mucHistoryRequests = map[string]stanza.History{}
@@ -262,7 +315,70 @@ func (nc *MyNetworkClient) scheduleMUCHistoryFallback(roomJID string, start time
 		nc.log.Debug().
 			Str("room_jid", roomJID).
 			Time("since", history.Since).
+			Bool("since_epoch", history.Since.Equal(time.Unix(0, 0))).
 			Msg("Scheduled MUC history fallback on join")
+	}
+}
+
+func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference, source string) {
+	if len(confs) == 0 {
+		return
+	}
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().Str("source", source).Int("items", len(confs)).Msg("Processing bookmarks")
+	}
+	for _, conf := range confs {
+		roomJID := strings.TrimSpace(conf.JID)
+		if roomJID == "" {
+			continue
+		}
+		if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().
+				Str("source", source).
+				Str("room_jid", roomJID).
+				Str("autojoin", conf.Autojoin).
+				Str("nick", strings.TrimSpace(conf.Nick)).
+				Msg("Found bookmarked room")
+		}
+		if nc.bookmarkedRooms != nil {
+			nc.bookmarkedRooms[roomJID] = true
+		}
+		name := conf.Name
+		if name == "" {
+			name = roomJID
+		}
+
+		portalID := MakePortalID(roomJID)
+		resync := &simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type:         bridgev2.RemoteEventChatResync,
+				PortalKey:    networkid.PortalKey{ID: portalID},
+				CreatePortal: true,
+				Timestamp:    time.Now(),
+			},
+			ChatInfo: &bridgev2.ChatInfo{
+				Name: &name,
+				Type: ptr.Ptr(database.RoomTypeDefault),
+			},
+		}
+		nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
+		nc.bridge.QueueRemoteEvent(nc.login, resync)
+		nc.recordMUCBookmarkPortal(string(portalID))
+
+		nick := strings.TrimSpace(conf.Nick)
+		if nick == "" {
+			nick = nc.defaultMUCNick()
+		}
+		start := time.Time{}
+		if nc.fullSyncRequested {
+			if nc.fullSyncUseStart {
+				start = nc.fullSyncStart
+			}
+		} else {
+			start = time.Now().Add(-defaultMAMLookback)
+		}
+		nc.scheduleMUCBackfill(roomJID, start)
+		nc.joinMUC(roomJID, nick, conf.Password)
 	}
 }
 
@@ -846,53 +962,8 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 		case *stanza.Roster:
 			nc.log.Debug().Msg("Received roster result without items")
 		case *BookmarkStorage:
-			nc.log.Info().Int("items", len(payload.Conferences)).Msg("Received bookmarks")
-			for _, conf := range payload.Conferences {
-				roomJID := strings.TrimSpace(conf.JID)
-				if roomJID == "" {
-					continue
-				}
-				if nc.bookmarkedRooms != nil {
-					nc.bookmarkedRooms[roomJID] = true
-				}
-				name := conf.Name
-				if name == "" {
-					name = roomJID
-				}
-
-				portalID := MakePortalID(roomJID)
-				resync := &simplevent.ChatResync{
-					EventMeta: simplevent.EventMeta{
-						Type:         bridgev2.RemoteEventChatResync,
-						PortalKey:    networkid.PortalKey{ID: portalID},
-						CreatePortal: true,
-						Timestamp:    time.Now(),
-					},
-					ChatInfo: &bridgev2.ChatInfo{
-						Name: &name,
-						Type: ptr.Ptr(database.RoomTypeDefault),
-					},
-				}
-				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
-				nc.bridge.QueueRemoteEvent(nc.login, resync)
-				nc.recordMUCBookmarkPortal(string(portalID))
-				nc.recordMUCBookmarkPortal(string(portalID))
-
-				nick := strings.TrimSpace(conf.Nick)
-				if nick == "" {
-					nick = nc.defaultMUCNick()
-				}
-				start := time.Time{}
-				if nc.fullSyncRequested {
-					if nc.fullSyncUseStart {
-						start = nc.fullSyncStart
-					}
-				} else {
-					start = time.Now().Add(-defaultMAMLookback)
-				}
-				nc.scheduleMUCBackfill(roomJID, start)
-				nc.joinMUC(roomJID, nick, conf.Password)
-			}
+			nc.log.Info().Int("items", len(payload.Conferences)).Str("from", string(iq.From)).Msg("Received bookmarks")
+			nc.handleBookmarkConferences(payload.Conferences, "storage")
 			if nc.fullSyncBookmarksPending {
 				nc.fullSyncBookmarksPending = false
 				nc.maybeClearFullSync()
@@ -902,56 +973,90 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				nc.log.Info().Msg("Received empty bookmark storage")
 				return
 			}
-			nc.log.Info().Int("items", len(payload.Storage.Conferences)).Msg("Received bookmarks")
-			for _, conf := range payload.Storage.Conferences {
-				roomJID := strings.TrimSpace(conf.JID)
-				if roomJID == "" {
-					continue
-				}
-				if nc.bookmarkedRooms != nil {
-					nc.bookmarkedRooms[roomJID] = true
-				}
-				name := conf.Name
-				if name == "" {
-					name = roomJID
-				}
-
-				portalID := MakePortalID(roomJID)
-				resync := &simplevent.ChatResync{
-					EventMeta: simplevent.EventMeta{
-						Type:         bridgev2.RemoteEventChatResync,
-						PortalKey:    networkid.PortalKey{ID: portalID},
-						CreatePortal: true,
-						Timestamp:    time.Now(),
-					},
-					ChatInfo: &bridgev2.ChatInfo{
-						Name: &name,
-						Type: ptr.Ptr(database.RoomTypeDefault),
-					},
-				}
-				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
-				nc.bridge.QueueRemoteEvent(nc.login, resync)
-
-				nick := strings.TrimSpace(conf.Nick)
-				if nick == "" {
-					nick = nc.defaultMUCNick()
-				}
-				start := time.Time{}
-				if nc.fullSyncRequested {
-					if nc.fullSyncUseStart {
-						start = nc.fullSyncStart
-					}
-				} else {
-					start = time.Now().Add(-defaultMAMLookback)
-				}
-				nc.scheduleMUCBackfill(roomJID, start)
-				nc.joinMUC(roomJID, nick, conf.Password)
-			}
+			nc.log.Info().Int("items", len(payload.Storage.Conferences)).Str("from", string(iq.From)).Msg("Received bookmarks")
+			nc.handleBookmarkConferences(payload.Storage.Conferences, "private")
 			if nc.fullSyncBookmarksPending {
 				nc.fullSyncBookmarksPending = false
 				nc.maybeClearFullSync()
 			}
+		case *stanza.PubSubGeneric:
+			if payload.Items == nil || payload.Items.Node != NSBookmarks2 {
+				return
+			}
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("from", string(iq.From)).
+					Str("id", iq.Id).
+					Str("type", string(iq.Type)).
+					Str("node", payload.Items.Node).
+					Int("items", len(payload.Items.List)).
+					Msg("Received bookmarks2 pubsub items")
+			}
+			if len(payload.Items.List) == 0 {
+				nc.log.Info().Msg("Received empty bookmarks2 list")
+				return
+			}
+			confs := make([]BookmarkConference, 0, len(payload.Items.List))
+			for _, item := range payload.Items.List {
+				if item.Any == nil {
+					continue
+				}
+				if item.Any.XMLName.Space == NSBookmarks2 && item.Any.XMLName.Local == "conference" {
+					data, err := xml.Marshal(item.Any)
+					if err != nil {
+						nc.log.Err(err).Msg("Failed to marshal bookmarks2 item")
+						continue
+					}
+					if nc.log.GetLevel() <= zerolog.DebugLevel {
+						nc.log.Debug().
+							Str("item_id", item.Id).
+							Str("payload", string(data)).
+							Msg("Parsed bookmarks2 conference item")
+					}
+					var conf BookmarkConference2
+					if err := xml.Unmarshal(data, &conf); err != nil {
+						nc.log.Err(err).Msg("Failed to parse bookmarks2 item")
+						continue
+					}
+					confs = append(confs, BookmarkConference{
+						JID:      conf.JID,
+						Name:     conf.Name,
+						Autojoin: conf.Autojoin,
+						Nick:     conf.Nick,
+						Password: conf.Password,
+					})
+					continue
+				}
+				if item.Any.XMLName.Space == "storage:bookmarks" && item.Any.XMLName.Local == "storage" {
+					data, err := xml.Marshal(item.Any)
+					if err != nil {
+						nc.log.Err(err).Msg("Failed to marshal bookmarks conversion item")
+						continue
+					}
+					if nc.log.GetLevel() <= zerolog.DebugLevel {
+						nc.log.Debug().
+							Str("item_id", item.Id).
+							Str("payload", string(data)).
+							Msg("Parsed bookmarks conversion item")
+					}
+					var storage BookmarkStorage
+					if err := xml.Unmarshal(data, &storage); err != nil {
+						nc.log.Err(err).Msg("Failed to parse bookmarks conversion item")
+						continue
+					}
+					confs = append(confs, storage.Conferences...)
+				}
+			}
+			nc.log.Info().Int("items", len(confs)).Msg("Received bookmarks2 list")
+			nc.handleBookmarkConferences(confs, "bookmarks2")
 		case *stanza.DiscoItems:
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("from", string(iq.From)).
+					Str("id", iq.Id).
+					Int("items", len(payload.Items)).
+					Msg("Received disco items")
+			}
 			if iq.From != "" && nc.mucServices != nil && nc.mucServices[iq.From] {
 				if !nc.fullSyncRequested {
 					return

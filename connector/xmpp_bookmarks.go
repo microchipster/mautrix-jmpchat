@@ -7,6 +7,11 @@ import (
 	"gosrc.io/xmpp/stanza"
 )
 
+const (
+	NSBookmarks2          = "urn:xmpp:bookmarks:1"
+	NSBookmarksConversion = "urn:xmpp:bookmarks-conversion:0"
+)
+
 // BookmarkStorage implements XEP-0048 (Bookmarks).
 // It is used to discover group chats on login.
 type BookmarkStorage struct {
@@ -42,6 +47,16 @@ type BookmarkConference struct {
 	Autojoin string `xml:"autojoin,attr,omitempty"`
 	Nick     string `xml:"nick,omitempty"`
 	Password string `xml:"password,omitempty"`
+}
+
+// BookmarkConference2 implements XEP-0402 (Bookmarks 2).
+type BookmarkConference2 struct {
+	XMLName  xml.Name `xml:"urn:xmpp:bookmarks:1 conference"`
+	JID      string   `xml:"jid,attr"`
+	Name     string   `xml:"name,attr,omitempty"`
+	Autojoin string   `xml:"autojoin,attr,omitempty"`
+	Nick     string   `xml:"nick,omitempty"`
+	Password string   `xml:"password,omitempty"`
 }
 
 func (bc BookmarkConference) AutojoinEnabled() bool {
