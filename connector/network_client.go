@@ -30,13 +30,14 @@ type CarbonsEnable struct {
 }
 
 type syncStats struct {
-	dmPortals          map[string]bool
-	mucBookmarkPortals map[string]bool
-	mucDiscoPortals    map[string]bool
-	mamDMBackfills     int
-	mamMUCBackfills    int
-	lastErrors         []string
-	errorsTruncated    bool
+	dmPortals           map[string]bool
+	mucBookmarkPortals  map[string]bool
+	mucDiscoPortals     map[string]bool
+	mamDMBackfills      int
+	mamMUCBackfills     int
+	mucHistoryFallbacks int
+	lastErrors          []string
+	errorsTruncated     bool
 }
 
 func (c *CarbonsEnable) Namespace() string {
@@ -70,6 +71,8 @@ type MyNetworkClient struct {
 	mucBackfillMu                sync.Mutex
 	mucServices                  map[string]bool
 	mucServiceDiscoRequested     map[string]bool
+	mucHistoryRequests           map[string]stanza.History
+	mucHistoryMu                 sync.Mutex
 	discoFeatures                map[string]map[string]bool
 	discoMu                      sync.Mutex
 	mamSupportMu                 sync.Mutex
@@ -151,11 +154,21 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	fullJID := roomJID + "/" + nickname
 
 	pres := stanza.NewPresence(stanza.Attrs{To: fullJID})
+	history := stanza.History{MaxChars: stanza.NewNullableInt(0)}
+	if fallback, ok := nc.popMUCHistoryRequest(roomJID); ok {
+		history = fallback
+	}
+	historyDisabled := false
+	if maxChars, ok := history.MaxChars.Get(); ok && maxChars == 0 {
+		_, maxStanzasSet := history.MaxStanzas.Get()
+		_, secondsSet := history.Seconds.Get()
+		if history.Since.IsZero() && !maxStanzasSet && !secondsSet {
+			historyDisabled = true
+		}
+	}
 	pres.Extensions = append(pres.Extensions, stanza.MucPresence{
 		Password: password,
-		History: stanza.History{
-			MaxChars: stanza.NewNullableInt(0),
-		},
+		History:  history,
 	})
 	if nc.mucNick == nil {
 		nc.mucNick = map[string]string{}
@@ -165,8 +178,9 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 		nc.log.Debug().
 			Str("room_jid", roomJID).
 			Str("nick", nickname).
-			Bool("history_disabled", true).
-			Msg("Joining MUC with history disabled to rely on MAM")
+			Bool("history_disabled", historyDisabled).
+			Time("history_since", history.Since).
+			Msg("Joining MUC")
 	}
 	if nc.mucRooms != nil {
 		nc.mucRooms[roomJID] = true
@@ -181,7 +195,20 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 }
 
 func (nc *MyNetworkClient) scheduleMUCBackfill(roomJID string, start time.Time) {
-	if !nc.ensureMAMSupportForMUC(roomJID) {
+	supported, known := nc.mamSupportedForMUCService(roomJID)
+	if !known {
+		nc.scheduleMUCHistoryFallback(roomJID, start)
+		if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().
+				Str("room_jid", roomJID).
+				Time("start", start).
+				Msg("MUC MAM support unknown; using history fallback")
+		}
+		return
+	}
+	if !supported {
+		_ = nc.ensureMAMSupportForMUC(roomJID)
+		nc.scheduleMUCHistoryFallback(roomJID, start)
 		return
 	}
 	nc.mucBackfillMu.Lock()
@@ -210,6 +237,46 @@ func (nc *MyNetworkClient) popMUCBackfill(roomJID string) (time.Time, bool) {
 		delete(nc.mucBackfillPending, roomJID)
 	}
 	return start, ok
+}
+
+func (nc *MyNetworkClient) scheduleMUCHistoryFallback(roomJID string, start time.Time) {
+	if roomJID == "" {
+		return
+	}
+	history := stanza.History{}
+	if !start.IsZero() {
+		history.Since = start
+	} else {
+		history.MaxStanzas = stanza.NewNullableInt(200)
+	}
+	nc.mucHistoryMu.Lock()
+	if nc.mucHistoryRequests == nil {
+		nc.mucHistoryRequests = map[string]stanza.History{}
+	}
+	nc.mucHistoryRequests[roomJID] = history
+	nc.mucHistoryMu.Unlock()
+	nc.syncStatsMu.Lock()
+	nc.syncStats.mucHistoryFallbacks++
+	nc.syncStatsMu.Unlock()
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("room_jid", roomJID).
+			Time("since", history.Since).
+			Msg("Scheduled MUC history fallback on join")
+	}
+}
+
+func (nc *MyNetworkClient) popMUCHistoryRequest(roomJID string) (stanza.History, bool) {
+	nc.mucHistoryMu.Lock()
+	defer nc.mucHistoryMu.Unlock()
+	if nc.mucHistoryRequests == nil {
+		return stanza.History{}, false
+	}
+	h, ok := nc.mucHistoryRequests[roomJID]
+	if ok {
+		delete(nc.mucHistoryRequests, roomJID)
+	}
+	return h, ok
 }
 
 func (nc *MyNetworkClient) resetSyncStats() {
@@ -308,6 +375,7 @@ func (nc *MyNetworkClient) syncSummaryText(status string) string {
 	mucDiscoCount := len(nc.syncStats.mucDiscoPortals)
 	mamDM := nc.syncStats.mamDMBackfills
 	mamMUC := nc.syncStats.mamMUCBackfills
+	mucHistoryFallbacks := nc.syncStats.mucHistoryFallbacks
 	errors := append([]string{}, nc.syncStats.lastErrors...)
 	errorsTruncated := nc.syncStats.errorsTruncated
 	nc.syncStatsMu.Unlock()
@@ -318,6 +386,7 @@ func (nc *MyNetworkClient) syncSummaryText(status string) string {
 		fmt.Sprintf("Group chats (bookmarks): %d", mucBookmarkCount),
 		fmt.Sprintf("Group chats (discovery): %d", mucDiscoCount),
 		fmt.Sprintf("MAM backfills started: dm=%d muc=%d", mamDM, mamMUC),
+		fmt.Sprintf("MUC history fallbacks: %d", mucHistoryFallbacks),
 	}
 	if len(errors) > 0 {
 		lines = append(lines, "Errors:")
@@ -463,6 +532,9 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 	if nc.mucServiceDiscoRequested == nil {
 		nc.mucServiceDiscoRequested = map[string]bool{}
+	}
+	if nc.mucHistoryRequests == nil {
+		nc.mucHistoryRequests = map[string]stanza.History{}
 	}
 	if nc.mamMUCUnsupportedNotified == nil {
 		nc.mamMUCUnsupportedNotified = map[string]bool{}
