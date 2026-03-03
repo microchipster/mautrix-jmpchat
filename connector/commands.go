@@ -8,10 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -191,6 +193,105 @@ var CommandListUsers = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "List users you have DMs with",
+	},
+	RequiresLogin: true,
+}
+
+var CommandJoinRoom = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		roomJID, full, lookback, err := parseJoinRoomArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		name := roomJID
+		portalID := MakePortalID(roomJID)
+		resync := &simplevent.ChatResync{
+			EventMeta: simplevent.EventMeta{
+				Type:         bridgev2.RemoteEventChatResync,
+				PortalKey:    networkid.PortalKey{ID: portalID},
+				CreatePortal: true,
+				Timestamp:    time.Now(),
+			},
+			ChatInfo: &bridgev2.ChatInfo{
+				Name: &name,
+				Type: ptr.Ptr(database.RoomTypeDefault),
+			},
+		}
+		client.bridge.QueueRemoteEvent(login, resync)
+		start := time.Now().Add(-lookback)
+		if full {
+			start = time.Time{}
+		}
+		client.scheduleMUCBackfill(roomJID, start)
+		client.joinMUC(roomJID, "", "")
+		ce.Reply("Joining %s and starting backfill", roomJID)
+	},
+	Name: "join-room",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Join a room by JID and backfill (use: join-room <room_jid> [full|<duration>])",
+	},
+	RequiresLogin: true,
+}
+
+var CommandListDiscoveredRooms = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		bookmarks, disco, joined, services := client.discoveredRoomLists()
+		all := map[string]bool{}
+		for _, jid := range bookmarks {
+			all[jid] = true
+		}
+		for _, jid := range disco {
+			all[jid] = true
+		}
+		for _, jid := range joined {
+			all[jid] = true
+		}
+		allList := make([]string, 0, len(all))
+		for jid := range all {
+			allList = append(allList, jid)
+		}
+		sort.Strings(allList)
+		format := func(label string, list []string) string {
+			if len(list) == 0 {
+				return fmt.Sprintf("%s: (none)", label)
+			}
+			return fmt.Sprintf("%s (%d):\n%s", label, len(list), strings.Join(list, "\n"))
+		}
+		parts := []string{
+			format("Bookmarked rooms", bookmarks),
+			format("Discovered rooms", disco),
+			format("Joined rooms", joined),
+			format("MUC services", services),
+			format("All rooms", allList),
+		}
+		ce.Reply(strings.Join(parts, "\n\n"))
+	},
+	Name: "list-rooms",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List rooms discovered via bookmarks, disco, or joins",
 	},
 	RequiresLogin: true,
 }
@@ -418,6 +519,31 @@ func parseLookbackDuration(arg string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(arg)
+}
+
+func parseJoinRoomArgs(args []string) (string, bool, time.Duration, error) {
+	if len(args) == 0 {
+		return "", false, 0, fmt.Errorf("Usage: join-room <room_jid> [full|<duration>]")
+	}
+	roomJID := strings.TrimSpace(args[0])
+	if roomJID == "" || !strings.Contains(roomJID, "@") {
+		return "", false, 0, fmt.Errorf("Invalid room JID")
+	}
+	if len(args) == 1 {
+		return roomJID, false, defaultMAMLookback, nil
+	}
+	if len(args) > 2 {
+		return "", false, 0, fmt.Errorf("Usage: join-room <room_jid> [full|<duration>]")
+	}
+	arg := strings.ToLower(strings.TrimSpace(args[1]))
+	if arg == "full" {
+		return roomJID, true, 0, nil
+	}
+	lookback, err := parseLookbackDuration(arg)
+	if err != nil {
+		return "", false, 0, fmt.Errorf("Invalid duration %q (use 7d, 30d, 12h, or full)", arg)
+	}
+	return roomJID, false, lookback, nil
 }
 
 func parseLogoutArgs(args []string) (string, bool, error) {

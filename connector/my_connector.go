@@ -46,6 +46,8 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandListLogins)
 		proc.AddHandler(CommandSetName)
+		proc.AddHandler(CommandJoinRoom)
+		proc.AddHandler(CommandListDiscoveredRooms)
 		proc.AddHandler(CommandDeleteAllPortals)
 		proc.AddHandler(CommandLogout)
 		c.log.Info().Msg("Registered sync command")

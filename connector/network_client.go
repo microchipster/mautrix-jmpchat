@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -606,6 +607,34 @@ func (nc *MyNetworkClient) recordDiscoFeatures(from string, features []stanza.Fe
 	}
 	nc.discoFeatures[from] = set
 	nc.discoMu.Unlock()
+}
+
+func (nc *MyNetworkClient) discoveredRoomLists() (bookmarks []string, disco []string, joined []string, services []string) {
+	if nc.bookmarkedRooms != nil {
+		for jid := range nc.bookmarkedRooms {
+			bookmarks = append(bookmarks, jid)
+		}
+	}
+	if nc.mucRooms != nil {
+		for jid := range nc.mucRooms {
+			joined = append(joined, jid)
+		}
+	}
+	if nc.mucServices != nil {
+		for service := range nc.mucServices {
+			services = append(services, service)
+		}
+	}
+	nc.syncStatsMu.Lock()
+	for portalID := range nc.syncStats.mucDiscoPortals {
+		disco = append(disco, portalID)
+	}
+	nc.syncStatsMu.Unlock()
+	sort.Strings(bookmarks)
+	sort.Strings(disco)
+	sort.Strings(joined)
+	sort.Strings(services)
+	return bookmarks, disco, joined, services
 }
 
 func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
