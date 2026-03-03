@@ -67,11 +67,13 @@ type MyNetworkClient struct {
 	mucRooms                     map[string]bool
 	mucOccupants                 map[string]map[string]bool
 	mucNick                      map[string]string
+	mucPasswords                 map[string]string
 	mucBackfillPending           map[string]time.Time
 	mucBackfillMu                sync.Mutex
 	mucServices                  map[string]bool
 	mucServiceDiscoRequested     map[string]bool
 	mucHistoryRequests           map[string]stanza.History
+	mucHistoryFallbackAttempts   map[string]bool
 	mucHistoryMu                 sync.Mutex
 	discoFeatures                map[string]map[string]bool
 	discoMu                      sync.Mutex
@@ -221,6 +223,10 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 		nc.mucNick = map[string]string{}
 	}
 	nc.mucNick[roomJID] = nickname
+	if nc.mucPasswords == nil {
+		nc.mucPasswords = map[string]string{}
+	}
+	nc.mucPasswords[roomJID] = password
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().
 			Str("room_jid", roomJID).
@@ -318,6 +324,57 @@ func (nc *MyNetworkClient) scheduleMUCHistoryFallback(roomJID string, start time
 			Bool("since_epoch", history.Since.Equal(time.Unix(0, 0))).
 			Msg("Scheduled MUC history fallback on join")
 	}
+}
+
+func (nc *MyNetworkClient) maybeFallbackToMUCHistory(roomJID string, start time.Time, fin *MAMFin) {
+	if roomJID == "" || !start.IsZero() || fin == nil || !fin.Complete {
+		return
+	}
+	count := -1
+	first := ""
+	if fin.Set != nil {
+		if fin.Set.Count != nil {
+			count = *fin.Set.Count
+		}
+		if fin.Set.First != nil {
+			first = fin.Set.First.Content
+		}
+	}
+	if count > 0 || first != "" {
+		return
+	}
+	nc.mucHistoryMu.Lock()
+	if nc.mucHistoryFallbackAttempts == nil {
+		nc.mucHistoryFallbackAttempts = map[string]bool{}
+	}
+	if nc.mucHistoryFallbackAttempts[roomJID] {
+		nc.mucHistoryMu.Unlock()
+		return
+	}
+	nc.mucHistoryFallbackAttempts[roomJID] = true
+	nc.mucHistoryMu.Unlock()
+
+	nick := ""
+	if nc.mucNick != nil {
+		nick = nc.mucNick[roomJID]
+	}
+	password := ""
+	if nc.mucPasswords != nil {
+		password = nc.mucPasswords[roomJID]
+	}
+	if nick == "" {
+		nick = nc.defaultMUCNick()
+	}
+
+	nc.log.Warn().
+		Str("room_jid", roomJID).
+		Bool("start_zero", start.IsZero()).
+		Int("count", count).
+		Str("first", first).
+		Msg("MAM returned no results; rejoining with MUC history fallback")
+	// schedule history before rejoin so joinMUC uses history fallback
+	nc.scheduleMUCHistoryFallback(roomJID, start)
+	nc.joinMUC(roomJID, nick, password)
 }
 
 func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference, source string) {

@@ -243,6 +243,9 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 					Int("page", page).
 					Msg("MAM backfill ended: missing result set or first")
 			}
+			if withJID == "" {
+				nc.maybeFallbackToMUCHistory(toJID, start, fin)
+			}
 			break
 		}
 		if fin.Complete {
@@ -252,6 +255,9 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 					Str("with_jid", withJID).
 					Int("page", page).
 					Msg("MAM backfill complete")
+			}
+			if withJID == "" {
+				nc.maybeFallbackToMUCHistory(toJID, start, fin)
 			}
 			break
 		}
