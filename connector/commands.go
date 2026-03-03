@@ -214,8 +214,17 @@ var CommandJoinRoom = &commands.FullHandler{
 			ce.Reply("%v", err)
 			return
 		}
+		if ce.Log != nil {
+			logJIDNormalization(*ce.Log, "join_room", roomJID)
+		}
 		name := roomJID
 		portalID := MakePortalID(roomJID)
+		if ce.Log != nil {
+			ce.Log.Debug().
+				Str("raw_jid", roomJID).
+				Str("portal_id", string(portalID)).
+				Msg("Resolved portal ID for join-room")
+		}
 		resync := &simplevent.ChatResync{
 			EventMeta: simplevent.EventMeta{
 				Type:         bridgev2.RemoteEventChatResync,
@@ -240,7 +249,7 @@ var CommandJoinRoom = &commands.FullHandler{
 	Name: "join-room",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Join a room by JID and backfill (use: join-room <room_jid> [full|<duration>])",
+		Description: "Join a room by JID and backfill (use: join-room <room_jid> [full|<duration>]). Example: join-room +15550102100,+15550102200,+15550102300@cheogram.com",
 	},
 	RequiresLogin: true,
 }
@@ -528,6 +537,9 @@ func parseJoinRoomArgs(args []string) (string, bool, time.Duration, error) {
 	roomJID := strings.TrimSpace(args[0])
 	if roomJID == "" || !strings.Contains(roomJID, "@") {
 		return "", false, 0, fmt.Errorf("Invalid room JID")
+	}
+	if strings.Contains(roomJID, " ") {
+		return "", false, 0, fmt.Errorf("Invalid room JID (contains spaces)")
 	}
 	if len(args) == 1 {
 		return roomJID, false, defaultMAMLookback, nil

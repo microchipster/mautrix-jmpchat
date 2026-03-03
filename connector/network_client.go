@@ -399,6 +399,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		if roomJID == "" {
 			continue
 		}
+		logJIDNormalization(nc.log, "bookmark_room", roomJID)
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().
 				Str("source", source).
@@ -416,6 +417,12 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		}
 
 		portalID := MakePortalID(roomJID)
+		if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().
+				Str("raw_jid", roomJID).
+				Str("portal_id", string(portalID)).
+				Msg("Resolved portal ID for bookmark")
+		}
 		resync := &simplevent.ChatResync{
 			EventMeta: simplevent.EventMeta{
 				Type:         bridgev2.RemoteEventChatResync,
@@ -588,6 +595,19 @@ func jidDomain(jid string) string {
 		return parts[1]
 	}
 	return bare
+}
+
+func logJIDNormalization(log zerolog.Logger, label string, raw string) {
+	if log.GetLevel() > zerolog.DebugLevel {
+		return
+	}
+	log.Debug().
+		Str("label", label).
+		Str("raw", raw).
+		Str("escaped", EscapeJID(raw)).
+		Str("unescaped", UnescapeJID(EscapeJID(raw))).
+		Str("domain", jidDomain(raw)).
+		Msg("JID normalization")
 }
 
 func (nc *MyNetworkClient) recordDiscoFeatures(from string, features []stanza.Feature) {
@@ -1072,6 +1092,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if bareJID == "" {
 					continue
 				}
+				logJIDNormalization(nc.log, "roster_item", bareJID)
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
 						Str("jid", bareJID).
@@ -1095,6 +1116,12 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					name = bareJID
 				}
 				portalID := MakePortalID(bareJID)
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("raw_jid", bareJID).
+						Str("portal_id", string(portalID)).
+						Msg("Resolved portal ID for roster item")
+				}
 				resync := &simplevent.ChatResync{
 					EventMeta: simplevent.EventMeta{
 						Type:         bridgev2.RemoteEventChatResync,
@@ -1239,10 +1266,17 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					if roomJID == "" {
 						continue
 					}
+					logJIDNormalization(nc.log, "disco_room", roomJID)
 					if nc.bookmarkedRooms != nil && nc.bookmarkedRooms[roomJID] {
 						continue
 					}
 					portalID := MakePortalID(roomJID)
+					if nc.log.GetLevel() <= zerolog.DebugLevel {
+						nc.log.Debug().
+							Str("raw_jid", roomJID).
+							Str("portal_id", string(portalID)).
+							Msg("Resolved portal ID for disco room")
+					}
 					resync := &simplevent.ChatResync{
 						EventMeta: simplevent.EventMeta{
 							Type:         bridgev2.RemoteEventChatResync,
@@ -1486,6 +1520,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	if bareFromJid == "" {
 		return
 	}
+	logJIDNormalization(nc.log, "incoming_from", bareFromJid)
 
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
 	var delayStamp string
@@ -1517,6 +1552,13 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	}
 
 	portalID := MakePortalID(bareFromJid)
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("raw_jid", bareFromJid).
+			Str("portal_id", string(portalID)).
+			Str("escaped", EscapeJID(bareFromJid)).
+			Msg("Resolved portal ID")
+	}
 
 	var senderID string
 	var roomType *database.RoomType
@@ -1535,6 +1577,18 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			// For MUCs, include the room and occupant nickname for uniqueness
 			senderID = fromJidStr
 		}
+		if prefJID, stripped, ok := extractPrefixedSender(msg.Body); ok {
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("room_jid", bareFromJid).
+					Str("prefixed_sender", prefJID).
+					Str("body_before", msg.Body).
+					Str("body_after", stripped).
+					Msg("Using prefixed sender JID from message body")
+			}
+			senderID = prefJID
+			msg.Body = stripped
+		}
 		roomType = ptr.Ptr(database.RoomTypeDefault)
 	} else {
 		// DMs
@@ -1551,6 +1605,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	if isMUC {
 		msg.Body = stripMUCSenderPrefix(msg.Body, senderID)
 	}
+	logJIDNormalization(nc.log, "message_sender", senderID)
 	if isMUC && !fromMAM {
 		if nc.mucRooms == nil || !nc.mucRooms[bareFromJid] {
 			start := time.Now().Add(-defaultMAMLookback)
@@ -1680,6 +1735,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	nc.log.Debug().
 		Str("portal_id", string(portalID)).
 		Str("sender_id", senderID).
+		Str("sender_escaped", EscapeJID(senderID)).
 		Str("message_id", string(evt.ID)).
 		Msg("Queueing incoming XMPP message")
 	nc.bridge.QueueRemoteEvent(nc.login, evt)
@@ -1743,6 +1799,28 @@ func stripMUCSenderPrefix(body string, senderID string) string {
 		}
 	}
 	return body
+}
+
+func extractPrefixedSender(body string) (string, string, bool) {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return "", body, false
+	}
+	start := strings.Index(trimmed, "<xmpp:")
+	if start == -1 {
+		return "", body, false
+	}
+	end := strings.Index(trimmed[start:], ">")
+	if end == -1 {
+		return "", body, false
+	}
+	end = start + end
+	jid := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed[start:end+1], "<xmpp:"), ">"))
+	if jid == "" || !strings.Contains(jid, "@") {
+		return "", body, false
+	}
+	remainder := strings.TrimSpace(trimmed[end+1:])
+	return jid, remainder, true
 }
 
 func (nc *MyNetworkClient) maybeClearFullSync() {

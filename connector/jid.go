@@ -10,12 +10,14 @@ import (
 // since mautrix-go's EncodeUserLocalpart currently leaves '+' unescaped, which Synapse rejects.
 // EncodeUserLocalpart encodes '_' into '__', so we avoid using underscores in our escape sequence.
 func EscapeJID(jid string) string {
-	return strings.ReplaceAll(jid, "+", "=2b")
+	j := strings.ReplaceAll(jid, "+", "=2b")
+	return strings.ReplaceAll(j, ",", "=2c")
 }
 
 // UnescapeJID converts an escaped JID back to its original form.
 func UnescapeJID(escaped string) string {
-	return strings.ReplaceAll(escaped, "=2b", "+")
+	val := strings.ReplaceAll(escaped, "=2b", "+")
+	return strings.ReplaceAll(val, "=2c", ",")
 }
 
 func MakeUserID(jid string) networkid.UserID {
