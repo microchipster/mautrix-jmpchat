@@ -1064,8 +1064,18 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 					continue
 				}
 			}
-			memberMap[MakeUserID(occupant)] = bridgev2.ChatMember{
-				EventSender: bridgev2.EventSender{Sender: MakeUserID(occupant)},
+			occupantBare := strings.SplitN(occupant, "/", 2)[0]
+			memberJID := occupantBare
+			if strings.Contains(occupantBare, ",") && strings.HasSuffix(occupantBare, "@cheogram.com") {
+				parts := strings.SplitN(occupant, "/", 2)
+				if len(parts) == 2 {
+					if isPhoneNick := strings.HasPrefix(parts[1], "+") && !strings.Contains(parts[1], "@"); isPhoneNick {
+						memberJID = parts[1] + "@cheogram.com"
+					}
+				}
+			}
+			memberMap[MakeUserID(memberJID)] = bridgev2.ChatMember{
+				EventSender: bridgev2.EventSender{Sender: MakeUserID(memberJID)},
 				Membership:  event.MembershipJoin,
 			}
 		}
@@ -1542,6 +1552,10 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	logJIDNormalization(nc.log, "incoming_from", bareFromJid)
 
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
+	// Always treat multi-recipient numbers on Cheogram as MUCs even if typed as chat
+	if strings.Contains(bareFromJid, ",") && strings.HasSuffix(bareFromJid, "@cheogram.com") {
+		isMUC = true
+	}
 	var delayStamp string
 	var delay XMPPDelay
 	if msg.Get(&delay) {
@@ -1607,10 +1621,21 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			}
 			senderID = prefJID
 			msg.Body = stripped
+		} else if isMUC {
+			if bodyParts := strings.SplitN(msg.Body, " ", 2); len(bodyParts) == 2 && strings.HasPrefix(bodyParts[0], "+") {
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("room_jid", bareFromJid).
+						Str("phone_prefix", bodyParts[0]).
+						Msg("Using phone number prefix as sender")
+				}
+				senderID = bodyParts[0] + "@cheogram.com"
+				msg.Body = bodyParts[1]
+			}
 		}
 		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
 			remoteBare := strings.SplitN(meta.RemoteUserID, "/", 2)[0]
-			if remoteBare != "" && senderID == remoteBare {
+			if remoteBare != "" && (senderID == remoteBare || senderID == bareFromJid) {
 				isFromMe = true
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
@@ -1620,11 +1645,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				}
 			}
 		}
-		roomType = ptr.Ptr(database.RoomTypeDefault)
 	} else {
 		// DMs
 		senderID = bareFromJid
-		roomType = ptr.Ptr(database.RoomTypeDM)
 	}
 	if isFromMe {
 		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
@@ -1643,6 +1666,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			nc.scheduleMUCBackfill(bareFromJid, start)
 			nc.joinMUC(bareFromJid, "", "")
 		}
+	}
+
+	roomType = ptr.Ptr(database.RoomTypeDefault)
+	if !isMUC {
+		roomType = ptr.Ptr(database.RoomTypeDM)
 	}
 
 	// First send a ChatResync to create or update the portal with correct info
