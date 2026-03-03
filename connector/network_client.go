@@ -718,6 +718,9 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 	client.PostConnectHook = func() error {
 		nc.log.Info().Msg("XMPP connected, running post connect hook")
+		if nc.xmppClient == nil {
+			return fmt.Errorf("XMPP client unavailable in post connect hook")
+		}
 		if !nc.connected {
 			nc.connected = true
 			if nc.connectedCh != nil {
@@ -745,8 +748,19 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 		// 2. Request Server Disco Info
 		if nc.xmppClient.Session != nil {
-			serverDomain := strings.Split(nc.xmppClient.Session.BindJid, "@")[1]
-			serverDomain = strings.Split(serverDomain, "/")[0]
+			bindJid := nc.xmppClient.Session.BindJid
+			serverDomain := ""
+			parts := strings.SplitN(bindJid, "@", 2)
+			if len(parts) == 2 {
+				serverDomain = parts[1]
+			} else {
+				serverDomain = bindJid
+			}
+			serverDomain = strings.SplitN(serverDomain, "/", 2)[0]
+			if serverDomain == "" {
+				nc.log.Warn().Str("bind_jid", bindJid).Msg("Skipping disco: could not parse server domain")
+				return nil
+			}
 			discoIq, _ := stanza.NewIQ(stanza.Attrs{
 				Type: stanza.IQTypeGet,
 				To:   serverDomain,
