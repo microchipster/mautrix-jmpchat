@@ -157,6 +157,13 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	select {
 	case resp := <-ch:
 		if resp.Type != stanza.IQTypeResult {
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().
+					Str("query_id", queryID).
+					Str("type", string(resp.Type)).
+					Interface("payload", resp.Payload).
+					Msg("MAM request returned non-result IQ")
+			}
 			return nil, fmt.Errorf("MAM request failed: %s", resp.Type)
 		}
 		fin, ok := resp.Payload.(*MAMFin)

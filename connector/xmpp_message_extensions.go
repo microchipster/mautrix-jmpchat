@@ -133,6 +133,12 @@ type XMPOccupantID struct {
 	ID      string   `xml:"id,attr,omitempty"`
 }
 
+type XMPPDelay struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:delay delay"`
+	Stamp   string   `xml:"stamp,attr,omitempty"`
+}
+
 type XMPPDelayOld struct {
 	stanza.MsgExtension
 	XMLName  xml.Name `xml:"jabber:x:delay x"`
@@ -169,6 +175,7 @@ func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSOriginID, Local: "origin-id"}, XMPPOriginID{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSStanzaID, Local: "stanza-id"}, XMPPStanzaID{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSOccID, Local: "occupant-id"}, XMPOccupantID{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSDelay, Local: "delay"}, XMPPDelay{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSDelayOld, Local: "x"}, XMPPDelayOld{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSEvent, Local: "x"}, XMPPEvent{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSConf, Local: "x"}, XMPPConference{})

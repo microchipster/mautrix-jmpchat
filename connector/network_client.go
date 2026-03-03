@@ -256,6 +256,15 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 
 func (nc *MyNetworkClient) scheduleMUCBackfill(roomJID string, start time.Time) {
 	supported, known := nc.mamSupportedForMUCService(roomJID)
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("room_jid", roomJID).
+			Str("service", jidDomain(roomJID)).
+			Bool("mam_supported", supported).
+			Bool("mam_known", known).
+			Time("start", start).
+			Msg("Evaluating MUC MAM support")
+	}
 	if !known {
 		nc.scheduleMUCHistoryFallback(roomJID, start)
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -599,6 +608,50 @@ func (nc *MyNetworkClient) recordDiscoFeatures(from string, features []stanza.Fe
 	nc.discoMu.Unlock()
 }
 
+func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
+	if serverDomain == "" || nc.xmppClient == nil {
+		return
+	}
+	candidates := []string{
+		"groups." + serverDomain,
+		"conference." + serverDomain,
+		"muc." + serverDomain,
+		"rooms." + serverDomain,
+		"chat." + serverDomain,
+		serverDomain,
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		infoIq, _ := stanza.NewIQ(stanza.Attrs{
+			Type: stanza.IQTypeGet,
+			To:   candidate,
+			Id:   fmt.Sprintf("disco_info_probe_%d", time.Now().UnixNano()),
+		})
+		infoIq.Payload = &stanza.DiscoInfo{}
+		if err := nc.xmppClient.Send(infoIq); err != nil {
+			nc.log.Err(err).Str("to", candidate).Msg("Failed to probe disco info")
+		} else if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().Str("to", candidate).Msg("Probing disco info")
+		}
+		itemsIq, _ := stanza.NewIQ(stanza.Attrs{
+			Type: stanza.IQTypeGet,
+			To:   candidate,
+			Id:   fmt.Sprintf("disco_items_probe_%d", time.Now().UnixNano()),
+		})
+		itemsIq.Payload = &stanza.DiscoItems{}
+		if err := nc.xmppClient.Send(itemsIq); err != nil {
+			nc.log.Err(err).Str("to", candidate).Msg("Failed to probe disco items")
+		} else if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().Str("to", candidate).Msg("Probing disco items")
+		}
+	}
+}
+
 func (nc *MyNetworkClient) hasDiscoFeature(jid string, feature string) (bool, bool) {
 	if jid == "" || feature == "" {
 		return false, false
@@ -841,6 +894,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			} else {
 				nc.log.Debug().Str("to", serverDomain).Msg("Sent disco items request")
 			}
+			nc.probeMUCServices(serverDomain)
 		}
 
 		// 3. Enable Message Carbons
@@ -989,6 +1043,21 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if bareJID == "" {
 					continue
 				}
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("jid", bareJID).
+						Str("subscription", string(item.Subscription)).
+						Msg("Roster item")
+				}
+				discoIq, _ := stanza.NewIQ(stanza.Attrs{
+					Type: stanza.IQTypeGet,
+					To:   bareJID,
+					Id:   fmt.Sprintf("disco_info_roster_%d", time.Now().UnixNano()),
+				})
+				discoIq.Payload = &stanza.DiscoInfo{}
+				if err := nc.xmppClient.Send(discoIq); err != nil {
+					nc.log.Err(err).Str("to", bareJID).Msg("Failed to send disco info for roster item")
+				}
 				if nc.rosterItems != nil {
 					nc.rosterItems[bareJID] = true
 				}
@@ -1122,16 +1191,20 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 			nc.handleBookmarkConferences(confs, "bookmarks2")
 		case *stanza.DiscoItems:
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				items := make([]string, 0, len(payload.Items))
+				for _, item := range payload.Items {
+					if item.JID != "" {
+						items = append(items, item.JID)
+					}
+				}
 				nc.log.Debug().
 					Str("from", string(iq.From)).
 					Str("id", iq.Id).
 					Int("items", len(payload.Items)).
+					Strs("item_jids", items).
 					Msg("Received disco items")
 			}
 			if iq.From != "" && nc.mucServices != nil && nc.mucServices[iq.From] {
-				if !nc.fullSyncRequested {
-					return
-				}
 				for _, item := range payload.Items {
 					roomJID := strings.TrimSpace(item.JID)
 					if roomJID == "" {
@@ -1156,7 +1229,11 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing discovered groupchat resync")
 					nc.bridge.QueueRemoteEvent(nc.login, resync)
 					nc.recordMUCDiscoPortal(string(portalID))
-					nc.scheduleMUCBackfill(roomJID, nc.fullSyncStart)
+					start := time.Now().Add(-defaultMAMLookback)
+					if nc.fullSyncRequested && nc.fullSyncUseStart {
+						start = nc.fullSyncStart
+					}
+					nc.scheduleMUCBackfill(roomJID, start)
 					nc.joinMUC(roomJID, "", "")
 				}
 				return
@@ -1181,25 +1258,43 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 			}
 		case *stanza.DiscoInfo:
 			nc.recordDiscoFeatures(iq.From, payload.Features)
-			for _, identity := range payload.Identity {
-				if identity.Category == "conference" && iq.From != "" {
-					if nc.mucServices != nil {
-						nc.mucServices[iq.From] = true
+			isMUC := isMUCService(payload)
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				features := make([]string, 0, len(payload.Features))
+				for _, feature := range payload.Features {
+					if feature.Var != "" {
+						features = append(features, feature.Var)
 					}
-					if nc.fullSyncRequested && nc.mucServiceDiscoRequested != nil && !nc.mucServiceDiscoRequested[iq.From] {
-						nc.mucServiceDiscoRequested[iq.From] = true
-						discoIq, _ := stanza.NewIQ(stanza.Attrs{
-							Type: stanza.IQTypeGet,
-							To:   iq.From,
-							Id:   fmt.Sprintf("disco_items_muc_%d", time.Now().UnixNano()),
-						})
-						discoIq.Payload = &stanza.DiscoItems{}
-						if err := nc.xmppClient.Send(discoIq); err != nil {
-							nc.log.Err(err).Str("to", iq.From).Msg("Failed to send MUC disco items request")
-							nc.reportSyncError(fmt.Sprintf("Failed to list rooms for MUC service %s: %v", iq.From, err))
-						}
+				}
+				identities := make([]string, 0, len(payload.Identity))
+				for _, identity := range payload.Identity {
+					identities = append(identities, fmt.Sprintf("%s/%s/%s", identity.Category, identity.Type, identity.Name))
+				}
+				nc.log.Debug().
+					Str("from", string(iq.From)).
+					Bool("is_muc_service", isMUC).
+					Int("features", len(features)).
+					Strs("feature_vars", features).
+					Int("identities", len(identities)).
+					Strs("identity_list", identities).
+					Msg("Received disco info")
+			}
+			if isMUC && iq.From != "" {
+				if nc.mucServices != nil {
+					nc.mucServices[iq.From] = true
+				}
+				if nc.fullSyncRequested && nc.mucServiceDiscoRequested != nil && !nc.mucServiceDiscoRequested[iq.From] {
+					nc.mucServiceDiscoRequested[iq.From] = true
+					discoIq, _ := stanza.NewIQ(stanza.Attrs{
+						Type: stanza.IQTypeGet,
+						To:   iq.From,
+						Id:   fmt.Sprintf("disco_items_muc_%d", time.Now().UnixNano()),
+					})
+					discoIq.Payload = &stanza.DiscoItems{}
+					if err := nc.xmppClient.Send(discoIq); err != nil {
+						nc.log.Err(err).Str("to", iq.From).Msg("Failed to send MUC disco items request")
+						nc.reportSyncError(fmt.Sprintf("Failed to list rooms for MUC service %s: %v", iq.From, err))
 					}
-					break
 				}
 			}
 			for _, feature := range payload.Features {
@@ -1363,13 +1458,31 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		return
 	}
 
+	isMUC := msg.Type == stanza.MessageTypeGroupchat
+	var delayStamp string
+	var delay XMPPDelay
+	if msg.Get(&delay) {
+		delayStamp = delay.Stamp
+	} else {
+		var delayOld XMPPDelayOld
+		if msg.Get(&delayOld) {
+			delayStamp = delayOld.InnerXML
+		}
+	}
+
 	// Ignore empty bodies unless we have OOB
 	if msg.Body == "" {
 		var oob stanza.OOB
 		if msg.Get(&oob) && oob.URL != "" {
 			msg.Body = oob.URL
 		} else {
-			nc.log.Debug().Str("from", fromJidStr).Str("type", string(msg.Type)).Msg("Skipping XMPP message with empty body")
+			nc.log.Debug().
+				Str("from", fromJidStr).
+				Str("type", string(msg.Type)).
+				Bool("from_mam", fromMAM).
+				Bool("is_muc", isMUC).
+				Str("delay", delayStamp).
+				Msg("Skipping XMPP message with empty body")
 			return
 		}
 	}
@@ -1378,8 +1491,15 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 
 	var senderID string
 	var roomType *database.RoomType
-	isMUC := msg.Type == stanza.MessageTypeGroupchat
-
+	if delayStamp != "" && nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("from", fromJidStr).
+			Str("type", string(msg.Type)).
+			Bool("from_mam", fromMAM).
+			Bool("is_muc", isMUC).
+			Str("delay", delayStamp).
+			Msg("Received delayed XMPP message")
+	}
 	if isMUC {
 		senderID = nc.resolveMUCSenderID(msg, bareFromJid)
 		if senderID == "" {
