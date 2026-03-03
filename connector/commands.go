@@ -11,6 +11,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -194,6 +195,72 @@ var CommandListUsers = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+var CommandListLogins = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		verbose := false
+		if len(ce.Args) > 1 {
+			ce.Reply("Usage: list-logins [--verbose]")
+			return
+		}
+		if len(ce.Args) == 1 {
+			switch ce.Args[0] {
+			case "--verbose", "-v":
+				verbose = true
+			default:
+				ce.Reply("Usage: list-logins [--verbose]")
+				return
+			}
+		}
+		logins := ce.User.GetUserLogins()
+		if len(logins) == 0 {
+			ce.Reply("No logins found")
+			return
+		}
+		entries := make([]string, 0, len(logins))
+		for _, login := range logins {
+			if login == nil {
+				continue
+			}
+			state := "unknown"
+			timestamp := "unknown"
+			errorCode := ""
+			errorMessage := ""
+			if login.BridgeState != nil {
+				prev := login.BridgeState.GetPrev()
+				state = string(prev.StateEvent)
+				if !prev.Timestamp.Time.IsZero() {
+					timestamp = prev.Timestamp.Time.Local().Format(time.RFC3339)
+				}
+				errorCode = string(prev.Error)
+				errorMessage = strings.TrimSpace(prev.Message)
+			}
+			remote := strings.TrimSpace(login.RemoteName)
+			if remote == "" {
+				remote = "(unknown)"
+			}
+			entry := fmt.Sprintf("%s - %s (%s)", login.ID, remote, state)
+			if verbose {
+				entry = fmt.Sprintf("%s at %s", entry, timestamp)
+				if errorCode != "" {
+					entry = fmt.Sprintf("%s error=%s", entry, errorCode)
+					if errorMessage != "" {
+						entry = fmt.Sprintf("%s msg=%q", entry, errorMessage)
+					}
+				}
+			}
+			entries = append(entries, entry)
+		}
+		sort.Strings(entries)
+		ce.Reply(strings.Join(entries, "\n"))
+	},
+	Name: "list-logins",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "List login IDs for this Matrix user (use: list-logins --verbose)",
+	},
+	RequiresLogin: true,
+}
+
 var CommandSetName = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		if len(ce.Args) < 2 {
@@ -260,12 +327,17 @@ var CommandDeleteAllPortals = &commands.FullHandler{
 
 var CommandLogout = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
-		login := ce.User.GetDefaultLogin()
-		if login == nil {
-			ce.Reply("No login found")
+		loginID, purge, err := parseLogoutArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
 			return
 		}
-		if len(ce.Args) > 0 && strings.EqualFold(ce.Args[0], "purge") {
+		login, err := resolveLoginForCommand(ce, loginID)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		if purge {
 			if err := deleteAllPortals(ce, login); err != nil {
 				ce.Reply("%v", err)
 				return
@@ -285,7 +357,7 @@ var CommandLogout = &commands.FullHandler{
 	Name: "logout",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionAdmin,
-		Description: "Log out without removing rooms (use: logout purge to delete rooms and space)",
+		Description: "Log out without removing rooms (use: logout [login_id] [purge])",
 	},
 	RequiresLogin: true,
 }
@@ -346,6 +418,57 @@ func parseLookbackDuration(arg string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(arg)
+}
+
+func parseLogoutArgs(args []string) (string, bool, error) {
+	if len(args) == 0 {
+		return "", false, nil
+	}
+	if len(args) > 2 {
+		return "", false, fmt.Errorf("Usage: logout [login_id] [purge]")
+	}
+	if strings.EqualFold(args[0], "purge") {
+		if len(args) > 1 {
+			return "", false, fmt.Errorf("Usage: logout [login_id] [purge]")
+		}
+		return "", true, nil
+	}
+	loginID := strings.TrimSpace(args[0])
+	if loginID == "" {
+		return "", false, fmt.Errorf("Usage: logout [login_id] [purge]")
+	}
+	if len(args) == 2 {
+		if !strings.EqualFold(args[1], "purge") {
+			return "", false, fmt.Errorf("Usage: logout [login_id] [purge]")
+		}
+		return loginID, true, nil
+	}
+	return loginID, false, nil
+}
+
+func resolveLoginForCommand(ce *commands.Event, loginID string) (*bridgev2.UserLogin, error) {
+	if loginID == "" {
+		logins := ce.User.GetUserLoginIDs()
+		if len(logins) == 0 {
+			return nil, fmt.Errorf("No login found")
+		}
+		if len(logins) > 1 {
+			return nil, fmt.Errorf("Multiple logins found. Use: logout <login_id> [purge]")
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			return nil, fmt.Errorf("No login found")
+		}
+		return login, nil
+	}
+	login, err := ce.Bridge.GetExistingUserLoginByID(ce.Ctx, networkid.UserLoginID(loginID))
+	if err != nil {
+		return nil, fmt.Errorf("Failed to load login %q: %w", loginID, err)
+	}
+	if login == nil || login.User == nil || login.User.MXID != ce.User.MXID {
+		return nil, fmt.Errorf("Login %q not found", loginID)
+	}
+	return login, nil
 }
 
 func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {

@@ -44,6 +44,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandSyncStatus)
 		proc.AddHandler(CommandCreate)
 		proc.AddHandler(CommandListUsers)
+		proc.AddHandler(CommandListLogins)
 		proc.AddHandler(CommandSetName)
 		proc.AddHandler(CommandDeleteAllPortals)
 		proc.AddHandler(CommandLogout)
@@ -233,12 +234,13 @@ func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *br
 func managementRoomHelpText() string {
 	return "Quick help:\n" +
 		"- login <jid>\n" +
-		"- logout (soft)\n" +
-		"- logout purge (delete rooms + space)\n" +
+		"- logout [login_id] (soft)\n" +
+		"- logout [login_id] purge (delete rooms + space)\n" +
 		"- delete-all-portals yes\n" +
 		"- sync [full|30d] (default 30d)\n" +
 		"- sync-status\n" +
 		"- create <jid> [jid...]\n" +
+		"- list-logins [--verbose]\n" +
 		"- list-users\n" +
 		"- set-name <jid> <name>"
 }
