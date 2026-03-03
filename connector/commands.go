@@ -425,7 +425,7 @@ var CommandDeleteAllPortals = &commands.FullHandler{
 			ce.Reply("%v", err)
 			return
 		}
-		ce.Reply("Deleted all bridged rooms and the space. You can log in again with !login.")
+		ce.Reply("Deleted all bridged rooms and the space. Management room kept. You can log in again with !login.")
 	},
 	Name: "delete-all-portals",
 	Help: commands.HelpMeta{
@@ -452,7 +452,7 @@ var CommandLogout = &commands.FullHandler{
 				ce.Reply("%v", err)
 				return
 			}
-			ce.Reply("Deleted all bridged rooms and the space. You can log in again with !login.")
+			ce.Reply("Deleted all bridged rooms and the space. Management room kept. You can log in again with !login.")
 			return
 		}
 		if login.Client != nil {
@@ -628,14 +628,6 @@ func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {
 		_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
 	}
 
-	mgmtRoom := ce.User.ManagementRoom
-	if mgmtRoom != "" {
-		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, mgmtRoom, false)
-		ce.User.ManagementRoom = ""
-		if err := ce.User.Save(ce.Ctx); err != nil {
-			ce.Bridge.Log.Warn().Err(err).Msg("Failed to clear management room after deletion")
-		}
-	}
 	if spaceRoom, err := login.GetSpaceRoom(ce.Ctx); err == nil && spaceRoom != "" {
 		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, spaceRoom, false)
 	}

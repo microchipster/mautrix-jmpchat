@@ -1037,14 +1037,33 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 			occupants = map[string]bool{}
 			nc.mucOccupants[bareFrom] = occupants
 		}
+		selfNick := ""
+		if nick, ok := nc.mucNick[bareFrom]; ok {
+			selfNick = nick
+		}
 		if pres.Type == stanza.PresenceTypeUnavailable {
 			delete(occupants, pres.From)
 		} else if pres.From != "" && strings.Contains(pres.From, "/") {
-			occupants[pres.From] = true
+			if selfNick != "" && resource == selfNick {
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("room_jid", bareFrom).
+						Str("nick", selfNick).
+						Msg("Skipping self occupant")
+				}
+			} else {
+				occupants[pres.From] = true
+			}
 		}
 
 		memberMap := bridgev2.ChatMemberMap{}
 		for occupant := range occupants {
+			if selfNick != "" {
+				parts := strings.SplitN(occupant, "/", 2)
+				if len(parts) == 2 && parts[1] == selfNick {
+					continue
+				}
+			}
 			memberMap[MakeUserID(occupant)] = bridgev2.ChatMember{
 				EventSender: bridgev2.EventSender{Sender: MakeUserID(occupant)},
 				Membership:  event.MembershipJoin,
@@ -1588,6 +1607,18 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			}
 			senderID = prefJID
 			msg.Body = stripped
+		}
+		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
+			remoteBare := strings.SplitN(meta.RemoteUserID, "/", 2)[0]
+			if remoteBare != "" && senderID == remoteBare {
+				isFromMe = true
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("room_jid", bareFromJid).
+						Str("sender", senderID).
+						Msg("Treating MUC message as from self")
+				}
+			}
 		}
 		roomType = ptr.Ptr(database.RoomTypeDefault)
 	} else {
