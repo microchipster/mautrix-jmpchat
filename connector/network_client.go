@@ -29,6 +29,16 @@ type CarbonsEnable struct {
 	XMLName xml.Name `xml:"urn:xmpp:carbons:2 enable"`
 }
 
+type syncStats struct {
+	dmPortals          map[string]bool
+	mucBookmarkPortals map[string]bool
+	mucDiscoPortals    map[string]bool
+	mamDMBackfills     int
+	mamMUCBackfills    int
+	lastErrors         []string
+	errorsTruncated    bool
+}
+
 func (c *CarbonsEnable) Namespace() string {
 	return "urn:xmpp:carbons:2"
 }
@@ -52,29 +62,37 @@ type MyNetworkClient struct {
 	xmppRouter  *xmpp.Router
 	xmppLogFile *os.File
 
-	httpUploadServiceJID     string
-	mucRooms                 map[string]bool
-	mucOccupants             map[string]map[string]bool
-	mucNick                  map[string]string
-	mucBackfillPending       map[string]time.Time
-	mucBackfillMu            sync.Mutex
-	mucServices              map[string]bool
-	rosterItems              map[string]bool
-	bookmarkedRooms          map[string]bool
-	fullSyncRequested        bool
-	fullSyncRosterPending    bool
-	fullSyncBookmarksPending bool
-	fullSyncStart            time.Time
-	fullSyncUseStart         bool
-	connected                bool
-	connectedCh              chan struct{}
-	syncMu                   sync.Mutex
-	syncRunning              bool
-	syncStatus               string
-	syncLastErr              string
-	syncStartedAt            time.Time
-	connectMu                sync.Mutex
-	connectStarted           bool
+	httpUploadServiceJID         string
+	mucRooms                     map[string]bool
+	mucOccupants                 map[string]map[string]bool
+	mucNick                      map[string]string
+	mucBackfillPending           map[string]time.Time
+	mucBackfillMu                sync.Mutex
+	mucServices                  map[string]bool
+	mucServiceDiscoRequested     map[string]bool
+	discoFeatures                map[string]map[string]bool
+	discoMu                      sync.Mutex
+	mamSupportMu                 sync.Mutex
+	mamServerUnsupportedNotified bool
+	mamMUCUnsupportedNotified    map[string]bool
+	rosterItems                  map[string]bool
+	bookmarkedRooms              map[string]bool
+	fullSyncRequested            bool
+	fullSyncRosterPending        bool
+	fullSyncBookmarksPending     bool
+	fullSyncStart                time.Time
+	fullSyncUseStart             bool
+	connected                    bool
+	connectedCh                  chan struct{}
+	syncMu                       sync.Mutex
+	syncRunning                  bool
+	syncStatus                   string
+	syncLastErr                  string
+	syncStartedAt                time.Time
+	syncStats                    syncStats
+	syncStatsMu                  sync.Mutex
+	connectMu                    sync.Mutex
+	connectStarted               bool
 }
 
 const defaultMAMLookback = 30 * 24 * time.Hour
@@ -163,6 +181,9 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 }
 
 func (nc *MyNetworkClient) scheduleMUCBackfill(roomJID string, start time.Time) {
+	if !nc.ensureMAMSupportForMUC(roomJID) {
+		return
+	}
 	nc.mucBackfillMu.Lock()
 	if nc.mucBackfillPending == nil {
 		nc.mucBackfillPending = map[string]time.Time{}
@@ -189,6 +210,214 @@ func (nc *MyNetworkClient) popMUCBackfill(roomJID string) (time.Time, bool) {
 		delete(nc.mucBackfillPending, roomJID)
 	}
 	return start, ok
+}
+
+func (nc *MyNetworkClient) resetSyncStats() {
+	nc.syncStatsMu.Lock()
+	nc.syncStats = syncStats{
+		dmPortals:          map[string]bool{},
+		mucBookmarkPortals: map[string]bool{},
+		mucDiscoPortals:    map[string]bool{},
+		lastErrors:         []string{},
+	}
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) recordDMPortal(portalID string) {
+	if portalID == "" {
+		return
+	}
+	nc.syncStatsMu.Lock()
+	if nc.syncStats.dmPortals == nil {
+		nc.syncStats.dmPortals = map[string]bool{}
+	}
+	nc.syncStats.dmPortals[portalID] = true
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) recordMUCBookmarkPortal(portalID string) {
+	if portalID == "" {
+		return
+	}
+	nc.syncStatsMu.Lock()
+	if nc.syncStats.mucBookmarkPortals == nil {
+		nc.syncStats.mucBookmarkPortals = map[string]bool{}
+	}
+	nc.syncStats.mucBookmarkPortals[portalID] = true
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) recordMUCDiscoPortal(portalID string) {
+	if portalID == "" {
+		return
+	}
+	nc.syncStatsMu.Lock()
+	if nc.syncStats.mucDiscoPortals == nil {
+		nc.syncStats.mucDiscoPortals = map[string]bool{}
+	}
+	nc.syncStats.mucDiscoPortals[portalID] = true
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) recordMAMBackfillDM() {
+	nc.syncStatsMu.Lock()
+	nc.syncStats.mamDMBackfills++
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) recordMAMBackfillMUC() {
+	nc.syncStatsMu.Lock()
+	nc.syncStats.mamMUCBackfills++
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) recordSyncError(msg string) {
+	const maxErrors = 10
+	if msg == "" {
+		return
+	}
+	nc.syncStatsMu.Lock()
+	if len(nc.syncStats.lastErrors) < maxErrors {
+		nc.syncStats.lastErrors = append(nc.syncStats.lastErrors, msg)
+	} else {
+		nc.syncStats.errorsTruncated = true
+	}
+	nc.syncStatsMu.Unlock()
+}
+
+func (nc *MyNetworkClient) notifyManagement(msg string) {
+	if nc.login == nil || nc.login.User == nil {
+		return
+	}
+	roomID := nc.login.User.ManagementRoom
+	if roomID == "" {
+		return
+	}
+	sendNotice(nc.bridge.Bot, roomID, msg)
+}
+
+func (nc *MyNetworkClient) reportSyncError(msg string) {
+	nc.recordSyncError(msg)
+	nc.notifyManagement(msg)
+}
+
+func (nc *MyNetworkClient) syncSummaryText(status string) string {
+	nc.syncStatsMu.Lock()
+	dmCount := len(nc.syncStats.dmPortals)
+	mucBookmarkCount := len(nc.syncStats.mucBookmarkPortals)
+	mucDiscoCount := len(nc.syncStats.mucDiscoPortals)
+	mamDM := nc.syncStats.mamDMBackfills
+	mamMUC := nc.syncStats.mamMUCBackfills
+	errors := append([]string{}, nc.syncStats.lastErrors...)
+	errorsTruncated := nc.syncStats.errorsTruncated
+	nc.syncStatsMu.Unlock()
+
+	lines := []string{
+		fmt.Sprintf("Sync %s", status),
+		fmt.Sprintf("DMs: %d", dmCount),
+		fmt.Sprintf("Group chats (bookmarks): %d", mucBookmarkCount),
+		fmt.Sprintf("Group chats (discovery): %d", mucDiscoCount),
+		fmt.Sprintf("MAM backfills started: dm=%d muc=%d", mamDM, mamMUC),
+	}
+	if len(errors) > 0 {
+		lines = append(lines, "Errors:")
+		lines = append(lines, errors...)
+		if errorsTruncated {
+			lines = append(lines, "(more errors truncated)")
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func jidDomain(jid string) string {
+	bare := strings.Split(jid, "/")[0]
+	parts := strings.SplitN(bare, "@", 2)
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return bare
+}
+
+func (nc *MyNetworkClient) recordDiscoFeatures(from string, features []stanza.Feature) {
+	if from == "" {
+		return
+	}
+	nc.discoMu.Lock()
+	if nc.discoFeatures == nil {
+		nc.discoFeatures = map[string]map[string]bool{}
+	}
+	set := map[string]bool{}
+	for _, feature := range features {
+		if feature.Var == "" {
+			continue
+		}
+		set[feature.Var] = true
+	}
+	nc.discoFeatures[from] = set
+	nc.discoMu.Unlock()
+}
+
+func (nc *MyNetworkClient) hasDiscoFeature(jid string, feature string) (bool, bool) {
+	if jid == "" || feature == "" {
+		return false, false
+	}
+	nc.discoMu.Lock()
+	set, ok := nc.discoFeatures[jid]
+	nc.discoMu.Unlock()
+	if !ok {
+		return false, false
+	}
+	return set[feature], true
+}
+
+func (nc *MyNetworkClient) mamSupportedForServer() (bool, bool) {
+	remote := ""
+	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
+		remote = meta.RemoteUserID
+	}
+	server := jidDomain(remote)
+	return nc.hasDiscoFeature(server, NSMAM)
+}
+
+func (nc *MyNetworkClient) mamSupportedForMUCService(roomJID string) (bool, bool) {
+	service := jidDomain(roomJID)
+	return nc.hasDiscoFeature(service, NSMAM)
+}
+
+func (nc *MyNetworkClient) ensureMAMSupportForServer() bool {
+	supported, known := nc.mamSupportedForServer()
+	if !known || supported {
+		return true
+	}
+	nc.mamSupportMu.Lock()
+	if !nc.mamServerUnsupportedNotified {
+		nc.mamServerUnsupportedNotified = true
+		nc.mamSupportMu.Unlock()
+		nc.reportSyncError("Server does not advertise MAM support; DM history backfill is disabled.")
+		return false
+	}
+	nc.mamSupportMu.Unlock()
+	return false
+}
+
+func (nc *MyNetworkClient) ensureMAMSupportForMUC(roomJID string) bool {
+	supported, known := nc.mamSupportedForMUCService(roomJID)
+	if !known || supported {
+		return true
+	}
+	service := jidDomain(roomJID)
+	nc.mamSupportMu.Lock()
+	if nc.mamMUCUnsupportedNotified == nil {
+		nc.mamMUCUnsupportedNotified = map[string]bool{}
+	}
+	if !nc.mamMUCUnsupportedNotified[service] {
+		nc.mamMUCUnsupportedNotified[service] = true
+		nc.mamSupportMu.Unlock()
+		nc.reportSyncError(fmt.Sprintf("MUC service %s does not advertise MAM support; group history backfill is disabled.", service))
+		return false
+	}
+	nc.mamSupportMu.Unlock()
+	return false
 }
 
 func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
@@ -231,6 +460,12 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 	if nc.mucServices == nil {
 		nc.mucServices = map[string]bool{}
+	}
+	if nc.mucServiceDiscoRequested == nil {
+		nc.mucServiceDiscoRequested = map[string]bool{}
+	}
+	if nc.mamMUCUnsupportedNotified == nil {
+		nc.mamMUCUnsupportedNotified = map[string]bool{}
 	}
 	if nc.rosterItems == nil {
 		nc.rosterItems = map[string]bool{}
@@ -422,9 +657,11 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 							Bool("start_zero", start.IsZero()).
 							Msg("Starting MUC MAM backfill after join")
 					}
+					nc.recordMAMBackfillMUC()
 					go func(roomJID string, start time.Time) {
 						if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
 							nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
+							nc.reportSyncError(fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err))
 						}
 					}(bareFrom, start)
 				}
@@ -515,13 +752,18 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing roster chat resync")
 				nc.bridge.QueueRemoteEvent(nc.login, resync)
+				nc.recordDMPortal(string(portalID))
 				if nc.fullSyncRequested {
-					start := time.Time{}
-					if nc.fullSyncUseStart {
-						start = nc.fullSyncStart
-					}
-					if err := nc.backfillDM(context.Background(), bareJID, start); err != nil {
-						nc.log.Err(err).Str("jid", bareJID).Msg("Failed to request DM MAM history")
+					if nc.ensureMAMSupportForServer() {
+						start := time.Time{}
+						if nc.fullSyncUseStart {
+							start = nc.fullSyncStart
+						}
+						nc.recordMAMBackfillDM()
+						if err := nc.backfillDM(context.Background(), bareJID, start); err != nil {
+							nc.log.Err(err).Str("jid", bareJID).Msg("Failed to request DM MAM history")
+							nc.reportSyncError(fmt.Sprintf("DM backfill failed for %s: %v", bareJID, err))
+						}
 					}
 				}
 			}
@@ -561,6 +803,8 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
 				nc.bridge.QueueRemoteEvent(nc.login, resync)
+				nc.recordMUCBookmarkPortal(string(portalID))
+				nc.recordMUCBookmarkPortal(string(portalID))
 
 				nick := strings.TrimSpace(conf.Nick)
 				if nick == "" {
@@ -636,6 +880,39 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				nc.maybeClearFullSync()
 			}
 		case *stanza.DiscoItems:
+			if iq.From != "" && nc.mucServices != nil && nc.mucServices[iq.From] {
+				if !nc.fullSyncRequested {
+					return
+				}
+				for _, item := range payload.Items {
+					roomJID := strings.TrimSpace(item.JID)
+					if roomJID == "" {
+						continue
+					}
+					if nc.bookmarkedRooms != nil && nc.bookmarkedRooms[roomJID] {
+						continue
+					}
+					portalID := MakePortalID(roomJID)
+					resync := &simplevent.ChatResync{
+						EventMeta: simplevent.EventMeta{
+							Type:         bridgev2.RemoteEventChatResync,
+							PortalKey:    networkid.PortalKey{ID: portalID},
+							CreatePortal: true,
+							Timestamp:    time.Now(),
+						},
+						ChatInfo: &bridgev2.ChatInfo{
+							Name: ptr.Ptr(roomJID),
+							Type: ptr.Ptr(database.RoomTypeDefault),
+						},
+					}
+					nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing discovered groupchat resync")
+					nc.bridge.QueueRemoteEvent(nc.login, resync)
+					nc.recordMUCDiscoPortal(string(portalID))
+					nc.scheduleMUCBackfill(roomJID, nc.fullSyncStart)
+					nc.joinMUC(roomJID, "", "")
+				}
+				return
+			}
 			if len(payload.Items) == 0 {
 				nc.log.Debug().Msg("Received disco items result with no items")
 				return
@@ -655,10 +932,24 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 			}
 		case *stanza.DiscoInfo:
+			nc.recordDiscoFeatures(iq.From, payload.Features)
 			for _, identity := range payload.Identity {
 				if identity.Category == "conference" && iq.From != "" {
 					if nc.mucServices != nil {
 						nc.mucServices[iq.From] = true
+					}
+					if nc.fullSyncRequested && nc.mucServiceDiscoRequested != nil && !nc.mucServiceDiscoRequested[iq.From] {
+						nc.mucServiceDiscoRequested[iq.From] = true
+						discoIq, _ := stanza.NewIQ(stanza.Attrs{
+							Type: stanza.IQTypeGet,
+							To:   iq.From,
+							Id:   fmt.Sprintf("disco_items_muc_%d", time.Now().UnixNano()),
+						})
+						discoIq.Payload = &stanza.DiscoItems{}
+						if err := nc.xmppClient.Send(discoIq); err != nil {
+							nc.log.Err(err).Str("to", iq.From).Msg("Failed to send MUC disco items request")
+							nc.reportSyncError(fmt.Sprintf("Failed to list rooms for MUC service %s: %v", iq.From, err))
+						}
 					}
 					break
 				}
@@ -672,6 +963,11 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					break
 				}
 			}
+		}
+	}
+	if iq.Type == stanza.IQTypeError {
+		if strings.HasPrefix(iq.Id, "disco_items_muc_") {
+			nc.reportSyncError(fmt.Sprintf("MUC room listing failed for %s", iq.From))
 		}
 	}
 }
@@ -1101,6 +1397,17 @@ func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string
 		nc.fullSyncUseStart = true
 		nc.fullSyncStart = time.Now().Add(-lookback)
 	}
+	nc.resetSyncStats()
+	nc.mamSupportMu.Lock()
+	nc.mamServerUnsupportedNotified = false
+	if nc.mamMUCUnsupportedNotified == nil {
+		nc.mamMUCUnsupportedNotified = map[string]bool{}
+	} else {
+		for key := range nc.mamMUCUnsupportedNotified {
+			delete(nc.mamMUCUnsupportedNotified, key)
+		}
+	}
+	nc.mamSupportMu.Unlock()
 	nc.syncMu.Unlock()
 
 	go nc.runFullSync(ctx, notify)
@@ -1151,6 +1458,8 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 		if notify != nil {
 			notify(fmt.Sprintf("Sync failed: %s", err.Error()))
 		}
+		nc.reportSyncError(fmt.Sprintf("Sync failed: %s", err.Error()))
+		nc.notifyManagement(nc.syncSummaryText("failed"))
 		return
 	}
 	cancel()
@@ -1164,6 +1473,8 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 		if notify != nil {
 			notify(fmt.Sprintf("Sync failed requesting roster: %s", err.Error()))
 		}
+		nc.reportSyncError(fmt.Sprintf("Sync failed requesting roster: %s", err.Error()))
+		nc.notifyManagement(nc.syncSummaryText("failed"))
 		return
 	}
 	if err := nc.requestBookmarks(); err != nil {
@@ -1171,6 +1482,8 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 		if notify != nil {
 			notify(fmt.Sprintf("Sync failed requesting bookmarks: %s", err.Error()))
 		}
+		nc.reportSyncError(fmt.Sprintf("Sync failed requesting bookmarks: %s", err.Error()))
+		nc.notifyManagement(nc.syncSummaryText("failed"))
 		return
 	}
 
@@ -1179,6 +1492,7 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 	for time.Now().Before(deadline) {
 		if !nc.fullSyncRequested {
 			update("Sync complete")
+			nc.notifyManagement(nc.syncSummaryText("complete"))
 			go nc.connector.ensureSpaceRoomAndPopulate(nc.login)
 			return
 		}
@@ -1190,12 +1504,15 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 			if notify != nil {
 				notify(fmt.Sprintf("Sync cancelled: %s", err.Error()))
 			}
+			nc.reportSyncError(fmt.Sprintf("Sync cancelled: %s", err.Error()))
+			nc.notifyManagement(nc.syncSummaryText("cancelled"))
 			return
 		}
 	}
 
 	nc.fullSyncRequested = false
 	update("Sync timed out (backfill may still be running)")
+	nc.notifyManagement(nc.syncSummaryText("timed out"))
 	go nc.connector.ensureSpaceRoomAndPopulate(nc.login)
 }
 
