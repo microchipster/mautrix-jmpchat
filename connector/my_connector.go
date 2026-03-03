@@ -197,20 +197,7 @@ func (c *MyConnector) ensureSpaceRoomAndPopulate(login *bridgev2.UserLogin) {
 func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *bridgev2.UserLogin, spaceRoom id.RoomID, sendHelp bool) {
 	user := login.User
 	log := zerolog.Ctx(ctx)
-
-	var mgmtRoom id.RoomID
-	for attempt := 0; attempt < 6; attempt++ {
-		room, err := user.GetManagementRoom(ctx)
-		if err != nil {
-			log.Err(err).Msg("Failed to get management room")
-			return
-		}
-		if room != "" {
-			mgmtRoom = room
-			break
-		}
-		time.Sleep(5 * time.Second)
-	}
+	mgmtRoom := user.ManagementRoom
 	if mgmtRoom == "" {
 		log.Debug().Msg("Management room not available yet, skipping space link")
 		return

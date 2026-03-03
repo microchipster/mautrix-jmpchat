@@ -490,8 +490,13 @@ func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {
 		_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
 	}
 
-	if mgmtRoom, err := ce.User.GetManagementRoom(ce.Ctx); err == nil && mgmtRoom != "" {
+	mgmtRoom := ce.User.ManagementRoom
+	if mgmtRoom != "" {
 		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, mgmtRoom, false)
+		ce.User.ManagementRoom = ""
+		if err := ce.User.Save(ce.Ctx); err != nil {
+			ce.Bridge.Log.Warn().Err(err).Msg("Failed to clear management room after deletion")
+		}
 	}
 	if spaceRoom, err := login.GetSpaceRoom(ce.Ctx); err == nil && spaceRoom != "" {
 		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, spaceRoom, false)

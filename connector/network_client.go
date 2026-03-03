@@ -55,6 +55,9 @@ type MyNetworkClient struct {
 	httpUploadServiceJID     string
 	mucRooms                 map[string]bool
 	mucOccupants             map[string]map[string]bool
+	mucNick                  map[string]string
+	mucBackfillPending       map[string]time.Time
+	mucBackfillMu            sync.Mutex
 	mucServices              map[string]bool
 	rosterItems              map[string]bool
 	bookmarkedRooms          map[string]bool
@@ -136,6 +139,10 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 			MaxChars: stanza.NewNullableInt(0),
 		},
 	})
+	if nc.mucNick == nil {
+		nc.mucNick = map[string]string{}
+	}
+	nc.mucNick[roomJID] = nickname
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().
 			Str("room_jid", roomJID).
@@ -153,6 +160,35 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	}
 
 	nc.log.Info().Str("room_jid", roomJID).Str("nick", nickname).Msg("Sent MUC join presence")
+}
+
+func (nc *MyNetworkClient) scheduleMUCBackfill(roomJID string, start time.Time) {
+	nc.mucBackfillMu.Lock()
+	if nc.mucBackfillPending == nil {
+		nc.mucBackfillPending = map[string]time.Time{}
+	}
+	nc.mucBackfillPending[roomJID] = start
+	nc.mucBackfillMu.Unlock()
+	if nc.log.GetLevel() <= zerolog.DebugLevel {
+		nc.log.Debug().
+			Str("room_jid", roomJID).
+			Time("start", start).
+			Bool("start_zero", start.IsZero()).
+			Msg("Scheduled MUC MAM backfill")
+	}
+}
+
+func (nc *MyNetworkClient) popMUCBackfill(roomJID string) (time.Time, bool) {
+	nc.mucBackfillMu.Lock()
+	defer nc.mucBackfillMu.Unlock()
+	if nc.mucBackfillPending == nil {
+		return time.Time{}, false
+	}
+	start, ok := nc.mucBackfillPending[roomJID]
+	if ok {
+		delete(nc.mucBackfillPending, roomJID)
+	}
+	return start, ok
 }
 
 func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
@@ -186,6 +222,12 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 	if nc.mucOccupants == nil {
 		nc.mucOccupants = map[string]map[string]bool{}
+	}
+	if nc.mucNick == nil {
+		nc.mucNick = map[string]string{}
+	}
+	if nc.mucBackfillPending == nil {
+		nc.mucBackfillPending = map[string]time.Time{}
 	}
 	if nc.mucServices == nil {
 		nc.mucServices = map[string]bool{}
@@ -365,6 +407,29 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 
 	bareFrom := strings.Split(pres.From, "/")[0]
 	if bareFrom != "" && nc.mucRooms != nil && nc.mucRooms[bareFrom] {
+		resource := ""
+		if parts := strings.SplitN(pres.From, "/", 2); len(parts) == 2 {
+			resource = parts[1]
+		}
+		if pres.Type != stanza.PresenceTypeUnavailable {
+			if nick, ok := nc.mucNick[bareFrom]; ok && nick != "" && resource == nick {
+				if start, ok := nc.popMUCBackfill(bareFrom); ok {
+					if nc.log.GetLevel() <= zerolog.DebugLevel {
+						nc.log.Debug().
+							Str("room_jid", bareFrom).
+							Str("nick", nick).
+							Time("start", start).
+							Bool("start_zero", start.IsZero()).
+							Msg("Starting MUC MAM backfill after join")
+					}
+					go func(roomJID string, start time.Time) {
+						if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
+							nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
+						}
+					}(bareFrom, start)
+				}
+			}
+		}
 		if nc.mucOccupants == nil {
 			nc.mucOccupants = map[string]map[string]bool{}
 		}
@@ -501,20 +566,16 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if nick == "" {
 					nick = nc.defaultMUCNick()
 				}
-				nc.joinMUC(roomJID, nick, conf.Password)
+				start := time.Time{}
 				if nc.fullSyncRequested {
-					start := time.Time{}
 					if nc.fullSyncUseStart {
 						start = nc.fullSyncStart
 					}
-					if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
-						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MAM history")
-					}
 				} else {
-					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-defaultMAMLookback)); err != nil {
-						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
-					}
+					start = time.Now().Add(-defaultMAMLookback)
 				}
+				nc.scheduleMUCBackfill(roomJID, start)
+				nc.joinMUC(roomJID, nick, conf.Password)
 			}
 			if nc.fullSyncBookmarksPending {
 				nc.fullSyncBookmarksPending = false
@@ -559,20 +620,16 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if nick == "" {
 					nick = nc.defaultMUCNick()
 				}
-				nc.joinMUC(roomJID, nick, conf.Password)
+				start := time.Time{}
 				if nc.fullSyncRequested {
-					start := time.Time{}
 					if nc.fullSyncUseStart {
 						start = nc.fullSyncStart
 					}
-					if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
-						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MAM history")
-					}
 				} else {
-					if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-defaultMAMLookback)); err != nil {
-						nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
-					}
+					start = time.Now().Add(-defaultMAMLookback)
 				}
+				nc.scheduleMUCBackfill(roomJID, start)
+				nc.joinMUC(roomJID, nick, conf.Password)
 			}
 			if nc.fullSyncBookmarksPending {
 				nc.fullSyncBookmarksPending = false
@@ -698,6 +755,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 				Str("reason", mucInvite.Invite.Reason).
 				Msg("Received MUC invite")
 			nc.bridge.QueueRemoteEvent(nc.login, resync)
+			nc.scheduleMUCBackfill(roomJID, time.Now().Add(-defaultMAMLookback))
 			nc.joinMUC(roomJID, "", mucInvite.Password)
 			if msg.Body == "" {
 				return
@@ -729,6 +787,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 				Str("reason", directInvite.Reason).
 				Msg("Received direct MUC invite")
 			nc.bridge.QueueRemoteEvent(nc.login, resync)
+			nc.scheduleMUCBackfill(roomJID, time.Now().Add(-defaultMAMLookback))
 			nc.joinMUC(roomJID, "", directInvite.Password)
 			if msg.Body == "" {
 				return
@@ -801,12 +860,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	}
 	if isMUC && !fromMAM {
 		if nc.mucRooms == nil || !nc.mucRooms[bareFromJid] {
+			start := time.Now().Add(-defaultMAMLookback)
+			nc.scheduleMUCBackfill(bareFromJid, start)
 			nc.joinMUC(bareFromJid, "", "")
-			go func(roomJID string) {
-				if err := nc.requestMAM(context.Background(), roomJID, 100, time.Now().Add(-defaultMAMLookback)); err != nil {
-					nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to request MAM history")
-				}
-			}(bareFromJid)
 		}
 	}
 
