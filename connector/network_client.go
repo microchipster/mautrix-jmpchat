@@ -896,7 +896,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		// 1. Request Roster
 		iq, _ := stanza.NewIQ(stanza.Attrs{
 			Type: stanza.IQTypeGet,
-			Id:   "roster_1",
+			Id:   fmt.Sprintf("roster_%d", time.Now().UnixNano()),
 		})
 		iq.Payload = &stanza.Roster{}
 		if err := nc.xmppClient.Send(iq); err != nil {
@@ -923,7 +923,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			discoIq, _ := stanza.NewIQ(stanza.Attrs{
 				Type: stanza.IQTypeGet,
 				To:   serverDomain,
-				Id:   "disco_1",
+				Id:   fmt.Sprintf("disco_info_%d", time.Now().UnixNano()),
 			})
 			discoIq.Payload = &stanza.DiscoInfo{}
 			if err := nc.xmppClient.Send(discoIq); err != nil {
@@ -935,7 +935,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			discoItemsIq, _ := stanza.NewIQ(stanza.Attrs{
 				Type: stanza.IQTypeGet,
 				To:   serverDomain,
-				Id:   "disco_items_1",
+				Id:   fmt.Sprintf("disco_items_%d", time.Now().UnixNano()),
 			})
 			discoItemsIq.Payload = &stanza.DiscoItems{}
 			if err := nc.xmppClient.Send(discoItemsIq); err != nil {
@@ -949,7 +949,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		// 3. Enable Message Carbons
 		carbonsIq, _ := stanza.NewIQ(stanza.Attrs{
 			Type: stanza.IQTypeSet,
-			Id:   "carbons_1",
+			Id:   fmt.Sprintf("carbons_%d", time.Now().UnixNano()),
 		})
 		carbonsIq.Payload = &CarbonsEnable{}
 		if err := nc.xmppClient.Send(carbonsIq); err != nil {
