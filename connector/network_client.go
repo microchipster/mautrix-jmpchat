@@ -1003,99 +1003,106 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 	}
 
 	bareFrom := strings.Split(pres.From, "/")[0]
-	if bareFrom != "" && nc.mucRooms != nil && nc.mucRooms[bareFrom] {
-		resource := ""
-		if parts := strings.SplitN(pres.From, "/", 2); len(parts) == 2 {
-			resource = parts[1]
+	// Treat group-DM style JIDs as MUC rooms if they have commas
+	if bareFrom != "" {
+		isMUC := nc.mucRooms != nil && nc.mucRooms[bareFrom]
+		if !isMUC && strings.Contains(bareFrom, ",") && strings.HasSuffix(bareFrom, "@cheogram.com") {
+			isMUC = true
 		}
-		if pres.Type != stanza.PresenceTypeUnavailable {
-			if nick, ok := nc.mucNick[bareFrom]; ok && nick != "" && resource == nick {
-				if start, ok := nc.popMUCBackfill(bareFrom); ok {
+		if isMUC {
+			resource := ""
+			if parts := strings.SplitN(pres.From, "/", 2); len(parts) == 2 {
+				resource = parts[1]
+			}
+			if pres.Type != stanza.PresenceTypeUnavailable {
+				if nick, ok := nc.mucNick[bareFrom]; ok && nick != "" && resource == nick {
+					if start, ok := nc.popMUCBackfill(bareFrom); ok {
+						if nc.log.GetLevel() <= zerolog.DebugLevel {
+							nc.log.Debug().
+								Str("room_jid", bareFrom).
+								Str("nick", nick).
+								Time("start", start).
+								Bool("start_zero", start.IsZero()).
+								Msg("Starting MUC MAM backfill after join")
+						}
+						nc.recordMAMBackfillMUC()
+						go func(roomJID string, start time.Time) {
+							if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
+								nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
+								nc.reportSyncError(fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err))
+							}
+						}(bareFrom, start)
+					}
+				}
+			}
+			if nc.mucOccupants == nil {
+				nc.mucOccupants = map[string]map[string]bool{}
+			}
+			occupants := nc.mucOccupants[bareFrom]
+			if occupants == nil {
+				occupants = map[string]bool{}
+				nc.mucOccupants[bareFrom] = occupants
+			}
+			selfNick := ""
+			if nick, ok := nc.mucNick[bareFrom]; ok {
+				selfNick = nick
+			}
+			if pres.Type == stanza.PresenceTypeUnavailable {
+				delete(occupants, pres.From)
+			} else if pres.From != "" && strings.Contains(pres.From, "/") {
+				if selfNick != "" && resource == selfNick {
 					if nc.log.GetLevel() <= zerolog.DebugLevel {
 						nc.log.Debug().
 							Str("room_jid", bareFrom).
-							Str("nick", nick).
-							Time("start", start).
-							Bool("start_zero", start.IsZero()).
-							Msg("Starting MUC MAM backfill after join")
+							Str("nick", selfNick).
+							Msg("Skipping self occupant")
 					}
-					nc.recordMAMBackfillMUC()
-					go func(roomJID string, start time.Time) {
-						if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
-							nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
-							nc.reportSyncError(fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err))
-						}
-					}(bareFrom, start)
+				} else {
+					occupants[pres.From] = true
 				}
 			}
-		}
-		if nc.mucOccupants == nil {
-			nc.mucOccupants = map[string]map[string]bool{}
-		}
-		occupants := nc.mucOccupants[bareFrom]
-		if occupants == nil {
-			occupants = map[string]bool{}
-			nc.mucOccupants[bareFrom] = occupants
-		}
-		selfNick := ""
-		if nick, ok := nc.mucNick[bareFrom]; ok {
-			selfNick = nick
-		}
-		if pres.Type == stanza.PresenceTypeUnavailable {
-			delete(occupants, pres.From)
-		} else if pres.From != "" && strings.Contains(pres.From, "/") {
-			if selfNick != "" && resource == selfNick {
-				if nc.log.GetLevel() <= zerolog.DebugLevel {
-					nc.log.Debug().
-						Str("room_jid", bareFrom).
-						Str("nick", selfNick).
-						Msg("Skipping self occupant")
-				}
-			} else {
-				occupants[pres.From] = true
-			}
-		}
 
-		memberMap := bridgev2.ChatMemberMap{}
-		for occupant := range occupants {
-			if selfNick != "" {
-				parts := strings.SplitN(occupant, "/", 2)
-				if len(parts) == 2 && parts[1] == selfNick {
-					continue
-				}
-			}
-			occupantBare := strings.SplitN(occupant, "/", 2)[0]
-			memberJID := occupantBare
-			if strings.Contains(occupantBare, ",") && strings.HasSuffix(occupantBare, "@cheogram.com") {
-				parts := strings.SplitN(occupant, "/", 2)
-				if len(parts) == 2 {
-					if isPhoneNick := strings.HasPrefix(parts[1], "+") && !strings.Contains(parts[1], "@"); isPhoneNick {
-						memberJID = parts[1] + "@cheogram.com"
+			memberMap := bridgev2.ChatMemberMap{}
+			for occupant := range occupants {
+				if selfNick != "" {
+					parts := strings.SplitN(occupant, "/", 2)
+					if len(parts) == 2 && parts[1] == selfNick {
+						continue
 					}
 				}
+				occupantBare := strings.SplitN(occupant, "/", 2)[0]
+				memberJID := occupantBare
+				if strings.Contains(occupantBare, ",") && strings.HasSuffix(occupantBare, "@cheogram.com") {
+					parts := strings.SplitN(occupant, "/", 2)
+					if len(parts) == 2 {
+						if isPhoneNick := strings.HasPrefix(parts[1], "+") && !strings.Contains(parts[1], "@"); isPhoneNick {
+							memberJID = parts[1] + "@cheogram.com"
+						}
+					}
+				}
+				memberMap[MakeUserID(memberJID)] = bridgev2.ChatMember{
+					EventSender: bridgev2.EventSender{Sender: MakeUserID(memberJID)},
+					Membership:  event.MembershipJoin,
+				}
 			}
-			memberMap[MakeUserID(memberJID)] = bridgev2.ChatMember{
-				EventSender: bridgev2.EventSender{Sender: MakeUserID(memberJID)},
-				Membership:  event.MembershipJoin,
+			members := &bridgev2.ChatMemberList{
+				IsFull:                     true,
+				CheckAllLogins:             true,
+				ExcludeChangesFromTimeline: true,
+				TotalMemberCount:           len(memberMap),
+				MemberMap:                  memberMap,
 			}
+			chatInfo := &bridgev2.ChatInfo{Members: members}
+			change := &simplevent.ChatInfoChange{
+				EventMeta: simplevent.EventMeta{
+					Type:      bridgev2.RemoteEventChatInfoChange,
+					PortalKey: networkid.PortalKey{ID: MakePortalID(bareFrom)},
+					Timestamp: time.Now(),
+				},
+				ChatInfoChange: &bridgev2.ChatInfoChange{ChatInfo: chatInfo},
+			}
+			nc.bridge.QueueRemoteEvent(nc.login, change)
 		}
-		members := &bridgev2.ChatMemberList{
-			IsFull:                     true,
-			CheckAllLogins:             true,
-			ExcludeChangesFromTimeline: true,
-			TotalMemberCount:           len(memberMap),
-			MemberMap:                  memberMap,
-		}
-		chatInfo := &bridgev2.ChatInfo{Members: members}
-		change := &simplevent.ChatInfoChange{
-			EventMeta: simplevent.EventMeta{
-				Type:      bridgev2.RemoteEventChatInfoChange,
-				PortalKey: networkid.PortalKey{ID: MakePortalID(bareFrom)},
-				Timestamp: time.Now(),
-			},
-			ChatInfoChange: &bridgev2.ChatInfoChange{ChatInfo: chatInfo},
-		}
-		nc.bridge.QueueRemoteEvent(nc.login, change)
 	}
 }
 
