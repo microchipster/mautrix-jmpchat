@@ -136,14 +136,15 @@ var CommandStartChat = &commands.FullHandler{
 				return
 			}
 			if existingPortal != nil && existingPortal.MXID != "" {
-				ce.ReplyAdvanced(existingRoomNotice("Chat", participants[0], existingPortal.MXID), false, true)
+				ce.ReplyAdvanced(existingRoomNotice("Chat", participants[0], portalLinkLabel(existingPortal, participants[0]), existingPortal.MXID), false, true)
 				return
 			}
 			if err := client.createDM(ce.Ctx, participants[0]); err != nil {
 				ce.Reply("Failed to create chat: %v", err)
 				return
 			}
-			ce.Reply("Created chat for %s", participants[0])
+			ce.Reply("Create request received for %s. I will send a room link when it is ready.", participants[0])
+			go notifyWhenPortalReady(ce, login, participants[0], "Chat")
 			return
 		}
 		groupJID, err := normalizedCheogramGroupJID(participants)
@@ -157,14 +158,15 @@ var CommandStartChat = &commands.FullHandler{
 			return
 		}
 		if existingPortal != nil && existingPortal.MXID != "" {
-			ce.ReplyAdvanced(existingRoomNotice("Group chat", groupJID, existingPortal.MXID), false, true)
+			ce.ReplyAdvanced(existingRoomNotice("Group chat", groupJID, portalLinkLabel(existingPortal, groupJID), existingPortal.MXID), false, true)
 			return
 		}
 		if err := client.createGroupChat(ce.Ctx, name, participants); err != nil {
 			ce.Reply("Failed to create group chat: %v", err)
 			return
 		}
-		ce.Reply("Created group chat with %d participants (%s)", len(participants), groupJID)
+		ce.Reply("Create request received for group chat %s. I will send a room link when it is ready.", groupJID)
+		go notifyWhenPortalReady(ce, login, groupJID, "Group chat")
 	},
 	Name:    "start-chat",
 	Aliases: []string{"create"},
@@ -539,9 +541,57 @@ func findExistingPortalByJID(ctx context.Context, ce *commands.Event, login *bri
 	return nil, nil
 }
 
-func existingRoomNotice(kind, jid string, roomID id.RoomID) string {
+func existingRoomNotice(kind, jid, label string, roomID id.RoomID) string {
 	roomURL := roomID.URI().MatrixToURL()
-	return fmt.Sprintf("%s for <code>%s</code> already exists: <a href=\"%s\">%s</a>", kind, html.EscapeString(jid), html.EscapeString(roomURL), html.EscapeString(roomID.String()))
+	return fmt.Sprintf("%s for <code>%s</code> already exists: <a href=\"%s\">Open %s</a>", kind, html.EscapeString(jid), html.EscapeString(roomURL), html.EscapeString(roomLinkLabel(label, roomID)))
+}
+
+func createdRoomNotice(kind, jid, label string, roomID id.RoomID) string {
+	roomURL := roomID.URI().MatrixToURL()
+	return fmt.Sprintf("%s for <code>%s</code> is ready: <a href=\"%s\">Open %s</a>", kind, html.EscapeString(jid), html.EscapeString(roomURL), html.EscapeString(roomLinkLabel(label, roomID)))
+}
+
+func notifyWhenPortalReady(ce *commands.Event, login *bridgev2.UserLogin, jid, kind string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		portal, err := findExistingPortalByJID(ctx, ce, login, jid)
+		if err == nil && portal != nil && portal.MXID != "" {
+			ce.ReplyAdvanced(createdRoomNotice(kind, jid, portalLinkLabel(portal, jid), portal.MXID), false, true)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func portalLinkLabel(portal *bridgev2.Portal, fallback string) string {
+	if portal == nil {
+		return fallback
+	}
+	if meta, ok := portal.Metadata.(*PortalMetadata); ok && meta != nil {
+		if name := strings.TrimSpace(meta.InitialName); name != "" {
+			return name
+		}
+	}
+	if name := strings.TrimSpace(portal.Name); name != "" {
+		return name
+	}
+	return fallback
+}
+
+func roomLinkLabel(label string, roomID id.RoomID) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return fmt.Sprintf("room %s", roomID)
+	}
+	return fmt.Sprintf("room %s", label)
 }
 
 func sendNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) {
