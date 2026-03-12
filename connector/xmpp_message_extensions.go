@@ -2,6 +2,7 @@ package connector
 
 import (
 	"encoding/xml"
+	"strings"
 
 	"gosrc.io/xmpp/stanza"
 )
@@ -56,8 +57,19 @@ type XMPPMucUser struct {
 
 type XMPPReactions struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:reactions:0 reactions"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:reactions:0 reactions"`
+	ID      string   `xml:"id,attr,omitempty"`
+	Reacts  []string `xml:"reaction"`
+}
+
+func (r XMPPReactions) First() string {
+	for _, reaction := range r.Reacts {
+		reaction = strings.TrimSpace(reaction)
+		if reaction != "" {
+			return reaction
+		}
+	}
+	return ""
 }
 
 type XMPPEME struct {

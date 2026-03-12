@@ -1576,6 +1576,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 
 	// Ignore empty bodies unless we have OOB
 	if msg.Body == "" {
+		var reactions XMPPReactions
+		if msg.Get(&reactions) && reactions.ID != "" {
+			nc.handleIncomingXMPPReaction(msg, timestamp, reactions, isFromMe)
+			return
+		}
 		var oob stanza.OOB
 		if msg.Get(&oob) && oob.URL != "" {
 			msg.Body = oob.URL
@@ -1805,6 +1810,74 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		Str("message_id", string(evt.ID)).
 		Msg("Queueing incoming XMPP message")
 	nc.bridge.QueueRemoteEvent(nc.login, evt)
+}
+
+func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timestamp time.Time, reactions XMPPReactions, isFromMe bool) {
+	emoji := reactions.First()
+	if emoji == "" {
+		nc.log.Debug().
+			Str("from", msg.From).
+			Str("target_id", reactions.ID).
+			Msg("Skipping XMPP reaction without emoji")
+		return
+	}
+
+	fromParts := strings.Split(msg.From, "/")
+	bareFromJid := fromParts[0]
+	if bareFromJid == "" {
+		return
+	}
+	isMUC := msg.Type == stanza.MessageTypeGroupchat
+	if strings.Contains(bareFromJid, ",") && strings.HasSuffix(bareFromJid, "@cheogram.com") {
+		isMUC = true
+	}
+
+	senderID := bareFromJid
+	if isMUC {
+		senderID = nc.resolveMUCSenderID(msg, bareFromJid)
+		if senderID == "" {
+			senderID = msg.From
+		}
+	}
+	if isFromMe {
+		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
+			senderID = meta.RemoteUserID
+		}
+	}
+
+	portalID := MakePortalID(bareFromJid)
+	roomType := ptr.Ptr(database.RoomTypeDefault)
+	if !isMUC {
+		roomType = ptr.Ptr(database.RoomTypeDM)
+	}
+	resync := &simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type:         bridgev2.RemoteEventChatResync,
+			PortalKey:    networkid.PortalKey{ID: portalID},
+			CreatePortal: true,
+			Timestamp:    timestamp,
+		},
+		ChatInfo: &bridgev2.ChatInfo{
+			Name: &bareFromJid,
+			Type: roomType,
+		},
+	}
+	nc.bridge.QueueRemoteEvent(nc.login, resync)
+
+	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Reaction{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventReaction,
+			PortalKey: networkid.PortalKey{ID: portalID},
+			Sender: bridgev2.EventSender{
+				Sender:   MakeUserID(senderID),
+				IsFromMe: isFromMe,
+			},
+			Timestamp: timestamp,
+		},
+		TargetMessage: networkid.MessageID(reactions.ID),
+		EmojiID:       networkid.EmojiID(emoji),
+		Emoji:         emoji,
+	})
 }
 
 func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
