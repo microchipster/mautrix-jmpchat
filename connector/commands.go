@@ -89,7 +89,7 @@ var CommandSyncStatus = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
-var CommandCreate = &commands.FullHandler{
+var CommandStartChat = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		login := ce.User.GetDefaultLogin()
 		if login == nil {
@@ -166,7 +166,8 @@ var CommandCreate = &commands.FullHandler{
 		}
 		ce.Reply("Created group chat with %d participants (%s)", len(participants), groupJID)
 	},
-	Name: "create",
+	Name:    "start-chat",
+	Aliases: []string{"create"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Create a DM or group chat with phone numbers or JIDs",

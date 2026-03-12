@@ -42,7 +42,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
 		proc.AddHandler(CommandSync)
 		proc.AddHandler(CommandSyncStatus)
-		proc.AddHandler(CommandCreate)
+		proc.AddHandler(CommandStartChat)
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandListLogins)
 		proc.AddHandler(CommandSetName)
@@ -76,7 +76,23 @@ func (c *MyConnector) GetNetworkID() string {
 
 // GetCapabilities implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
-	return &bridgev2.NetworkGeneralCapabilities{}
+	return &bridgev2.NetworkGeneralCapabilities{
+		Provisioning: bridgev2.ProvisioningCapabilities{
+			GroupCreation: map[string]bridgev2.GroupTypeCapabilities{
+				"default": {
+					TypeDescription: "Cheogram phone-number group chat",
+					Name: bridgev2.GroupFieldCapability{
+						Allowed: true,
+					},
+					Participants: bridgev2.GroupFieldCapability{
+						Allowed:   true,
+						Required:  true,
+						MinLength: 2,
+					},
+				},
+			},
+		},
+	}
 }
 
 // GetDBMetaTypes implements bridgev2.NetworkConnector.
