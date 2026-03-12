@@ -81,6 +81,7 @@ type MyNetworkClient struct {
 	mamSupportMu                 sync.Mutex
 	mamServerUnsupportedNotified bool
 	mamMUCUnsupportedNotified    map[string]bool
+	mamMUCUnsupportedPendingSync map[string]bool
 	rosterItems                  map[string]bool
 	bookmarkedRooms              map[string]bool
 	fullSyncRequested            bool
@@ -754,8 +755,19 @@ func (nc *MyNetworkClient) ensureMAMSupportForMUC(roomJID string) bool {
 	if nc.mamMUCUnsupportedNotified == nil {
 		nc.mamMUCUnsupportedNotified = map[string]bool{}
 	}
+	if !nc.fullSyncRequested {
+		if nc.mamMUCUnsupportedPendingSync == nil {
+			nc.mamMUCUnsupportedPendingSync = map[string]bool{}
+		}
+		nc.mamMUCUnsupportedPendingSync[service] = true
+		nc.mamSupportMu.Unlock()
+		return false
+	}
 	if !nc.mamMUCUnsupportedNotified[service] {
 		nc.mamMUCUnsupportedNotified[service] = true
+		if nc.mamMUCUnsupportedPendingSync != nil {
+			delete(nc.mamMUCUnsupportedPendingSync, service)
+		}
 		nc.mamSupportMu.Unlock()
 		nc.reportSyncError(fmt.Sprintf("MUC service %s does not advertise MAM support; group history backfill is disabled.", service))
 		return false
@@ -2019,6 +2031,13 @@ func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string
 	} else {
 		for key := range nc.mamMUCUnsupportedNotified {
 			delete(nc.mamMUCUnsupportedNotified, key)
+		}
+	}
+	if nc.mamMUCUnsupportedPendingSync == nil {
+		nc.mamMUCUnsupportedPendingSync = map[string]bool{}
+	} else {
+		for key := range nc.mamMUCUnsupportedPendingSync {
+			delete(nc.mamMUCUnsupportedPendingSync, key)
 		}
 	}
 	nc.mamSupportMu.Unlock()

@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"go.mau.fi/util/ptr"
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
@@ -40,15 +40,13 @@ func init() {
 }
 
 func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, participants []string) error {
-	service, err := nc.getMUCService(ctx)
+	roomJID, err := normalizedCheogramGroupJID(participants)
 	if err != nil {
 		return err
 	}
 	if name == "" {
 		name = "JMPChat Group"
 	}
-	roomNode := "jmpchat-" + uuid.NewString()
-	roomJID := fmt.Sprintf("%s@%s", roomNode, service)
 
 	nc.joinMUC(roomJID, "", "")
 	if err := nc.configureMUC(ctx, roomJID, name); err != nil {
@@ -78,6 +76,34 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 		nc.bookmarkedRooms[roomJID] = true
 	}
 	return nil
+}
+
+func normalizedCheogramGroupJID(participants []string) (string, error) {
+	numbers := make([]string, 0, len(participants))
+	seen := make(map[string]struct{}, len(participants))
+	for _, participant := range participants {
+		jid := strings.TrimSpace(strings.ToLower(participant))
+		if jid == "" {
+			continue
+		}
+		if !strings.HasSuffix(jid, "@cheogram.com") {
+			return "", fmt.Errorf("participant %s is not a cheogram.com address", participant)
+		}
+		localpart := strings.TrimSuffix(jid, "@cheogram.com")
+		if localpart == "" || strings.Contains(localpart, ",") {
+			return "", fmt.Errorf("participant %s is not a direct phone/JID", participant)
+		}
+		if _, ok := seen[localpart]; ok {
+			continue
+		}
+		seen[localpart] = struct{}{}
+		numbers = append(numbers, localpart)
+	}
+	if len(numbers) < 2 {
+		return "", fmt.Errorf("group chat requires at least two unique cheogram.com participants")
+	}
+	sort.Strings(numbers)
+	return strings.Join(numbers, ",") + "@cheogram.com", nil
 }
 
 func (nc *MyNetworkClient) getMUCService(ctx context.Context) (string, error) {

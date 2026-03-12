@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"html"
 	"sort"
 	"strconv"
 	"strings"
@@ -129,6 +130,15 @@ var CommandCreate = &commands.FullHandler{
 			return
 		}
 		if len(participants) == 1 {
+			existingPortal, err := findExistingPortalByJID(ce.Ctx, ce, login, participants[0])
+			if err != nil {
+				ce.Reply("Failed to check for existing chat: %v", err)
+				return
+			}
+			if existingPortal != nil && existingPortal.MXID != "" {
+				ce.ReplyAdvanced(existingRoomNotice("Chat", participants[0], existingPortal.MXID), false, true)
+				return
+			}
 			if err := client.createDM(ce.Ctx, participants[0]); err != nil {
 				ce.Reply("Failed to create chat: %v", err)
 				return
@@ -136,11 +146,25 @@ var CommandCreate = &commands.FullHandler{
 			ce.Reply("Created chat for %s", participants[0])
 			return
 		}
+		groupJID, err := normalizedCheogramGroupJID(participants)
+		if err != nil {
+			ce.Reply("Failed to create group chat: %v", err)
+			return
+		}
+		existingPortal, err := findExistingPortalByJID(ce.Ctx, ce, login, groupJID)
+		if err != nil {
+			ce.Reply("Failed to check for existing group chat: %v", err)
+			return
+		}
+		if existingPortal != nil && existingPortal.MXID != "" {
+			ce.ReplyAdvanced(existingRoomNotice("Group chat", groupJID, existingPortal.MXID), false, true)
+			return
+		}
 		if err := client.createGroupChat(ce.Ctx, name, participants); err != nil {
 			ce.Reply("Failed to create group chat: %v", err)
 			return
 		}
-		ce.Reply("Created group chat with %d participants", len(participants))
+		ce.Reply("Created group chat with %d participants (%s)", len(participants), groupJID)
 	},
 	Name: "create",
 	Help: commands.HelpMeta{
@@ -484,6 +508,39 @@ func normalizeJID(input string) string {
 		val = "+" + val
 	}
 	return val + "@cheogram.com"
+}
+
+func findExistingPortalByJID(ctx context.Context, ce *commands.Event, login *bridgev2.UserLogin, jid string) (*bridgev2.Portal, error) {
+	portalKey := networkid.PortalKey{ID: MakePortalID(jid)}
+	portal, err := ce.Bridge.GetExistingPortalByKey(ctx, portalKey)
+	if err != nil {
+		return nil, err
+	}
+	if portal != nil {
+		return portal, nil
+	}
+	userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ctx, login.UserLogin)
+	if err != nil {
+		return nil, err
+	}
+	for _, userPortal := range userPortals {
+		if userPortal.Portal != portalKey {
+			continue
+		}
+		portal, err = ce.Bridge.GetPortalByKey(ctx, userPortal.Portal)
+		if err != nil {
+			return nil, err
+		}
+		if portal != nil {
+			return portal, nil
+		}
+	}
+	return nil, nil
+}
+
+func existingRoomNotice(kind, jid string, roomID id.RoomID) string {
+	roomURL := roomID.URI().MatrixToURL()
+	return fmt.Sprintf("%s for <code>%s</code> already exists: <a href=\"%s\">%s</a>", kind, html.EscapeString(jid), html.EscapeString(roomURL), html.EscapeString(roomID.String()))
 }
 
 func sendNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) {
