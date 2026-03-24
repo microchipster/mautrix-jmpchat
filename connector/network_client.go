@@ -22,6 +22,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
+	"maunium.net/go/mautrix/bridgev2/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -100,9 +101,36 @@ type MyNetworkClient struct {
 	syncStatsMu                  sync.Mutex
 	connectMu                    sync.Mutex
 	connectStarted               bool
+	stopReconnect                chan struct{}
+	reconnectAttempt             int
+	postConnectMu                sync.Mutex
+	bridgeStateMu                sync.Mutex
+	lastBridgeState              status.BridgeStateEvent
 }
 
 const defaultMAMLookback = 30 * 24 * time.Hour
+
+const (
+	xmppReconnectInitialBackoff = 5 * time.Second
+	xmppReconnectMaxBackoff     = 2 * time.Minute
+)
+
+func xmppReconnectBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	backoff := xmppReconnectInitialBackoff
+	for i := 1; i < attempt; i++ {
+		if backoff >= xmppReconnectMaxBackoff {
+			return xmppReconnectMaxBackoff
+		}
+		backoff *= 2
+		if backoff >= xmppReconnectMaxBackoff {
+			return xmppReconnectMaxBackoff
+		}
+	}
+	return backoff
+}
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
@@ -802,6 +830,12 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 // Connect is called to establish the connection to XMPP.
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.log.Info().Msg("MyNetworkClient Connect called")
+	nc.sendBridgeState(status.StateConnecting, "Connecting to XMPP server", 0)
+	nc.connectMu.Lock()
+	if nc.stopReconnect == nil {
+		nc.stopReconnect = make(chan struct{})
+	}
+	nc.connectMu.Unlock()
 	if nc.mucRooms == nil {
 		nc.mucRooms = map[string]bool{}
 	}
@@ -877,6 +911,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	})
 	if err != nil {
 		nc.log.Err(err).Msg("Failed to create XMPP client")
+		nc.sendBridgeState(status.StateUnknownError, fmt.Sprintf("Failed to create XMPP client: %v", err), 60)
 		return
 	}
 
@@ -888,6 +923,8 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Msg("Connecting to XMPP...")
 
 	client.PostConnectHook = func() error {
+		nc.postConnectMu.Lock()
+		defer nc.postConnectMu.Unlock()
 		nc.log.Info().Msg("XMPP connected, running post connect hook")
 		if nc.xmppClient == nil {
 			return fmt.Errorf("XMPP client unavailable in post connect hook")
@@ -896,14 +933,13 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			nc.connected = true
 			if nc.connectedCh != nil {
 				close(nc.connectedCh)
+				nc.connectedCh = nil
 			}
 		}
-		if !nc.connected {
-			nc.connected = true
-			if nc.connectedCh != nil {
-				close(nc.connectedCh)
-			}
-		}
+		nc.connectMu.Lock()
+		nc.reconnectAttempt = 0
+		nc.connectMu.Unlock()
+		nc.sendBridgeState(status.StateConnected, "Connected to XMPP server", 0)
 
 		// 1. Request Roster
 		iq, _ := stanza.NewIQ(stanza.Attrs{
@@ -986,12 +1022,88 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	go func() {
 		// client.Connect() blocks until disconnection
 		err := client.Connect()
+		nc.connected = false
 		if err != nil {
 			nc.log.Err(err).Msg("Failed to establish XMPP connection")
 		} else {
 			nc.log.Warn().Msg("XMPP connection ended without error")
 		}
+		nc.handleDisconnect(err)
 	}()
+}
+
+func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, message string, ttl int) {
+	if nc.login == nil || nc.login.BridgeState == nil {
+		return
+	}
+	nc.bridgeStateMu.Lock()
+	if nc.lastBridgeState == stateEvent {
+		nc.bridgeStateMu.Unlock()
+		return
+	}
+	nc.lastBridgeState = stateEvent
+	nc.bridgeStateMu.Unlock()
+	state := status.BridgeState{StateEvent: stateEvent, TTL: ttl, Message: message}
+	nc.login.BridgeState.Send(state)
+}
+
+func (nc *MyNetworkClient) handleDisconnect(connectErr error) {
+	nc.connectMu.Lock()
+	if nc.stopReconnect == nil {
+		nc.connectStarted = false
+		nc.connectMu.Unlock()
+		return
+	}
+	stopReconnect := nc.stopReconnect
+	nc.xmppClient = nil
+	nc.connected = false
+	nc.connectedCh = make(chan struct{})
+	nc.connectStarted = false
+	nc.reconnectAttempt++
+	attempt := nc.reconnectAttempt
+	nc.connectMu.Unlock()
+
+	select {
+	case <-stopReconnect:
+		nc.log.Info().Msg("XMPP reconnect loop stopped")
+		return
+	default:
+	}
+
+	backoff := xmppReconnectBackoff(attempt)
+	nc.sendBridgeState(status.StateTransientDisconnect, fmt.Sprintf("Disconnected from XMPP server, retrying in %s", backoff.Round(time.Second)), int((backoff*2)/time.Second))
+	if connectErr != nil {
+		nc.log.Warn().Err(connectErr).Int("attempt", attempt).Dur("retry_in", backoff).Msg("XMPP connection lost, scheduling reconnect")
+	} else {
+		nc.log.Warn().Int("attempt", attempt).Dur("retry_in", backoff).Msg("XMPP connection ended, scheduling reconnect")
+	}
+
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+	select {
+	case <-stopReconnect:
+		nc.log.Info().Msg("XMPP reconnect cancelled")
+		return
+	case <-timer.C:
+	}
+
+	nc.connectMu.Lock()
+	select {
+	case <-stopReconnect:
+		nc.connectMu.Unlock()
+		nc.log.Info().Msg("XMPP reconnect aborted after stop signal")
+		return
+	default:
+	}
+	if nc.connectStarted {
+		nc.connectMu.Unlock()
+		return
+	}
+	nc.connectStarted = true
+	nc.connectMu.Unlock()
+
+	nc.log.Info().Msg("Reconnecting XMPP client")
+	go nc.Connect(context.Background())
 }
 
 func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
@@ -2152,6 +2264,14 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 // Disconnect cleans up the XMPP connection.
 func (nc *MyNetworkClient) Disconnect() {
 	nc.log.Info().Msg("MyNetworkClient Disconnect called")
+	nc.connectMu.Lock()
+	if nc.stopReconnect != nil {
+		close(nc.stopReconnect)
+		nc.stopReconnect = nil
+	}
+	nc.connectStarted = false
+	nc.reconnectAttempt = 0
+	nc.connectMu.Unlock()
 	nc.connected = false
 	if nc.xmppClient != nil {
 		nc.xmppClient.Disconnect()

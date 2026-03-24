@@ -93,6 +93,23 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	namespace := uuid.MustParse("f7a4f3e3-5d5a-4a9e-8d8a-3b0b9e8a1b2c")
 	loginIDStr := uuid.NewSHA1(namespace, []byte(strings.ToLower(username))).String()
 	var loginID networkid.UserLoginID = networkid.UserLoginID(loginIDStr)
+	existingLogin, err := sl.Main.bridge.GetExistingUserLoginByID(ctx, loginID)
+	if err != nil {
+		sl.Log.Err(err).Str("login_id", string(loginID)).Msg("Failed to check for existing user login")
+		return nil, fmt.Errorf("failed to check existing login for %q: %w", username, err)
+	}
+	if existingLogin != nil {
+		switch {
+		case existingLogin.User == nil:
+			return nil, fmt.Errorf("an existing login for %q is in an invalid state; please remove it before logging in again", username)
+		case existingLogin.User.MXID != sl.User.MXID:
+			return nil, fmt.Errorf("the XMPP account %q is already bridged by another Matrix user", username)
+		case existingLogin.ID != "":
+			return nil, fmt.Errorf("the XMPP account %q is already logged in for this Matrix user as login %s; use `list-logins` or `logout %s` first", username, existingLogin.ID, existingLogin.ID)
+		default:
+			return nil, fmt.Errorf("the XMPP account %q is already logged in", username)
+		}
+	}
 
 	ul, err := sl.User.NewLogin(ctx, &database.UserLogin{
 		ID:         loginID,
@@ -104,9 +121,7 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 			RemoteUserID: username,
 			AccessToken:  password,
 		},
-	}, &bridgev2.NewLoginParams{
-		DeleteOnConflict: true,
-	})
+	}, &bridgev2.NewLoginParams{})
 	if err != nil {
 		sl.Log.Err(err).Msg("Failed to create user login entry")
 		return nil, fmt.Errorf("failed to create user login: %w", err)

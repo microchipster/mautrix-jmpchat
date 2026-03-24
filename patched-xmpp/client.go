@@ -312,6 +312,9 @@ func (c *Client) Send(packet stanza.Packet) error {
 	if conn == nil {
 		return errors.New("client is not connected")
 	}
+	if c.Session == nil {
+		return errors.New("client session is not established")
+	}
 
 	data, err := xml.Marshal(packet)
 	if err != nil {
@@ -322,6 +325,9 @@ func (c *Client) Send(packet stanza.Packet) error {
 	// See https://xmpp.org/extensions/xep-0198.html#scenarios
 	if c.config.StreamManagementEnable {
 		if _, ok := packet.(stanza.SMRequest); !ok {
+			if c.Session.SMState.UnAckQueue == nil {
+				return errors.New("stream management queue is not initialized")
+			}
 			toStore := stanza.UnAckedStz{Stz: string(data)}
 			c.Session.SMState.UnAckQueue.Push(&toStore)
 		}
@@ -336,9 +342,8 @@ func (c *Client) Send(packet stanza.Packet) error {
 // The provided context should have a timeout to prevent the client from waiting
 // forever for an IQ result. For example:
 //
-//   ctx, _ := context.WithTimeout(context.Background(), 30 * time.Second)
-//   result := <- client.SendIQ(ctx, iq)
-//
+//	ctx, _ := context.WithTimeout(context.Background(), 30 * time.Second)
+//	result := <- client.SendIQ(ctx, iq)
 func (c *Client) SendIQ(ctx context.Context, iq *stanza.IQ) (chan stanza.IQ, error) {
 	if iq.Attrs.Type != stanza.IQTypeSet && iq.Attrs.Type != stanza.IQTypeGet {
 		return nil, ErrCanOnlySendGetOrSetIq
@@ -358,10 +363,16 @@ func (c *Client) SendRaw(packet string) error {
 	if conn == nil {
 		return errors.New("client is not connected")
 	}
+	if c.Session == nil {
+		return errors.New("client session is not established")
+	}
 
 	// Store stanza as non-acked as part of stream management
 	// See https://xmpp.org/extensions/xep-0198.html#scenarios
 	if c.config.StreamManagementEnable {
+		if c.Session.SMState.UnAckQueue == nil {
+			return errors.New("stream management queue is not initialized")
+		}
 		toStore := stanza.UnAckedStz{Stz: packet}
 		c.Session.SMState.UnAckQueue.Push(&toStore)
 	}
