@@ -32,7 +32,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	log.Info().Msg("HandleMatrixMessage called")
 
-	if nc.xmppClient == nil {
+	if !nc.isXMPPConnected() {
 		return nil, fmt.Errorf("XMPP client not connected")
 	}
 
@@ -88,7 +88,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		m.Extensions = append(m.Extensions, XMPPOriginID{ID: string(msg.Event.ID)})
 	}
 
-	err := nc.xmppClient.Send(m)
+	err := nc.sendXMPP(m)
 	if err != nil {
 		log.Err(err).Msg("Failed to send XMPP message")
 		return nil, fmt.Errorf("failed to send XMPP message: %w", err)
@@ -120,7 +120,7 @@ func (nc *MyNetworkClient) PreHandleMatrixReaction(ctx context.Context, msg *bri
 }
 
 func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (*database.Reaction, error) {
-	if nc.xmppClient == nil {
+	if !nc.isXMPPConnected() {
 		return nil, fmt.Errorf("XMPP client not connected")
 	}
 	rel := msg.Content.GetRelatesTo()
@@ -149,7 +149,7 @@ func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridge
 		Reacts: []string{emoji},
 	})
 
-	if err := nc.xmppClient.Send(xmppMsg); err != nil {
+	if err := nc.sendXMPP(xmppMsg); err != nil {
 		return nil, fmt.Errorf("failed to send XMPP reaction: %w", err)
 	}
 

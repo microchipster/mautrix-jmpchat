@@ -154,7 +154,7 @@ func isMUCService(info *stanza.DiscoInfo) bool {
 }
 
 func (nc *MyNetworkClient) configureMUC(ctx context.Context, roomJID string, name string) error {
-	if nc.xmppClient == nil {
+	if !nc.isXMPPConnected() {
 		return fmt.Errorf("XMPP client not connected")
 	}
 	fields := []XDataField{
@@ -189,7 +189,7 @@ func (nc *MyNetworkClient) configureMUC(ctx context.Context, roomJID string, nam
 }
 
 func (nc *MyNetworkClient) inviteToMUC(roomJID string, jid string, reason string) error {
-	if nc.xmppClient == nil {
+	if !nc.isXMPPConnected() {
 		return fmt.Errorf("XMPP client not connected")
 	}
 	jid = strings.TrimSpace(jid)
@@ -203,5 +203,5 @@ func (nc *MyNetworkClient) inviteToMUC(roomJID string, jid string, reason string
 			Reason: reason,
 		},
 	})
-	return nc.xmppClient.Send(msg)
+	return nc.sendXMPP(msg)
 }

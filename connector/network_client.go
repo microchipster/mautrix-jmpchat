@@ -146,9 +146,6 @@ func (nc *MyNetworkClient) defaultMUCNick() string {
 }
 
 func (nc *MyNetworkClient) requestBookmarks() error {
-	if nc.xmppClient == nil {
-		return fmt.Errorf("XMPP client not connected")
-	}
 	if err := nc.requestBookmarks2(); err != nil {
 		nc.log.Err(err).Msg("Failed to send bookmarks2 request")
 	}
@@ -157,7 +154,7 @@ func (nc *MyNetworkClient) requestBookmarks() error {
 		Id:   fmt.Sprintf("bookmarks_%d", time.Now().UnixNano()),
 	})
 	bookmarksIq.Payload = &PrivateBookmarkQuery{Storage: &BookmarkStorage{}}
-	if err := nc.xmppClient.Send(bookmarksIq); err != nil {
+	if err := nc.sendXMPP(bookmarksIq); err != nil {
 		return err
 	}
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -169,9 +166,6 @@ func (nc *MyNetworkClient) requestBookmarks() error {
 }
 
 func (nc *MyNetworkClient) requestBookmarks2() error {
-	if nc.xmppClient == nil {
-		return fmt.Errorf("XMPP client not connected")
-	}
 	remote := ""
 	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
 		remote = meta.RemoteUserID
@@ -191,7 +185,7 @@ func (nc *MyNetworkClient) requestBookmarks2() error {
 	bookmarksIq.Payload = &stanza.PubSubGeneric{
 		Items: &stanza.Items{Node: NSBookmarks2},
 	}
-	if err := nc.xmppClient.Send(bookmarksIq); err != nil {
+	if err := nc.sendXMPP(bookmarksIq); err != nil {
 		return err
 	}
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -205,25 +199,18 @@ func (nc *MyNetworkClient) requestBookmarks2() error {
 }
 
 func (nc *MyNetworkClient) requestRoster() error {
-	if nc.xmppClient == nil {
-		return fmt.Errorf("XMPP client not connected")
-	}
 	iq, _ := stanza.NewIQ(stanza.Attrs{
 		Type: stanza.IQTypeGet,
 		Id:   fmt.Sprintf("roster_%d", time.Now().UnixNano()),
 	})
 	iq.Payload = &stanza.Roster{}
-	if err := nc.xmppClient.Send(iq); err != nil {
+	if err := nc.sendXMPP(iq); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
-	if nc.xmppClient == nil {
-		nc.log.Error().Str("room_jid", roomJID).Msg("Cannot join MUC: XMPP client is nil")
-		return
-	}
 	if nickname == "" {
 		nickname = nc.defaultMUCNick()
 	}
@@ -276,7 +263,7 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 		nc.mucRooms[roomJID] = true
 	}
 
-	if err := nc.xmppClient.Send(pres); err != nil {
+	if err := nc.sendXMPP(pres); err != nil {
 		nc.log.Err(err).Str("room_jid", roomJID).Str("nick", nickname).Msg("Failed to join MUC")
 		return
 	}
@@ -687,7 +674,7 @@ func (nc *MyNetworkClient) discoveredRoomLists() (bookmarks []string, disco []st
 }
 
 func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
-	if serverDomain == "" || nc.xmppClient == nil {
+	if serverDomain == "" {
 		return
 	}
 	candidates := []string{
@@ -711,7 +698,7 @@ func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
 			Id:   fmt.Sprintf("disco_info_probe_%d", time.Now().UnixNano()),
 		})
 		infoIq.Payload = &stanza.DiscoInfo{}
-		if err := nc.xmppClient.Send(infoIq); err != nil {
+		if err := nc.sendXMPP(infoIq); err != nil {
 			nc.log.Err(err).Str("to", candidate).Msg("Failed to probe disco info")
 		} else if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().Str("to", candidate).Msg("Probing disco info")
@@ -722,7 +709,7 @@ func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
 			Id:   fmt.Sprintf("disco_items_probe_%d", time.Now().UnixNano()),
 		})
 		itemsIq.Payload = &stanza.DiscoItems{}
-		if err := nc.xmppClient.Send(itemsIq); err != nil {
+		if err := nc.sendXMPP(itemsIq); err != nil {
 			nc.log.Err(err).Str("to", candidate).Msg("Failed to probe disco items")
 		} else if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().Str("to", candidate).Msg("Probing disco items")
@@ -1057,7 +1044,15 @@ func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
 	if client.Session == nil {
 		return fmt.Errorf("XMPP session is not established")
 	}
+	if !nc.connected {
+		return fmt.Errorf("XMPP client is disconnecting")
+	}
 	return client.Send(packet)
+}
+
+func (nc *MyNetworkClient) isXMPPConnected() bool {
+	client := nc.xmppClient
+	return nc.connected && client != nil && client.Session != nil
 }
 
 func (nc *MyNetworkClient) handleDisconnect(connectErr error) {
@@ -1259,6 +1254,10 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 	if iq.Type == stanza.IQTypeResult {
 		switch payload := iq.Payload.(type) {
 		case *stanza.RosterItems:
+			if !nc.isXMPPConnected() {
+				nc.log.Debug().Msg("Skipping roster result follow-up while XMPP is disconnected")
+				return
+			}
 			nc.log.Info().Int("items", len(payload.Items)).Msg("Received roster items")
 			for _, item := range payload.Items {
 				bareJID := strings.Split(item.Jid, "/")[0]
@@ -1332,6 +1331,10 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 			nc.log.Debug().Msg("Received roster result without items")
 		case *BookmarkStorage:
 			nc.log.Info().Int("items", len(payload.Conferences)).Str("from", string(iq.From)).Msg("Received bookmarks")
+			if !nc.isXMPPConnected() {
+				nc.log.Debug().Msg("Skipping bookmark follow-up while XMPP is disconnected")
+				return
+			}
 			nc.handleBookmarkConferences(payload.Conferences, "storage")
 			if nc.fullSyncBookmarksPending {
 				nc.fullSyncBookmarksPending = false
@@ -1343,6 +1346,10 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				return
 			}
 			nc.log.Info().Int("items", len(payload.Storage.Conferences)).Str("from", string(iq.From)).Msg("Received bookmarks")
+			if !nc.isXMPPConnected() {
+				nc.log.Debug().Msg("Skipping private bookmark follow-up while XMPP is disconnected")
+				return
+			}
 			nc.handleBookmarkConferences(payload.Storage.Conferences, "private")
 			if nc.fullSyncBookmarksPending {
 				nc.fullSyncBookmarksPending = false
@@ -1417,8 +1424,16 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 			}
 			nc.log.Info().Int("items", len(confs)).Msg("Received bookmarks2 list")
+			if !nc.isXMPPConnected() {
+				nc.log.Debug().Msg("Skipping bookmarks2 follow-up while XMPP is disconnected")
+				return
+			}
 			nc.handleBookmarkConferences(confs, "bookmarks2")
 		case *stanza.DiscoItems:
+			if !nc.isXMPPConnected() {
+				nc.log.Debug().Str("from", string(iq.From)).Msg("Skipping disco items follow-up while XMPP is disconnected")
+				return
+			}
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
 				items := make([]string, 0, len(payload.Items))
 				for _, item := range payload.Items {
@@ -1810,7 +1825,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	}
 	logJIDNormalization(nc.log, "message_sender", senderID)
 	if isMUC && !fromMAM {
-		if nc.mucRooms == nil || !nc.mucRooms[bareFromJid] {
+		if (nc.mucRooms == nil || !nc.mucRooms[bareFromJid]) && nc.isXMPPConnected() {
 			start := time.Now().Add(-defaultMAMLookback)
 			nc.scheduleMUCBackfill(bareFromJid, start)
 			nc.joinMUC(bareFromJid, "", "")
