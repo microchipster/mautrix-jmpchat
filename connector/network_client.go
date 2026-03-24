@@ -926,8 +926,12 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.postConnectMu.Lock()
 		defer nc.postConnectMu.Unlock()
 		nc.log.Info().Msg("XMPP connected, running post connect hook")
-		if nc.xmppClient == nil {
+		client := nc.xmppClient
+		if client == nil {
 			return fmt.Errorf("XMPP client unavailable in post connect hook")
+		}
+		if client.Session == nil || client.Session.BindJid == "" {
+			return fmt.Errorf("XMPP session is not ready in post connect hook")
 		}
 		if !nc.connected {
 			nc.connected = true
@@ -947,52 +951,50 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			Id:   fmt.Sprintf("roster_%d", time.Now().UnixNano()),
 		})
 		iq.Payload = &stanza.Roster{}
-		if err := nc.xmppClient.Send(iq); err != nil {
+		if err := client.Send(iq); err != nil {
 			nc.log.Err(err).Msg("Failed to send roster request")
 		} else {
 			nc.log.Debug().Msg("Sent roster request")
 		}
 
 		// 2. Request Server Disco Info
-		if nc.xmppClient.Session != nil {
-			bindJid := nc.xmppClient.Session.BindJid
-			serverDomain := ""
-			parts := strings.SplitN(bindJid, "@", 2)
-			if len(parts) == 2 {
-				serverDomain = parts[1]
-			} else {
-				serverDomain = bindJid
-			}
-			serverDomain = strings.SplitN(serverDomain, "/", 2)[0]
-			if serverDomain == "" {
-				nc.log.Warn().Str("bind_jid", bindJid).Msg("Skipping disco: could not parse server domain")
-				return nil
-			}
-			discoIq, _ := stanza.NewIQ(stanza.Attrs{
-				Type: stanza.IQTypeGet,
-				To:   serverDomain,
-				Id:   fmt.Sprintf("disco_info_%d", time.Now().UnixNano()),
-			})
-			discoIq.Payload = &stanza.DiscoInfo{}
-			if err := nc.xmppClient.Send(discoIq); err != nil {
-				nc.log.Err(err).Msg("Failed to send disco info request")
-			} else {
-				nc.log.Debug().Str("to", serverDomain).Msg("Sent disco info request")
-			}
-
-			discoItemsIq, _ := stanza.NewIQ(stanza.Attrs{
-				Type: stanza.IQTypeGet,
-				To:   serverDomain,
-				Id:   fmt.Sprintf("disco_items_%d", time.Now().UnixNano()),
-			})
-			discoItemsIq.Payload = &stanza.DiscoItems{}
-			if err := nc.xmppClient.Send(discoItemsIq); err != nil {
-				nc.log.Err(err).Msg("Failed to send disco items request")
-			} else {
-				nc.log.Debug().Str("to", serverDomain).Msg("Sent disco items request")
-			}
-			nc.probeMUCServices(serverDomain)
+		bindJid := client.Session.BindJid
+		serverDomain := ""
+		parts := strings.SplitN(bindJid, "@", 2)
+		if len(parts) == 2 {
+			serverDomain = parts[1]
+		} else {
+			serverDomain = bindJid
 		}
+		serverDomain = strings.SplitN(serverDomain, "/", 2)[0]
+		if serverDomain == "" {
+			nc.log.Warn().Str("bind_jid", bindJid).Msg("Skipping disco: could not parse server domain")
+			return nil
+		}
+		discoIq, _ := stanza.NewIQ(stanza.Attrs{
+			Type: stanza.IQTypeGet,
+			To:   serverDomain,
+			Id:   fmt.Sprintf("disco_info_%d", time.Now().UnixNano()),
+		})
+		discoIq.Payload = &stanza.DiscoInfo{}
+		if err := client.Send(discoIq); err != nil {
+			nc.log.Err(err).Msg("Failed to send disco info request")
+		} else {
+			nc.log.Debug().Str("to", serverDomain).Msg("Sent disco info request")
+		}
+
+		discoItemsIq, _ := stanza.NewIQ(stanza.Attrs{
+			Type: stanza.IQTypeGet,
+			To:   serverDomain,
+			Id:   fmt.Sprintf("disco_items_%d", time.Now().UnixNano()),
+		})
+		discoItemsIq.Payload = &stanza.DiscoItems{}
+		if err := client.Send(discoItemsIq); err != nil {
+			nc.log.Err(err).Msg("Failed to send disco items request")
+		} else {
+			nc.log.Debug().Str("to", serverDomain).Msg("Sent disco items request")
+		}
+		nc.probeMUCServices(serverDomain)
 
 		// 3. Enable Message Carbons
 		carbonsIq, _ := stanza.NewIQ(stanza.Attrs{
@@ -1000,7 +1002,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			Id:   fmt.Sprintf("carbons_%d", time.Now().UnixNano()),
 		})
 		carbonsIq.Payload = &CarbonsEnable{}
-		if err := nc.xmppClient.Send(carbonsIq); err != nil {
+		if err := client.Send(carbonsIq); err != nil {
 			nc.log.Err(err).Msg("Failed to enable message carbons")
 		} else {
 			nc.log.Debug().Msg("Enabled message carbons")
@@ -1045,6 +1047,17 @@ func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, m
 	nc.bridgeStateMu.Unlock()
 	state := status.BridgeState{StateEvent: stateEvent, TTL: ttl, Message: message}
 	nc.login.BridgeState.Send(state)
+}
+
+func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
+	client := nc.xmppClient
+	if client == nil {
+		return fmt.Errorf("XMPP client not connected")
+	}
+	if client.Session == nil {
+		return fmt.Errorf("XMPP session is not established")
+	}
+	return client.Send(packet)
 }
 
 func (nc *MyNetworkClient) handleDisconnect(connectErr error) {
@@ -1265,7 +1278,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					Id:   fmt.Sprintf("disco_info_roster_%d", time.Now().UnixNano()),
 				})
 				discoIq.Payload = &stanza.DiscoInfo{}
-				if err := nc.xmppClient.Send(discoIq); err != nil {
+				if err := nc.sendXMPP(discoIq); err != nil {
 					nc.log.Err(err).Str("to", bareJID).Msg("Failed to send disco info for roster item")
 				}
 				if nc.rosterItems != nil {
@@ -1475,7 +1488,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					Id:   fmt.Sprintf("disco_info_%d", time.Now().UnixNano()),
 				})
 				discoIq.Payload = &stanza.DiscoInfo{}
-				if err := nc.xmppClient.Send(discoIq); err != nil {
+				if err := nc.sendXMPP(discoIq); err != nil {
 					nc.log.Err(err).Str("to", item.JID).Msg("Failed to send disco info request")
 				}
 			}
@@ -1514,7 +1527,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 						Id:   fmt.Sprintf("disco_items_muc_%d", time.Now().UnixNano()),
 					})
 					discoIq.Payload = &stanza.DiscoItems{}
-					if err := nc.xmppClient.Send(discoIq); err != nil {
+					if err := nc.sendXMPP(discoIq); err != nil {
 						nc.log.Err(err).Str("to", iq.From).Msg("Failed to send MUC disco items request")
 						nc.reportSyncError(fmt.Sprintf("Failed to list rooms for MUC service %s: %v", iq.From, err))
 					}
