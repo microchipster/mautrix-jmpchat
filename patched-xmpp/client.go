@@ -32,6 +32,11 @@ func (scs *SyncConnState) getState() ConnState {
 	return res
 }
 
+// GetState is a thread-safe getter for the current state.
+func (scs *SyncConnState) GetState() ConnState {
+	return scs.getState()
+}
+
 // setState is a thread-safe setter for the current
 func (scs *SyncConnState) setState(cs ConnState) {
 	scs.Lock()
@@ -212,6 +217,32 @@ func NewClient(config *Config, r *Router, errorHandler func(error)) (c *Client, 
 	return
 }
 
+func (c *Client) startRuntime() {
+	// Start the keepalive go routine
+	keepaliveQuit := make(chan struct{})
+	go keepalive(c.transport, c.config.KeepaliveInterval, keepaliveQuit)
+	// Start the receiver go routine
+	go c.recv(keepaliveQuit)
+}
+
+func (c *Client) postSessionSetup() error {
+	if c.Session != nil && c.Session.Resumed {
+		if c.PostResumeHook != nil {
+			return c.PostResumeHook()
+		}
+		return nil
+	}
+	// TODO: Do we always want to send initial presence automatically ?
+	// Do we need an option to avoid that or do we rely on client to send the presence itself ?
+	if err := c.sendWithWriter(c.transport, []byte(InitialPresence)); err != nil {
+		return err
+	}
+	if c.PostConnectHook != nil {
+		return c.PostConnectHook()
+	}
+	return nil
+}
+
 // Connect establishes a first time connection to a XMPP server.
 // It calls the PostConnectHook
 func (c *Client) Connect() error {
@@ -219,23 +250,12 @@ func (c *Client) Connect() error {
 	if err != nil {
 		return err
 	}
-	// TODO: Do we always want to send initial presence automatically ?
-	// Do we need an option to avoid that or do we rely on client to send the presence itself ?
-	err = c.sendWithWriter(c.transport, []byte(InitialPresence))
-	// Execute the post first connection hook. Typically this holds "ask for roster" and this type of actions.
-	if c.PostConnectHook != nil {
-		err = c.PostConnectHook()
-		if err != nil {
-			return err
-		}
+	err = c.postSessionSetup()
+	if err != nil {
+		return err
 	}
-
-	// Start the keepalive go routine
-	keepaliveQuit := make(chan struct{})
-	go keepalive(c.transport, c.config.KeepaliveInterval, keepaliveQuit)
-	// Start the receiver go routine
-	go c.recv(keepaliveQuit)
-	return err
+	c.startRuntime()
+	return nil
 }
 
 // connect establishes an actual TCP connection, based on previously defined parameters, as well as a XMPP session
@@ -285,12 +305,12 @@ func (c *Client) Resume() error {
 	if err != nil {
 		return err
 	}
-	// Execute post reconnect hook. This can be different from the first connection hook, and not trigger roster retrieval
-	// for example.
-	if c.PostResumeHook != nil {
-		err = c.PostResumeHook()
+	err = c.postSessionSetup()
+	if err != nil {
+		return err
 	}
-	return err
+	c.startRuntime()
+	return nil
 }
 
 // Disconnect disconnects the client from the server, sending a stream close nonza and closing the TCP connection.
@@ -325,6 +345,9 @@ func (c *Client) Send(packet stanza.Packet) error {
 	// See https://xmpp.org/extensions/xep-0198.html#scenarios
 	if c.config.StreamManagementEnable {
 		if _, ok := packet.(stanza.SMRequest); !ok {
+			if _, ok := packet.(stanza.SMAnswer); ok {
+				return c.sendWithWriter(c.transport, data)
+			}
 			if c.Session.SMState.UnAckQueue == nil {
 				return errors.New("stream management queue is not initialized")
 			}
@@ -348,10 +371,12 @@ func (c *Client) SendIQ(ctx context.Context, iq *stanza.IQ) (chan stanza.IQ, err
 	if iq.Attrs.Type != stanza.IQTypeSet && iq.Attrs.Type != stanza.IQTypeGet {
 		return nil, ErrCanOnlySendGetOrSetIq
 	}
+	resultCh := c.router.NewIQResultRoute(ctx, iq.Attrs.Id)
 	if err := c.Send(iq); err != nil {
+		c.router.RemoveIQResultRoute(iq.Attrs.Id)
 		return nil, err
 	}
-	return c.router.NewIQResultRoute(ctx, iq.Attrs.Id), nil
+	return resultCh, nil
 }
 
 // SendRaw sends an XMPP stanza as a string to the server.
@@ -419,11 +444,16 @@ func (c *Client) recv(keepaliveQuit chan<- struct{}) {
 				c.ErrorHandler(err)
 				return
 			}
+			continue
+		case stanza.SMAnswer:
+			c.router.route(c, val)
+			continue
 		case stanza.StreamClosePacket:
 			// TCP messages should arrive in order, so we can expect to get nothing more after this occurs
 			c.transport.ReceivedStreamClose()
+			c.disconnected(c.Session.SMState)
 			return
-		default:
+		case stanza.Message, stanza.Presence, *stanza.IQ:
 			c.Session.SMState.Inbound++
 		}
 		// Do normal route processing in a go-routine so we can immediately

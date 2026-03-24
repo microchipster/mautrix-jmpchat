@@ -40,6 +40,7 @@ func init() {
 }
 
 func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, participants []string) error {
+	_ = ctx
 	roomJID, err := normalizedCheogramGroupJID(participants)
 	if err != nil {
 		return err
@@ -48,10 +49,11 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 		name = "JMPChat Group"
 	}
 
+	nc.queuePendingMUCCreation(roomJID, pendingMUCCreation{
+		name:         name,
+		participants: append([]string(nil), participants...),
+	})
 	nc.joinMUC(roomJID, "", "")
-	if err := nc.configureMUC(ctx, roomJID, name); err != nil {
-		return err
-	}
 	portalID := MakePortalID(roomJID)
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
@@ -66,11 +68,6 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 		},
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
-	for _, participant := range participants {
-		if err := nc.inviteToMUC(roomJID, participant, "JMPChat group chat"); err != nil {
-			nc.log.Err(err).Str("jid", participant).Msg("Failed to invite participant")
-		}
-	}
 
 	if nc.bookmarkedRooms != nil {
 		nc.bookmarkedRooms[roomJID] = true

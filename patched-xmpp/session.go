@@ -12,6 +12,7 @@ type Session struct {
 	// Session info
 	BindJid      string // Jabber ID as provided by XMPP server
 	StreamId     string
+	Resumed      bool
 	SMState      SMState
 	Features     stanza.StreamFeatures
 	TlsEnabled   bool
@@ -54,6 +55,7 @@ func NewSession(c *Client, state SMState) (*Session, error) {
 	if s.TlsEnabled {
 		s.reset()
 	}
+	s.Resumed = false
 
 	// auth
 	s.auth(c.config)
@@ -160,6 +162,9 @@ func (s *Session) auth(o *Config) {
 
 // Attempt to resume session using stream management
 func (s *Session) resume(o *Config) bool {
+	if !o.StreamManagementEnable || !o.StreamManagementResume {
+		return false
+	}
 	if !s.Features.DoesStreamManagement() {
 		return false
 	}
@@ -187,6 +192,16 @@ func (s *Session) resume(o *Config) bool {
 				s.SMState = SMState{}
 				return false
 			}
+			if p.H != nil && s.SMState.UnAckQueue != nil {
+				ackIdx := 0
+				s.SMState.UnAckQueue.RWMutex.Lock()
+				for ackIdx < len(s.SMState.UnAckQueue.Uslice) && s.SMState.UnAckQueue.Uslice[ackIdx].Id <= int(*p.H) {
+					ackIdx++
+				}
+				s.SMState.UnAckQueue.Uslice = s.SMState.UnAckQueue.Uslice[ackIdx:]
+				s.SMState.UnAckQueue.RWMutex.Unlock()
+			}
+			s.Resumed = true
 			return true
 		case stanza.SMFailed:
 		default:
@@ -304,7 +319,7 @@ func (s *Session) EnableStreamManagement(o *Config) {
 		return
 	}
 	q := stanza.NewUnAckQueue()
-	ebleNonza := stanza.SMEnable{Resume: &o.streamManagementResume}
+	ebleNonza := stanza.SMEnable{Resume: &o.StreamManagementResume}
 	pktStr, err := xml.Marshal(ebleNonza)
 	if err != nil {
 		s.err = err
@@ -324,9 +339,7 @@ func (s *Session) EnableStreamManagement(o *Config) {
 			// Server allows resumption or not using SMEnabled attribute "resume". We must read the server response
 			// and update config accordingly
 			b, err := strconv.ParseBool(p.Resume)
-			if err != nil || !b {
-				o.StreamManagementEnable = false
-			}
+			o.StreamManagementResume = err == nil && b
 			s.SMState = SMState{Id: p.Id, preferredReconAddr: p.Location}
 			s.SMState.UnAckQueue = q
 		case stanza.SMFailed:

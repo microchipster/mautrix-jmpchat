@@ -40,7 +40,7 @@ func (t *XMPPTransport) Connect() (string, error) {
 		return "", NewConnError(err, true)
 	}
 
-	t.closeChan = make(chan stanza.StreamClosePacket)
+	t.closeChan = make(chan stanza.StreamClosePacket, 1)
 	t.readWriter = newStreamLogger(t.conn, t.logFile)
 	t.decoder = xml.NewDecoder(bufio.NewReaderSize(t.readWriter, maxPacketSize))
 	t.decoder.CharsetReader = t.Config.CharsetReader
@@ -140,9 +140,11 @@ func (t *XMPPTransport) Close() error {
 	}
 
 	// Try to wait for the stream close tag from the server. After a timeout, disconnect anyway.
-	select {
-	case <-t.closeChan:
-	case <-time.After(time.Duration(t.Config.ConnectTimeout) * time.Second):
+	if t.closeChan != nil {
+		select {
+		case <-t.closeChan:
+		case <-time.After(time.Duration(t.Config.ConnectTimeout) * time.Second):
+		}
 	}
 
 	if t.conn != nil {
@@ -156,5 +158,11 @@ func (t *XMPPTransport) LogTraffic(logFile io.Writer) {
 }
 
 func (t *XMPPTransport) ReceivedStreamClose() {
-	t.closeChan <- stanza.StreamClosePacket{}
+	if t.closeChan == nil {
+		return
+	}
+	select {
+	case t.closeChan <- stanza.StreamClosePacket{}:
+	default:
+	}
 }

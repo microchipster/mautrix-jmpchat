@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -76,6 +77,13 @@ type MAMDelay struct {
 	Stamp   string   `xml:"stamp,attr,omitempty"`
 }
 
+type collectedMAMMessage struct {
+	Message    stanza.Message
+	Timestamp  time.Time
+	IDOverride string
+	IsFromMe   bool
+}
+
 func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMAM, Local: "query"}, MAMQuery{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMAM, Local: "fin"}, MAMFin{})
@@ -83,16 +91,16 @@ func init() {
 }
 
 func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max int, start time.Time) error {
-	_, err := nc.requestMAMPage(ctx, roomJID, "", max, start, nil)
+	_, _, err := nc.requestMAMPage(ctx, roomJID, "", max, start, nil)
 	return err
 }
 
-func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before *string) (*MAMFin, error) {
+func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before *string) (*MAMFin, []collectedMAMMessage, error) {
 	if nc.xmppClient == nil {
-		return nil, fmt.Errorf("XMPP client not connected")
+		return nil, nil, fmt.Errorf("XMPP client not connected")
 	}
 	if toJID == "" && withJID == "" {
-		return nil, fmt.Errorf("MAM target JID is empty")
+		return nil, nil, fmt.Errorf("MAM target JID is empty")
 	}
 	if max <= 0 {
 		max = 100
@@ -123,6 +131,9 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	if !start.IsZero() {
 		fields = append(fields, XDataField{Var: "start", Values: []string{start.UTC().Format(time.RFC3339)}})
 	}
+	if !nc.sessionEstablishedAt.IsZero() {
+		fields = append(fields, XDataField{Var: "end", Values: []string{nc.sessionEstablishedAt.UTC().Format(time.RFC3339)}})
+	}
 
 	set := &stanza.ResultSet{Max: &max}
 	if before != nil {
@@ -147,15 +158,31 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	}
 	iq, _ := stanza.NewIQ(attrs)
 	iq.Payload = q
+	nc.mamQueryMu.Lock()
+	if nc.mamQueryResults == nil {
+		nc.mamQueryResults = make(map[string][]collectedMAMMessage)
+	}
+	nc.mamQueryResults[queryID] = nil
+	nc.mamQueryMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ch, err := nc.xmppClient.SendIQ(ctx, iq)
 	if err != nil {
-		return nil, err
+		nc.mamQueryMu.Lock()
+		delete(nc.mamQueryResults, queryID)
+		nc.mamQueryMu.Unlock()
+		return nil, nil, err
 	}
 	select {
 	case resp := <-ch:
+		results := nc.takeMAMQueryResults(queryID)
+		sort.SliceStable(results, func(i, j int) bool {
+			if results[i].Timestamp.Equal(results[j].Timestamp) {
+				return results[i].IDOverride < results[j].IDOverride
+			}
+			return results[i].Timestamp.Before(results[j].Timestamp)
+		})
 		if resp.Type != stanza.IQTypeResult {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
 				nc.log.Debug().
@@ -164,11 +191,11 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 					Interface("payload", resp.Payload).
 					Msg("MAM request returned non-result IQ")
 			}
-			return nil, fmt.Errorf("MAM request failed: %s", resp.Type)
+			return nil, nil, fmt.Errorf("MAM request failed: %s", resp.Type)
 		}
 		fin, ok := resp.Payload.(*MAMFin)
 		if !ok || fin == nil {
-			return nil, fmt.Errorf("unexpected MAM fin payload")
+			return nil, nil, fmt.Errorf("unexpected MAM fin payload")
 		}
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
 			set := fin.Set
@@ -194,10 +221,32 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 				Str("count", count).
 				Msg("Received MAM fin")
 		}
-		return fin, nil
+		return fin, results, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		nc.takeMAMQueryResults(queryID)
+		return nil, nil, ctx.Err()
 	}
+}
+
+func (nc *MyNetworkClient) takeMAMQueryResults(queryID string) []collectedMAMMessage {
+	nc.mamQueryMu.Lock()
+	defer nc.mamQueryMu.Unlock()
+	results := nc.mamQueryResults[queryID]
+	delete(nc.mamQueryResults, queryID)
+	return results
+}
+
+func (nc *MyNetworkClient) storeMAMQueryResult(queryID string, result collectedMAMMessage) bool {
+	nc.mamQueryMu.Lock()
+	defer nc.mamQueryMu.Unlock()
+	if nc.mamQueryResults == nil {
+		return false
+	}
+	if _, ok := nc.mamQueryResults[queryID]; !ok {
+		return false
+	}
+	nc.mamQueryResults[queryID] = append(nc.mamQueryResults[queryID], result)
+	return true
 }
 
 func (nc *MyNetworkClient) backfillMUC(ctx context.Context, roomJID string, start time.Time) error {
@@ -230,7 +279,7 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 			Msg("Starting MAM backfill")
 	}
 	for page := 0; page < maxPages; page++ {
-		fin, err := nc.requestMAMPage(ctx, toJID, withJID, pageSize, start, &before)
+		fin, results, err := nc.requestMAMPage(ctx, toJID, withJID, pageSize, start, &before)
 		if err != nil {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
 				nc.log.Debug().
@@ -241,6 +290,9 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 					Msg("MAM backfill request failed")
 			}
 			return err
+		}
+		for _, result := range results {
+			nc.handleIncomingXMPPMessage(result.Message, result.Timestamp, result.IDOverride, result.IsFromMe, true)
 		}
 		if fin == nil || fin.Set == nil || fin.Set.First == nil || fin.Set.First.Content == "" {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {

@@ -83,28 +83,42 @@ func (r *Router) route(s Sender, p stanza.Packet) {
 
 // SendMissingStz sends all stanzas that did not reach the server, according to the response to an ack request (see XEP-0198, acks)
 func SendMissingStz(lastSent int, s Sender, uaq *stanza.UnAckQueue) error {
+	if uaq == nil {
+		return nil
+	}
 	uaq.RWMutex.Lock()
-	if len(uaq.Uslice) <= 0 {
+	if len(uaq.Uslice) == 0 {
 		uaq.RWMutex.Unlock()
 		return nil
 	}
-	last := uaq.Uslice[len(uaq.Uslice)-1]
-	if last.Id > lastSent {
-		// Remove sent stanzas from the queue
-		uaq.PopN(lastSent - last.Id)
-		// Re-send non acknowledged stanzas
-		for _, elt := range uaq.PopN(len(uaq.Uslice)) {
-			eltStz := elt.(*stanza.UnAckedStz)
-			err := s.SendRaw(eltStz.Stz)
-			if err != nil {
-				return err
-			}
-
-		}
-		// Ask for updates on stanzas we just sent to the entity. Not sure I should leave this. Maybe let users call ack again by themselves ?
-		s.Send(stanza.SMRequest{})
+	ackIdx := 0
+	for ackIdx < len(uaq.Uslice) && uaq.Uslice[ackIdx].Id <= lastSent {
+		ackIdx++
+	}
+	uaq.Uslice = uaq.Uslice[ackIdx:]
+	pending := make([]string, len(uaq.Uslice))
+	for i, elt := range uaq.Uslice {
+		pending[i] = elt.Stz
 	}
 	uaq.RWMutex.Unlock()
+
+	for _, raw := range pending {
+		switch tt := s.(type) {
+		case *Client:
+			if err := tt.sendWithWriter(tt.transport, []byte(raw)); err != nil {
+				return err
+			}
+		default:
+			if err := s.SendRaw(raw); err != nil {
+				return err
+			}
+		}
+	}
+	if len(pending) > 0 {
+		if err := s.Send(stanza.SMRequest{}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -145,6 +159,12 @@ func (r *Router) NewIQResultRoute(ctx context.Context, id string) chan stanza.IQ
 	}()
 
 	return route.result
+}
+
+func (r *Router) RemoveIQResultRoute(id string) {
+	r.IQResultRouteLock.Lock()
+	delete(r.IQResultRoutes, id)
+	r.IQResultRouteLock.Unlock()
 }
 
 func (r *Router) Match(p stanza.Packet, match *RouteMatch) bool {

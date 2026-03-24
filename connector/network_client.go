@@ -42,6 +42,11 @@ type syncStats struct {
 	errorsTruncated     bool
 }
 
+type pendingMUCCreation struct {
+	name         string
+	participants []string
+}
+
 func (c *CarbonsEnable) Namespace() string {
 	return "urn:xmpp:carbons:2"
 }
@@ -67,9 +72,10 @@ type MyNetworkClient struct {
 
 	httpUploadServiceJID         string
 	mucRooms                     map[string]bool
-	mucOccupants                 map[string]map[string]bool
+	mucOccupants                 map[string]map[string]string
 	mucNick                      map[string]string
 	mucPasswords                 map[string]string
+	mucPendingCreate             map[string]pendingMUCCreation
 	mucBackfillPending           map[string]time.Time
 	mucBackfillMu                sync.Mutex
 	mucServices                  map[string]bool
@@ -88,8 +94,12 @@ type MyNetworkClient struct {
 	fullSyncRequested            bool
 	fullSyncRosterPending        bool
 	fullSyncBookmarksPending     bool
+	fullSyncBackfillsPending     int
 	fullSyncStart                time.Time
 	fullSyncUseStart             bool
+	sessionEstablishedAt         time.Time
+	mamQueryMu                   sync.Mutex
+	mamQueryResults              map[string][]collectedMAMMessage
 	connected                    bool
 	connectedCh                  chan struct{}
 	syncMu                       sync.Mutex
@@ -143,6 +153,86 @@ func (nc *MyNetworkClient) defaultMUCNick() string {
 		return nc.login.RemoteName
 	}
 	return "matrix"
+}
+
+func bareJID(jid string) string {
+	return strings.SplitN(jid, "/", 2)[0]
+}
+
+func (nc *MyNetworkClient) ownBareJID() string {
+	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
+		return bareJID(meta.RemoteUserID)
+	}
+	return ""
+}
+
+func (nc *MyNetworkClient) queuePendingMUCCreation(roomJID string, pending pendingMUCCreation) {
+	if nc.mucPendingCreate == nil {
+		nc.mucPendingCreate = map[string]pendingMUCCreation{}
+	}
+	nc.mucPendingCreate[roomJID] = pending
+}
+
+func (nc *MyNetworkClient) popPendingMUCCreation(roomJID string) (pendingMUCCreation, bool) {
+	if nc.mucPendingCreate == nil {
+		return pendingMUCCreation{}, false
+	}
+	pending, ok := nc.mucPendingCreate[roomJID]
+	if ok {
+		delete(nc.mucPendingCreate, roomJID)
+	}
+	return pending, ok
+}
+
+func mucHasStatus(mucUser *MUCUserInvite, code string) bool {
+	if mucUser == nil {
+		return false
+	}
+	for _, status := range mucUser.Status {
+		if status.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func (nc *MyNetworkClient) isSelfMUCPresence(roomJID, resource string, mucUser *MUCUserInvite) bool {
+	selfNick := nc.mucNick[roomJID]
+	if mucHasStatus(mucUser, "110") {
+		return true
+	}
+	if mucUser != nil && mucUser.Item != nil {
+		if itemJID := bareJID(strings.TrimSpace(mucUser.Item.JID)); itemJID != "" && itemJID == nc.ownBareJID() {
+			return true
+		}
+		if selfNick != "" && strings.TrimSpace(mucUser.Item.Nick) == selfNick {
+			return true
+		}
+	}
+	return selfNick != "" && resource == selfNick
+}
+
+func (nc *MyNetworkClient) resolveMUCPresenceMemberJID(roomJID string, pres stanza.Presence, resource string, mucUser *MUCUserInvite) string {
+	if mucUser != nil && mucUser.Item != nil {
+		if jid := bareJID(strings.TrimSpace(mucUser.Item.JID)); jid != "" {
+			return jid
+		}
+		if nick := strings.TrimSpace(mucUser.Item.Nick); nick != "" {
+			resource = nick
+		}
+	}
+	if strings.Contains(roomJID, ",") && strings.HasSuffix(roomJID, "@cheogram.com") {
+		if strings.HasPrefix(resource, "+") && !strings.Contains(resource, "@") {
+			return resource + "@cheogram.com"
+		}
+	}
+	if resource != "" {
+		return roomJID + "/" + resource
+	}
+	if pres.From != "" {
+		return pres.From
+	}
+	return roomJID
 }
 
 func (nc *MyNetworkClient) requestBookmarks() error {
@@ -407,6 +497,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 	if len(confs) == 0 {
 		return
 	}
+	seen := make(map[string]bool, len(confs))
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().Str("source", source).Int("items", len(confs)).Msg("Processing bookmarks")
 	}
@@ -415,6 +506,10 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		if roomJID == "" {
 			continue
 		}
+		if seen[roomJID] {
+			continue
+		}
+		seen[roomJID] = true
 		logJIDNormalization(nc.log, "bookmark_room", roomJID)
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().
@@ -424,8 +519,16 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 				Str("nick", strings.TrimSpace(conf.Nick)).
 				Msg("Found bookmarked room")
 		}
+		alreadyBookmarked := false
 		if nc.bookmarkedRooms != nil {
+			alreadyBookmarked = nc.bookmarkedRooms[roomJID]
 			nc.bookmarkedRooms[roomJID] = true
+		}
+		if alreadyBookmarked {
+			if nc.log.GetLevel() <= zerolog.DebugLevel {
+				nc.log.Debug().Str("source", source).Str("room_jid", roomJID).Msg("Skipping duplicate bookmarked room")
+			}
+			continue
 		}
 		name := conf.Name
 		if name == "" {
@@ -459,16 +562,22 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		if nick == "" {
 			nick = nc.defaultMUCNick()
 		}
-		start := time.Time{}
-		if nc.fullSyncRequested {
-			if nc.fullSyncUseStart {
-				start = nc.fullSyncStart
-			}
-		} else {
-			start = time.Now().Add(-defaultMAMLookback)
+		shouldJoin := conf.AutojoinEnabled()
+		if !shouldJoin && nc.log.GetLevel() <= zerolog.DebugLevel {
+			nc.log.Debug().Str("room_jid", roomJID).Str("source", source).Msg("Skipping bookmark join because autojoin is disabled")
 		}
-		nc.scheduleMUCBackfill(roomJID, start)
-		nc.joinMUC(roomJID, nick, conf.Password)
+		if shouldJoin {
+			start := time.Time{}
+			if nc.fullSyncRequested {
+				if nc.fullSyncUseStart {
+					start = nc.fullSyncStart
+				}
+			} else {
+				start = time.Now().Add(-defaultMAMLookback)
+			}
+			nc.scheduleMUCBackfill(roomJID, start)
+			nc.joinMUC(roomJID, nick, conf.Password)
+		}
 	}
 }
 
@@ -827,10 +936,13 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.mucRooms = map[string]bool{}
 	}
 	if nc.mucOccupants == nil {
-		nc.mucOccupants = map[string]map[string]bool{}
+		nc.mucOccupants = map[string]map[string]string{}
 	}
 	if nc.mucNick == nil {
 		nc.mucNick = map[string]string{}
+	}
+	if nc.mucPendingCreate == nil {
+		nc.mucPendingCreate = map[string]pendingMUCCreation{}
 	}
 	if nc.mucBackfillPending == nil {
 		nc.mucBackfillPending = map[string]time.Time{}
@@ -868,6 +980,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Credential:             xmpp.Password(meta.AccessToken),
 		Insecure:               false,
 		StreamManagementEnable: true,
+		StreamManagementResume: true,
 	}
 
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -903,6 +1016,13 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 
 	nc.xmppClient = client
+	client.SetHandler(func(event xmpp.Event) error {
+		if event.State.GetState() == xmpp.StateDisconnected {
+			nc.log.Warn().Msg("XMPP client reported disconnected state")
+			nc.handleDisconnect(client, nil)
+		}
+		return nil
+	})
 	nc.bridge.Log.Info().
 		Str("jid", config.Jid).
 		Bool("insecure", config.Insecure).
@@ -913,10 +1033,6 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.postConnectMu.Lock()
 		defer nc.postConnectMu.Unlock()
 		nc.log.Info().Msg("XMPP connected, running post connect hook")
-		client := nc.xmppClient
-		if client == nil {
-			return fmt.Errorf("XMPP client unavailable in post connect hook")
-		}
 		if client.Session == nil || client.Session.BindJid == "" {
 			return fmt.Errorf("XMPP session is not ready in post connect hook")
 		}
@@ -931,6 +1047,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.reconnectAttempt = 0
 		nc.connectMu.Unlock()
 		nc.sendBridgeState(status.StateConnected, "Connected to XMPP server", 0)
+		nc.sessionEstablishedAt = time.Now().UTC()
 
 		// 1. Request Roster
 		iq, _ := stanza.NewIQ(stanza.Attrs{
@@ -1006,19 +1123,35 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 		return nil
 	}
-
-	// Run in goroutine
-	go func() {
-		// client.Connect() blocks until disconnection
-		err := client.Connect()
-		nc.connected = false
-		if err != nil {
-			nc.log.Err(err).Msg("Failed to establish XMPP connection")
-		} else {
-			nc.log.Warn().Msg("XMPP connection ended without error")
+	client.PostResumeHook = func() error {
+		nc.postConnectMu.Lock()
+		defer nc.postConnectMu.Unlock()
+		nc.log.Info().Msg("XMPP stream resumed")
+		if client.Session == nil || client.Session.BindJid == "" {
+			return fmt.Errorf("XMPP session is not ready after resume")
 		}
-		nc.handleDisconnect(err)
-	}()
+		if !nc.connected {
+			nc.connected = true
+			if nc.connectedCh != nil {
+				close(nc.connectedCh)
+				nc.connectedCh = nil
+			}
+		}
+		nc.connectMu.Lock()
+		nc.reconnectAttempt = 0
+		nc.connectStarted = false
+		nc.connectMu.Unlock()
+		nc.sendBridgeState(status.StateConnected, "Reconnected to XMPP server", 0)
+		nc.sessionEstablishedAt = time.Now().UTC()
+		return nil
+	}
+
+	err = client.Connect()
+	if err != nil {
+		nc.log.Err(err).Msg("Failed to establish XMPP connection")
+		nc.handleDisconnect(client, err)
+		return
+	}
 }
 
 func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, message string, ttl int) {
@@ -1055,15 +1188,19 @@ func (nc *MyNetworkClient) isXMPPConnected() bool {
 	return nc.connected && client != nil && client.Session != nil
 }
 
-func (nc *MyNetworkClient) handleDisconnect(connectErr error) {
+func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr error) {
 	nc.connectMu.Lock()
+	if client != nil && nc.xmppClient != client {
+		nc.connectMu.Unlock()
+		return
+	}
 	if nc.stopReconnect == nil {
 		nc.connectStarted = false
 		nc.connectMu.Unlock()
 		return
 	}
 	stopReconnect := nc.stopReconnect
-	nc.xmppClient = nil
+	canResume := client != nil && xmpp.IsStreamResumable(client) && client.Session != nil && client.Session.SMState.Id != ""
 	nc.connected = false
 	nc.connectedCh = make(chan struct{})
 	nc.connectStarted = false
@@ -1080,10 +1217,14 @@ func (nc *MyNetworkClient) handleDisconnect(connectErr error) {
 
 	backoff := xmppReconnectBackoff(attempt)
 	nc.sendBridgeState(status.StateTransientDisconnect, fmt.Sprintf("Disconnected from XMPP server, retrying in %s", backoff.Round(time.Second)), int((backoff*2)/time.Second))
+	resumeMode := "fresh reconnect"
+	if canResume {
+		resumeMode = "stream resume"
+	}
 	if connectErr != nil {
 		nc.log.Warn().Err(connectErr).Int("attempt", attempt).Dur("retry_in", backoff).Msg("XMPP connection lost, scheduling reconnect")
 	} else {
-		nc.log.Warn().Int("attempt", attempt).Dur("retry_in", backoff).Msg("XMPP connection ended, scheduling reconnect")
+		nc.log.Warn().Int("attempt", attempt).Dur("retry_in", backoff).Str("mode", resumeMode).Msg("XMPP connection ended, scheduling reconnect")
 	}
 
 	timer := time.NewTimer(backoff)
@@ -1110,6 +1251,28 @@ func (nc *MyNetworkClient) handleDisconnect(connectErr error) {
 	nc.connectStarted = true
 	nc.connectMu.Unlock()
 
+	if canResume {
+		nc.log.Info().Msg("Resuming XMPP stream")
+		go func(resumeClient *xmpp.Client) {
+			if err := resumeClient.Resume(); err != nil {
+				nc.log.Warn().Err(err).Msg("XMPP stream resume failed, falling back to fresh reconnect")
+				nc.connectMu.Lock()
+				if nc.xmppClient == resumeClient {
+					nc.xmppClient = nil
+				}
+				nc.connectStarted = false
+				nc.connectMu.Unlock()
+				nc.handleDisconnect(nil, err)
+			}
+		}(client)
+		return
+	}
+
+	nc.connectMu.Lock()
+	if nc.xmppClient == client {
+		nc.xmppClient = nil
+	}
+	nc.connectMu.Unlock()
 	nc.log.Info().Msg("Reconnecting XMPP client")
 	go nc.Connect(context.Background())
 }
@@ -1146,71 +1309,80 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 			if parts := strings.SplitN(pres.From, "/", 2); len(parts) == 2 {
 				resource = parts[1]
 			}
-			if pres.Type != stanza.PresenceTypeUnavailable {
-				if nick, ok := nc.mucNick[bareFrom]; ok && nick != "" && resource == nick {
-					if start, ok := nc.popMUCBackfill(bareFrom); ok {
-						if nc.log.GetLevel() <= zerolog.DebugLevel {
-							nc.log.Debug().
-								Str("room_jid", bareFrom).
-								Str("nick", nick).
-								Time("start", start).
-								Bool("start_zero", start.IsZero()).
-								Msg("Starting MUC MAM backfill after join")
-						}
-						nc.recordMAMBackfillMUC()
-						go func(roomJID string, start time.Time) {
-							if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
-								nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
-								nc.reportSyncError(fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err))
-							}
-						}(bareFrom, start)
+			var mucUser MUCUserInvite
+			hasMUCUser := pres.Get(&mucUser)
+			isSelfPresence := nc.isSelfMUCPresence(bareFrom, resource, func() *MUCUserInvite {
+				if hasMUCUser {
+					return &mucUser
+				}
+				return nil
+			}())
+			if pres.Type != stanza.PresenceTypeUnavailable && isSelfPresence {
+				if start, ok := nc.popMUCBackfill(bareFrom); ok {
+					if nc.log.GetLevel() <= zerolog.DebugLevel {
+						nc.log.Debug().
+							Str("room_jid", bareFrom).
+							Str("nick", resource).
+							Time("start", start).
+							Bool("start_zero", start.IsZero()).
+							Msg("Starting MUC MAM backfill after confirmed self presence")
 					}
+					nc.recordMAMBackfillMUC()
+					tracked := nc.trackFullSyncBackfill()
+					go func(roomJID string, start time.Time) {
+						defer nc.finishTrackedFullSyncBackfill(tracked)
+						if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
+							nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
+							nc.reportSyncError(fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err))
+						}
+					}(bareFrom, start)
+				}
+				if pending, ok := nc.popPendingMUCCreation(bareFrom); ok {
+					go func(roomJID string, pending pendingMUCCreation) {
+						if err := nc.configureMUC(context.Background(), roomJID, pending.name); err != nil {
+							nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to configure newly created MUC")
+							return
+						}
+						for _, participant := range pending.participants {
+							if err := nc.inviteToMUC(roomJID, participant, "JMPChat group chat"); err != nil {
+								nc.log.Err(err).Str("room_jid", roomJID).Str("jid", participant).Msg("Failed to invite participant")
+							}
+						}
+					}(bareFrom, pending)
 				}
 			}
 			if nc.mucOccupants == nil {
-				nc.mucOccupants = map[string]map[string]bool{}
+				nc.mucOccupants = map[string]map[string]string{}
 			}
 			occupants := nc.mucOccupants[bareFrom]
 			if occupants == nil {
-				occupants = map[string]bool{}
+				occupants = map[string]string{}
 				nc.mucOccupants[bareFrom] = occupants
-			}
-			selfNick := ""
-			if nick, ok := nc.mucNick[bareFrom]; ok {
-				selfNick = nick
 			}
 			if pres.Type == stanza.PresenceTypeUnavailable {
 				delete(occupants, pres.From)
 			} else if pres.From != "" && strings.Contains(pres.From, "/") {
-				if selfNick != "" && resource == selfNick {
+				if isSelfPresence {
 					if nc.log.GetLevel() <= zerolog.DebugLevel {
 						nc.log.Debug().
 							Str("room_jid", bareFrom).
-							Str("nick", selfNick).
+							Str("nick", resource).
 							Msg("Skipping self occupant")
 					}
 				} else {
-					occupants[pres.From] = true
+					occupants[pres.From] = nc.resolveMUCPresenceMemberJID(bareFrom, pres, resource, func() *MUCUserInvite {
+						if hasMUCUser {
+							return &mucUser
+						}
+						return nil
+					}())
 				}
 			}
 
 			memberMap := bridgev2.ChatMemberMap{}
-			for occupant := range occupants {
-				if selfNick != "" {
-					parts := strings.SplitN(occupant, "/", 2)
-					if len(parts) == 2 && parts[1] == selfNick {
-						continue
-					}
-				}
-				occupantBare := strings.SplitN(occupant, "/", 2)[0]
-				memberJID := occupantBare
-				if strings.Contains(occupantBare, ",") && strings.HasSuffix(occupantBare, "@cheogram.com") {
-					parts := strings.SplitN(occupant, "/", 2)
-					if len(parts) == 2 {
-						if isPhoneNick := strings.HasPrefix(parts[1], "+") && !strings.Contains(parts[1], "@"); isPhoneNick {
-							memberJID = parts[1] + "@cheogram.com"
-						}
-					}
+			for _, memberJID := range occupants {
+				if memberJID == "" || memberJID == nc.ownBareJID() {
+					continue
 				}
 				memberMap[MakeUserID(memberJID)] = bridgev2.ChatMember{
 					EventSender: bridgev2.EventSender{Sender: MakeUserID(memberJID)},
@@ -1316,10 +1488,14 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 							start = nc.fullSyncStart
 						}
 						nc.recordMAMBackfillDM()
-						if err := nc.backfillDM(context.Background(), bareJID, start); err != nil {
-							nc.log.Err(err).Str("jid", bareJID).Msg("Failed to request DM MAM history")
-							nc.reportSyncError(fmt.Sprintf("DM backfill failed for %s: %v", bareJID, err))
-						}
+						tracked := nc.trackFullSyncBackfill()
+						go func(jid string, start time.Time) {
+							defer nc.finishTrackedFullSyncBackfill(tracked)
+							if err := nc.backfillDM(context.Background(), jid, start); err != nil {
+								nc.log.Err(err).Str("jid", jid).Msg("Failed to request DM MAM history")
+								nc.reportSyncError(fmt.Sprintf("DM backfill failed for %s: %v", jid, err))
+							}
+						}(bareJID, start)
 					}
 				}
 			}
@@ -1480,12 +1656,6 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing discovered groupchat resync")
 					nc.bridge.QueueRemoteEvent(nc.login, resync)
 					nc.recordMUCDiscoPortal(string(portalID))
-					start := time.Now().Add(-defaultMAMLookback)
-					if nc.fullSyncRequested && nc.fullSyncUseStart {
-						start = nc.fullSyncStart
-					}
-					nc.scheduleMUCBackfill(roomJID, start)
-					nc.joinMUC(roomJID, "", "")
 				}
 				return
 			}
@@ -1593,6 +1763,14 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			if bareFrom == meta.RemoteUserID {
 				isFromMe = true
 			}
+		}
+		if mam.QueryID != "" && nc.storeMAMQueryResult(mam.QueryID, collectedMAMMessage{
+			Message:    fwd,
+			Timestamp:  timestamp,
+			IDOverride: idOverride,
+			IsFromMe:   isFromMe,
+		}) {
+			return
 		}
 		nc.handleIncomingXMPPMessage(fwd, timestamp, idOverride, isFromMe, true)
 		return
@@ -2050,11 +2228,14 @@ func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
 func (nc *MyNetworkClient) resolveMUCSenderID(msg stanza.Message, roomJID string) string {
 	var mucUser MUCUserInvite
 	if msg.Get(&mucUser) && mucUser.Item != nil {
-		if mucUser.Item.JID != "" {
-			return mucUser.Item.JID
+		if jid := bareJID(strings.TrimSpace(mucUser.Item.JID)); jid != "" {
+			return jid
 		}
-		if mucUser.Item.Nick != "" {
-			return roomJID + "/" + mucUser.Item.Nick
+		if nick := strings.TrimSpace(mucUser.Item.Nick); nick != "" {
+			if strings.Contains(roomJID, ",") && strings.HasSuffix(roomJID, "@cheogram.com") && strings.HasPrefix(nick, "+") && !strings.Contains(nick, "@") {
+				return nick + "@cheogram.com"
+			}
+			return roomJID + "/" + nick
 		}
 	}
 	var occ XMPOccupantID
@@ -2115,13 +2296,37 @@ func extractPrefixedSender(body string) (string, string, bool) {
 }
 
 func (nc *MyNetworkClient) maybeClearFullSync() {
+	nc.syncMu.Lock()
+	defer nc.syncMu.Unlock()
 	if !nc.fullSyncRequested {
 		return
 	}
-	if nc.fullSyncRosterPending || nc.fullSyncBookmarksPending {
+	if nc.fullSyncRosterPending || nc.fullSyncBookmarksPending || nc.fullSyncBackfillsPending > 0 {
 		return
 	}
 	nc.fullSyncRequested = false
+}
+
+func (nc *MyNetworkClient) trackFullSyncBackfill() bool {
+	nc.syncMu.Lock()
+	defer nc.syncMu.Unlock()
+	if !nc.fullSyncRequested {
+		return false
+	}
+	nc.fullSyncBackfillsPending++
+	return true
+}
+
+func (nc *MyNetworkClient) finishTrackedFullSyncBackfill(tracked bool) {
+	if !tracked {
+		return
+	}
+	nc.syncMu.Lock()
+	if nc.fullSyncBackfillsPending > 0 {
+		nc.fullSyncBackfillsPending--
+	}
+	nc.syncMu.Unlock()
+	nc.maybeClearFullSync()
 }
 
 func (nc *MyNetworkClient) WaitForConnected(ctx context.Context) bool {
@@ -2153,6 +2358,7 @@ func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string
 	nc.syncStatus = "queued"
 	nc.syncLastErr = ""
 	nc.syncStartedAt = time.Now()
+	nc.fullSyncBackfillsPending = 0
 	if full {
 		nc.fullSyncUseStart = false
 		nc.fullSyncStart = time.Time{}

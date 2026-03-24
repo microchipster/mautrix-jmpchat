@@ -233,12 +233,12 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 	return &event.RoomFeatures{
 		MaxTextLength: 65536,
 		Formatting: event.FormattingFeatureMap{
-			event.FmtBold:          event.CapLevelFullySupported,
-			event.FmtItalic:        event.CapLevelFullySupported,
-			event.FmtUnderline:     event.CapLevelFullySupported,
-			event.FmtStrikethrough: event.CapLevelFullySupported,
-			event.FmtInlineCode:    event.CapLevelFullySupported,
-			event.FmtCodeBlock:     event.CapLevelFullySupported,
+			event.FmtBold:          event.CapLevelUnsupported,
+			event.FmtItalic:        event.CapLevelUnsupported,
+			event.FmtUnderline:     event.CapLevelUnsupported,
+			event.FmtStrikethrough: event.CapLevelUnsupported,
+			event.FmtInlineCode:    event.CapLevelUnsupported,
+			event.FmtCodeBlock:     event.CapLevelUnsupported,
 		},
 		File: map[event.CapabilityMsgType]*event.FileFeatures{
 			event.MsgImage: {
@@ -254,8 +254,9 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
 			},
 		},
-		Edit:   event.CapLevelFullySupported,
-		Reply:  event.CapLevelFullySupported,
-		Thread: event.CapLevelFullySupported,
+		Edit:     event.CapLevelUnsupported,
+		Reply:    event.CapLevelUnsupported,
+		Thread:   event.CapLevelUnsupported,
+		Reaction: event.CapLevelPartialSupport,
 	}
 }

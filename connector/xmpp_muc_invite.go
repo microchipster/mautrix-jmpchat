@@ -13,6 +13,7 @@ type MUCUserInvite struct {
 	Decline  *MUCInviteDecline `xml:"decline,omitempty"`
 	Password string            `xml:"password,omitempty"`
 	Item     *MUCUserItem      `xml:"item,omitempty"`
+	Status   []MUCUserStatus   `xml:"status,omitempty"`
 }
 
 type MUCUserItem struct {
@@ -34,6 +35,10 @@ type MUCInviteDecline struct {
 	Reason string `xml:"reason,omitempty"`
 }
 
+type MUCUserStatus struct {
+	Code string `xml:"code,attr,omitempty"`
+}
+
 // MUCDirectInvite implements XEP-0249 direct invitation payload.
 type MUCDirectInvite struct {
 	XMLName  xml.Name `xml:"jabber:x:conference x"`
@@ -48,6 +53,11 @@ type MUCDirectInvite struct {
 func init() {
 	stanza.TypeRegistry.MapExtension(
 		stanza.PKTMessage,
+		xml.Name{Space: "http://jabber.org/protocol/muc#user", Local: "x"},
+		MUCUserInvite{},
+	)
+	stanza.TypeRegistry.MapExtension(
+		stanza.PKTPresence,
 		xml.Name{Space: "http://jabber.org/protocol/muc#user", Local: "x"},
 		MUCUserInvite{},
 	)

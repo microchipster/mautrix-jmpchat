@@ -25,11 +25,11 @@ type Config struct {
 	// Activate stream management process during session
 	StreamManagementEnable bool
 	// Enable stream management resume capability
-	streamManagementResume bool
+	StreamManagementResume bool
 }
 
 // IsStreamResumable tells if a stream session is resumable by reading the "config" part of a client.
 // It checks if stream management is enabled, and if stream resumption was set and accepted by the server.
 func IsStreamResumable(c *Client) bool {
-	return c.config.StreamManagementEnable && c.config.streamManagementResume
+	return c != nil && c.config.StreamManagementEnable && c.config.StreamManagementResume
 }
