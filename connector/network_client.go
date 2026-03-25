@@ -301,6 +301,14 @@ func (nc *MyNetworkClient) requestRoster() error {
 	return nil
 }
 
+func (nc *MyNetworkClient) requestOwnDiscoInfo() {
+	bare := nc.ownBareJID()
+	if bare == "" {
+		return
+	}
+	nc.requestDiscoInfoAsync(bare, "disco_info_account")
+}
+
 func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	if nickname == "" {
 		nickname = nc.defaultMUCNick()
@@ -959,12 +967,7 @@ func (nc *MyNetworkClient) bestMAMNamespaceForJID(jid string) (string, bool) {
 }
 
 func (nc *MyNetworkClient) mamNamespaceForServer() (string, bool) {
-	remote := ""
-	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
-		remote = meta.RemoteUserID
-	}
-	server := jidDomain(remote)
-	return nc.bestMAMNamespaceForJID(server)
+	return nc.bestMAMNamespaceForJID(nc.ownBareJID())
 }
 
 func (nc *MyNetworkClient) mamNamespaceForMUC(roomJID string) (string, bool) {
@@ -975,7 +978,7 @@ func (nc *MyNetworkClient) mamNamespaceForMUC(roomJID string) (string, bool) {
 	if ns, known := nc.bestMAMNamespaceForJID(service); known {
 		return ns, true
 	}
-	return nc.mamNamespaceForServer()
+	return "", false
 }
 
 func (nc *MyNetworkClient) mamNamespaceForTarget(toJID, withJID string) string {
@@ -1237,6 +1240,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		} else {
 			nc.log.Debug().Str("to", serverDomain).Msg("Sent disco info request")
 		}
+		nc.requestOwnDiscoInfo()
 
 		discoItemsIq, _ := stanza.NewIQ(stanza.Attrs{
 			Type: stanza.IQTypeGet,
@@ -2631,6 +2635,7 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 	nc.fullSyncRequested = true
 	nc.fullSyncRosterPending = true
 	nc.fullSyncBookmarksPending = true
+	nc.requestOwnDiscoInfo()
 	if err := nc.requestRoster(); err != nil {
 		nc.setSyncError(err)
 		if notify != nil {
