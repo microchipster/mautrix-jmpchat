@@ -128,38 +128,36 @@ type XMPCarbonReceived struct {
 
 type XMPPReceipt struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:receipts request"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:receipts request"`
 }
 
 type XMPPReceiptReceived struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:receipts received"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:receipts received"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPMarker struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:chat-markers:0 markable"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:chat-markers:0 markable"`
 }
 
 type XMPPMarkerReceived struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:chat-markers:0 received"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:chat-markers:0 received"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPMarkerDisplayed struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:chat-markers:0 displayed"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:chat-markers:0 displayed"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPMarkerAcknowledged struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:chat-markers:0 acknowledged"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name `xml:"urn:xmpp:chat-markers:0 acknowledged"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPOriginID struct {

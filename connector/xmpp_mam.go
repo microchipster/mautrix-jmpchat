@@ -12,13 +12,18 @@ import (
 )
 
 const (
-	NSMAM   = "urn:xmpp:mam:2"
+	NSMAM0  = "urn:xmpp:mam:0"
+	NSMAM1  = "urn:xmpp:mam:1"
+	NSMAM2  = "urn:xmpp:mam:2"
+	NSMAM   = NSMAM2
 	NSXData = "jabber:x:data"
 	NSDelay = "urn:xmpp:delay"
 )
 
+var supportedMAMNamespaces = []string{NSMAM2, NSMAM1, NSMAM0}
+
 type MAMQuery struct {
-	XMLName xml.Name          `xml:"urn:xmpp:mam:2 query"`
+	XMLName xml.Name          `xml:"query"`
 	QueryID string            `xml:"queryid,attr,omitempty"`
 	Form    XData             `xml:"x"`
 	Set     *stanza.ResultSet `xml:"set,omitempty"`
@@ -45,7 +50,7 @@ type XDataField struct {
 }
 
 type MAMFin struct {
-	XMLName  xml.Name          `xml:"urn:xmpp:mam:2 fin"`
+	XMLName  xml.Name          `xml:"fin"`
 	Complete bool              `xml:"complete,attr,omitempty"`
 	Set      *stanza.ResultSet `xml:"set,omitempty"`
 }
@@ -60,7 +65,7 @@ func (f *MAMFin) GetSet() *stanza.ResultSet {
 
 type MAMResult struct {
 	stanza.MsgExtension
-	XMLName   xml.Name      `xml:"urn:xmpp:mam:2 result"`
+	XMLName   xml.Name      `xml:"result"`
 	QueryID   string        `xml:"queryid,attr,omitempty"`
 	ID        string        `xml:"id,attr,omitempty"`
 	Forwarded *MAMForwarded `xml:"forwarded"`
@@ -85,17 +90,31 @@ type collectedMAMMessage struct {
 }
 
 func init() {
-	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMAM, Local: "query"}, MAMQuery{})
-	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMAM, Local: "fin"}, MAMFin{})
-	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSMAM, Local: "result"}, MAMResult{})
+	for _, ns := range supportedMAMNamespaces {
+		stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: ns, Local: "query"}, MAMQuery{})
+		stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: ns, Local: "fin"}, MAMFin{})
+		stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: ns, Local: "result"}, MAMResult{})
+	}
+}
+
+func bestMAMNamespace(featureSet map[string]bool) string {
+	if len(featureSet) == 0 {
+		return ""
+	}
+	for _, ns := range supportedMAMNamespaces {
+		if featureSet[ns] {
+			return ns
+		}
+	}
+	return ""
 }
 
 func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max int, start time.Time) error {
-	_, _, err := nc.requestMAMPage(ctx, roomJID, "", max, start, nil)
+	_, _, err := nc.requestMAMPage(ctx, roomJID, "", max, start, nil, nil)
 	return err
 }
 
-func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before *string) (*MAMFin, []collectedMAMMessage, error) {
+func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before, after *string) (*MAMFin, []collectedMAMMessage, error) {
 	if nc.xmppClient == nil {
 		return nil, nil, fmt.Errorf("XMPP client not connected")
 	}
@@ -105,6 +124,7 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	if max <= 0 {
 		max = 100
 	}
+	mamNamespace := nc.mamNamespaceForTarget(toJID, withJID)
 
 	queryID := fmt.Sprintf("mam_%d", time.Now().UnixNano())
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -112,18 +132,24 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 		if before != nil {
 			beforeValue = *before
 		}
+		afterValue := ""
+		if after != nil {
+			afterValue = *after
+		}
 		nc.log.Debug().
 			Str("query_id", queryID).
 			Str("to_jid", toJID).
 			Str("with_jid", withJID).
+			Str("namespace", mamNamespace).
 			Int("max", max).
 			Str("before", beforeValue).
+			Str("after", afterValue).
 			Time("start", start).
 			Bool("start_zero", start.IsZero()).
 			Msg("Sending MAM query")
 	}
 	fields := []XDataField{
-		{Var: "FORM_TYPE", Type: "hidden", Values: []string{NSMAM}},
+		{Var: "FORM_TYPE", Type: "hidden", Values: []string{mamNamespace}},
 	}
 	if withJID != "" {
 		fields = append(fields, XDataField{Var: "with", Values: []string{withJID}})
@@ -139,8 +165,12 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	if before != nil {
 		set.Before = before
 	}
+	if after != nil {
+		set.After = after
+	}
 
 	q := &MAMQuery{
+		XMLName: xml.Name{Space: mamNamespace, Local: "query"},
 		QueryID: queryID,
 		Form: XData{
 			Type:   "submit",
@@ -269,17 +299,29 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 	const maxPages = 10000
 
 	before := ""
+	after := ""
+	forward := !start.IsZero()
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().
 			Str("to_jid", toJID).
 			Str("with_jid", withJID).
 			Int("page_size", pageSize).
 			Time("start", start).
+			Bool("forward", forward).
 			Bool("start_zero", start.IsZero()).
 			Msg("Starting MAM backfill")
 	}
 	for page := 0; page < maxPages; page++ {
-		fin, results, err := nc.requestMAMPage(ctx, toJID, withJID, pageSize, start, &before)
+		var beforePtr *string
+		var afterPtr *string
+		if forward {
+			if after != "" {
+				afterPtr = &after
+			}
+		} else {
+			beforePtr = &before
+		}
+		fin, results, err := nc.requestMAMPage(ctx, toJID, withJID, pageSize, start, beforePtr, afterPtr)
 		if err != nil {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
 				nc.log.Debug().
@@ -294,13 +336,13 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 		for _, result := range results {
 			nc.handleIncomingXMPPMessage(result.Message, result.Timestamp, result.IDOverride, result.IsFromMe, true)
 		}
-		if fin == nil || fin.Set == nil || fin.Set.First == nil || fin.Set.First.Content == "" {
+		if fin == nil || fin.Set == nil {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
 				nc.log.Debug().
 					Str("to_jid", toJID).
 					Str("with_jid", withJID).
 					Int("page", page).
-					Msg("MAM backfill ended: missing result set or first")
+					Msg("MAM backfill ended: missing result set")
 			}
 			if withJID == "" {
 				nc.maybeFallbackToMUCHistory(toJID, start, fin)
@@ -320,13 +362,46 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 			}
 			break
 		}
-		before = fin.Set.First.Content
+		if forward {
+			if fin.Set.Last == nil || *fin.Set.Last == "" {
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("to_jid", toJID).
+						Str("with_jid", withJID).
+						Int("page", page).
+						Msg("MAM catchup ended: missing result set last")
+				}
+				break
+			}
+			after = *fin.Set.Last
+		} else {
+			if fin.Set.First == nil || fin.Set.First.Content == "" {
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("to_jid", toJID).
+						Str("with_jid", withJID).
+						Int("page", page).
+						Msg("MAM backfill ended: missing result set first")
+				}
+				if withJID == "" {
+					nc.maybeFallbackToMUCHistory(toJID, start, fin)
+				}
+				break
+			}
+			before = fin.Set.First.Content
+		}
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
+			nextCursor := before
+			cursorField := "next_before"
+			if forward {
+				nextCursor = after
+				cursorField = "next_after"
+			}
 			nc.log.Debug().
 				Str("to_jid", toJID).
 				Str("with_jid", withJID).
 				Int("page", page).
-				Str("next_before", before).
+				Str(cursorField, nextCursor).
 				Msg("MAM backfill page scheduled")
 		}
 	}

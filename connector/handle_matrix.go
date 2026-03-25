@@ -87,6 +87,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	if msg.Event.ID != "" {
 		m.Extensions = append(m.Extensions, XMPPOriginID{ID: string(msg.Event.ID)})
 	}
+	if !isMUC {
+		m.Extensions = append(m.Extensions, XMPPReceipt{}, XMPPMarker{})
+	}
 
 	err := nc.sendXMPP(m)
 	if err != nil {
