@@ -1903,6 +1903,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			delayStamp = delayOld.InnerXML
 		}
 	}
+	attachment := extractXMPPAttachment(msg)
 
 	// Ignore empty bodies unless we have OOB
 	if msg.Body == "" {
@@ -1911,9 +1912,8 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			nc.handleIncomingXMPPReaction(msg, timestamp, reactions, isFromMe)
 			return
 		}
-		var oob stanza.OOB
-		if msg.Get(&oob) && oob.URL != "" {
-			msg.Body = oob.URL
+		if attachment != nil {
+			msg.Body = attachment.URL
 		} else {
 			nc.log.Debug().
 				Str("from", fromJidStr).
@@ -2060,51 +2060,74 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			body := data
 			var info *event.FileInfo
 			var mediaURL string
-			if strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://") {
-				if u, err := url.Parse(data); err == nil && u.Scheme != "" && u.Host != "" {
-					resp, err := http.Head(data)
-					contentType := ""
-					if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
-						contentType = resp.Header.Get("Content-Type")
-					}
-					if strings.HasPrefix(contentType, "image/") {
-						msgType = event.MsgImage
-					} else if strings.HasPrefix(contentType, "video/") {
-						msgType = event.MsgVideo
-					} else if strings.HasPrefix(contentType, "audio/") {
-						msgType = event.MsgAudio
-					} else if contentType != "" {
-						msgType = event.MsgFile
-					}
-
-					if msgType != event.MsgText {
-						const maxMediaSize = 50 * 1024 * 1024
-						client := &http.Client{Timeout: 60 * time.Second}
-						getResp, err := client.Get(data)
-						if err == nil && getResp != nil {
-							defer getResp.Body.Close()
-							if getResp.StatusCode == http.StatusOK {
+			fileName := ""
+			contentType := ""
+			remoteURL := ""
+			if attachment != nil {
+				remoteURL = attachment.URL
+				fileName = attachment.FileName
+				contentType = attachment.ContentType
+				if attachment.Description != "" {
+					body = attachment.Description
+				}
+			}
+			if remoteURL == "" && (strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://")) {
+				remoteURL = data
+			}
+			if remoteURL != "" {
+				if u, err := url.Parse(remoteURL); err == nil && u.Scheme != "" && u.Host != "" {
+					const maxMediaSize = 50 * 1024 * 1024
+					client := &http.Client{Timeout: 60 * time.Second}
+					getResp, err := client.Get(remoteURL)
+					if err == nil && getResp != nil {
+						defer getResp.Body.Close()
+						if getResp.StatusCode == http.StatusOK {
+							if contentType == "" {
+								contentType = getResp.Header.Get("Content-Type")
+							}
+							limited := io.LimitReader(getResp.Body, maxMediaSize+1)
+							dataBytes, err := io.ReadAll(limited)
+							if err == nil && int64(len(dataBytes)) <= maxMediaSize {
 								if contentType == "" {
-									contentType = getResp.Header.Get("Content-Type")
+									contentType = http.DetectContentType(dataBytes)
 								}
-								limited := io.LimitReader(getResp.Body, maxMediaSize+1)
-								dataBytes, err := io.ReadAll(limited)
-								if err == nil && int64(len(dataBytes)) <= maxMediaSize {
-									fileName := path.Base(u.Path)
-									if fileName == "" || fileName == "/" || fileName == "." {
-										fileName = "file"
+								candidateType := classifyContentTypeMessageType(contentType)
+								if candidateType != event.MsgText {
+									if fileName == "" {
+										fileName = path.Base(u.Path)
+										if fileName == "" || fileName == "/" || fileName == "." {
+											fileName = "file"
+										}
 									}
 									mediaMxc, _, err := intent.UploadMedia(ctx, portal.MXID, dataBytes, fileName, contentType)
 									if err == nil {
 										mediaURL = string(mediaMxc)
-										body = fileName
+										msgType = candidateType
+										if body == "" {
+											body = fileName
+										}
 										info = &event.FileInfo{
 											MimeType: contentType,
 											Size:     len(dataBytes),
 										}
+										if attachment != nil {
+											info.Width = attachment.Width
+											info.Height = attachment.Height
+											info.Duration = attachment.DurationMS
+											if attachment.Size > 0 {
+												info.Size = attachment.Size
+											}
+										}
 									}
 								}
 							}
+						}
+					}
+					if mediaURL == "" && attachment != nil {
+						if body == "" {
+							body = remoteURL
+						} else if body != remoteURL && !strings.Contains(body, remoteURL) {
+							body = body + "\n" + remoteURL
 						}
 					}
 				}
@@ -2117,6 +2140,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			if mediaURL != "" {
 				content.URL = id.ContentURIString(mediaURL)
 				content.Info = info
+				if fileName != "" && body != fileName {
+					content.FileName = fileName
+				}
 			}
 
 			return &bridgev2.ConvertedMessage{

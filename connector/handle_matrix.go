@@ -250,6 +250,9 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 			event.MsgAudio: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
 			},
+			event.CapMsgVoice: {
+				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+			},
 			event.MsgFile: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
 			},

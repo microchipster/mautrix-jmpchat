@@ -27,14 +27,50 @@ const (
 
 type XMPPReference struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:reference:0 reference"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName      xml.Name          `xml:"urn:xmpp:reference:0 reference"`
+	Type         string            `xml:"type,attr,omitempty"`
+	URI          string            `xml:"uri,attr,omitempty"`
+	MediaSharing *XMPPMediaSharing `xml:"urn:xmpp:sims:1 media-sharing"`
 }
 
-type XMPPSIMS struct {
+type XMPPMediaSharing struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:sims:1 media-sharing"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName xml.Name         `xml:"urn:xmpp:sims:1 media-sharing"`
+	FileV5  *XMPPSIMSFile    `xml:"urn:xmpp:jingle:apps:file-transfer:5 file"`
+	FileV4  *XMPPSIMSFile    `xml:"urn:xmpp:jingle:apps:file-transfer:4 file"`
+	FileV3  *XMPPSIMSFile    `xml:"urn:xmpp:jingle:apps:file-transfer:3 file"`
+	Sources *XMPPSIMSSources `xml:"urn:xmpp:sims:1 sources"`
+}
+
+func (ms *XMPPMediaSharing) File() *XMPPSIMSFile {
+	if ms == nil {
+		return nil
+	}
+	if ms.FileV5 != nil {
+		return ms.FileV5
+	}
+	if ms.FileV4 != nil {
+		return ms.FileV4
+	}
+	return ms.FileV3
+}
+
+type XMPPSIMSSources struct {
+	Reference *XMPPSIMSReference `xml:"urn:xmpp:reference:0 reference"`
+}
+
+type XMPPSIMSReference struct {
+	URI string `xml:"uri,attr,omitempty"`
+}
+
+type XMPPSIMSFile struct {
+	XMLName   xml.Name `xml:"file"`
+	Name      string   `xml:"name,omitempty"`
+	MediaType string   `xml:"media-type,omitempty"`
+	Size      int64    `xml:"size,omitempty"`
+	Width     int      `xml:"https://schema.org/ width,omitempty"`
+	Height    int      `xml:"https://schema.org/ height,omitempty"`
+	Duration  string   `xml:"https://schema.org/ duration,omitempty"`
 }
 
 type XMPPFallback struct {
@@ -171,7 +207,7 @@ type XMPPConference struct {
 
 func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSReference, Local: "reference"}, XMPPReference{})
-	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSSIMS, Local: "media-sharing"}, XMPPSIMS{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSSIMS, Local: "media-sharing"}, XMPPMediaSharing{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSFallback, Local: "fallback"}, XMPPFallback{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSMucUser, Local: "x"}, XMPPMucUser{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSReactions, Local: "reactions"}, XMPPReactions{})
