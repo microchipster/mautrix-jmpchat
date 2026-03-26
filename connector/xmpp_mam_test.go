@@ -43,6 +43,18 @@ func TestIsServiceUnavailableMAMError(t *testing.T) {
 	}
 }
 
+func TestIncludeMAMEndBound(t *testing.T) {
+	if includeMAMEndBound("", "") {
+		t.Fatal("expected account-wide MAM query to omit end bound")
+	}
+	if !includeMAMEndBound("", "contact@example.com") {
+		t.Fatal("expected per-contact MAM query to include end bound")
+	}
+	if !includeMAMEndBound("room@example.com", "") {
+		t.Fatal("expected MUC MAM query to include end bound")
+	}
+}
+
 func assertErr(msg string) error {
 	return stanzaErrorString(msg)
 }

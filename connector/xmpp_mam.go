@@ -118,6 +118,10 @@ func isServiceUnavailableMAMError(err error) bool {
 	return strings.Contains(err.Error(), "service-unavailable")
 }
 
+func includeMAMEndBound(toJID, withJID string) bool {
+	return !(toJID == "" && withJID == "")
+}
+
 func init() {
 	for _, ns := range supportedMAMNamespaces {
 		stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: ns, Local: "query"}, MAMQuery{})
@@ -196,7 +200,7 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	if !start.IsZero() {
 		fields = append(fields, XDataField{Var: "start", Values: []string{formatMAMTimestamp(start)}})
 	}
-	if !nc.sessionEstablishedAt.IsZero() {
+	if includeMAMEndBound(toJID, withJID) && !nc.sessionEstablishedAt.IsZero() {
 		fields = append(fields, XDataField{Var: "end", Values: []string{formatMAMTimestamp(nc.sessionEstablishedAt)}})
 	}
 
