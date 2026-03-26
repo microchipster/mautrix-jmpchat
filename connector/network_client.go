@@ -2404,6 +2404,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 					content.FileName = fileName
 				}
 			}
+			applyMatrixLinkFormatting(content)
 
 			return &bridgev2.ConvertedMessage{
 				ReplyTo: func() *networkid.MessageOptionalPartID {
