@@ -89,7 +89,7 @@ func TestExtractXMPPAttachmentCaptionPrefersBodyWithoutFallbackURL(t *testing.T)
 
 	attachment := extractXMPPAttachment(msg)
 	caption := extractXMPPAttachmentCaption(msg, attachment)
-	if caption != "Family picture" {
+	if caption != "Holiday\n\nFamily picture" {
 		t.Fatalf("unexpected caption: %q", caption)
 	}
 }
@@ -107,6 +107,23 @@ func TestExtractXMPPAttachmentCaptionFallsBackToSubject(t *testing.T) {
 	caption := extractXMPPAttachmentCaption(msg, attachment)
 	if caption != "Voicemail Recording" {
 		t.Fatalf("unexpected caption: %q", caption)
+	}
+}
+
+func TestExtractXMPPAttachmentCaptionMergesSubjectAndCaption(t *testing.T) {
+	msg := stanza.Message{
+		Body:    "Here is the photo\nhttps://example.com/pic.jpg",
+		Subject: "Holiday",
+		Extensions: []stanza.MsgExtension{
+			&stanza.OOB{URL: "https://example.com/pic.jpg"},
+			&XMPPFallback{For: "jabber:x:oob", Body: []XMPPFallbackBody{{Start: 18, End: 45}}},
+		},
+	}
+
+	attachment := extractXMPPAttachment(msg)
+	caption := extractXMPPAttachmentCaption(msg, attachment)
+	if caption != "Holiday\n\nHere is the photo" {
+		t.Fatalf("unexpected merged caption: %q", caption)
 	}
 }
 
@@ -159,6 +176,15 @@ func TestBuildOutgoingXMPPAttachmentReference(t *testing.T) {
 	}
 	if file.Duration != "PT12.500S" {
 		t.Fatalf("unexpected duration: %q", file.Duration)
+	}
+}
+
+func TestMergeXMPPSubjectAndBody(t *testing.T) {
+	if got := mergeXMPPSubjectAndBody("Subject", "Body"); got != "Subject\n\nBody" {
+		t.Fatalf("unexpected merged subject/body: %q", got)
+	}
+	if got := mergeXMPPSubjectAndBody("Subject", "Subject"); got != "Subject" {
+		t.Fatalf("unexpected duplicate subject/body merge: %q", got)
 	}
 }
 

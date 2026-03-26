@@ -116,6 +116,23 @@ func (r XMPPReactions) First() string {
 	return ""
 }
 
+func (r XMPPReactions) All() []string {
+	seen := make(map[string]struct{}, len(r.Reacts))
+	cleaned := make([]string, 0, len(r.Reacts))
+	for _, reaction := range r.Reacts {
+		reaction = strings.TrimSpace(reaction)
+		if reaction == "" {
+			continue
+		}
+		if _, ok := seen[reaction]; ok {
+			continue
+		}
+		seen[reaction] = struct{}{}
+		cleaned = append(cleaned, reaction)
+	}
+	return cleaned
+}
+
 type XMPPEME struct {
 	stanza.MsgExtension
 	XMLName  xml.Name `xml:"urn:xmpp:eme:0 encryption"`

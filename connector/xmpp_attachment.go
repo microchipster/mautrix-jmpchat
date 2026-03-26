@@ -109,13 +109,25 @@ func extractXMPPAttachmentCaption(msg stanza.Message, attachment *xmppAttachment
 		caption = strings.TrimSpace(strings.ReplaceAll(caption, attachment.URL, ""))
 	}
 	caption = trimBlankLines(caption)
-	if caption != "" {
-		return caption
+	if caption == "" && attachment != nil && strings.TrimSpace(attachment.Description) != "" {
+		caption = trimBlankLines(strings.TrimSpace(attachment.Description))
 	}
-	if attachment != nil && strings.TrimSpace(attachment.Description) != "" {
-		return trimBlankLines(strings.TrimSpace(attachment.Description))
+	return mergeXMPPSubjectAndBody(msg.Subject, caption)
+}
+
+func mergeXMPPSubjectAndBody(subject, body string) string {
+	subject = trimBlankLines(strings.TrimSpace(subject))
+	body = trimBlankLines(strings.TrimSpace(body))
+	switch {
+	case subject == "":
+		return body
+	case body == "":
+		return subject
+	case body == subject:
+		return body
+	default:
+		return subject + "\n\n" + body
 	}
-	return trimBlankLines(strings.TrimSpace(msg.Subject))
 }
 
 func stripXMPPFallbackFromMessage(msg stanza.Message, fallbackFor ...string) string {

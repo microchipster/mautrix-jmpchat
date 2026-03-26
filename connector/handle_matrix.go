@@ -52,6 +52,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		Type: msgType,
 		Id:   uuid.NewString(),
 	})
+	extensions := make([]stanza.MsgExtension, 0, 8)
 	if msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile {
 		uploadedURL, desc, err := nc.uploadMatrixMediaToXMPP(ctx, msg)
 		if err != nil {
@@ -73,9 +74,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			fallback.Body = []XMPPFallbackBody{{Start: 0, End: len(uploadedURL)}}
 		}
 
-		m.Extensions = append(m.Extensions, oob, fallback)
+		extensions = append(extensions, oob, fallback)
 		if ref := buildOutgoingXMPPAttachmentReference(msg.Content, uploadedURL); ref != nil {
-			m.Extensions = append(m.Extensions, ref)
+			extensions = append(extensions, ref)
 		}
 		m.Body = body
 	} else {
@@ -88,14 +89,16 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 	}
 	if msg.Event.ID != "" {
-		m.Extensions = append(m.Extensions, XMPPOriginID{ID: string(msg.Event.ID)})
+		extensions = append(extensions, XMPPOriginID{ID: string(msg.Event.ID)})
 	}
 	if reply := buildOutgoingXMPPReply(msg.ReplyTo); reply != nil {
-		m.Extensions = append(m.Extensions, reply)
+		extensions = append(extensions, reply)
+		m.Body, extensions = addReplyFallbackToBody(m.Body, extensions, nc.buildOutgoingXMPPReplyQuote(ctx, msg.Portal, msg.ReplyTo))
 	}
 	if !isMUC {
-		m.Extensions = append(m.Extensions, XMPPReceipt{}, XMPPMarker{})
+		extensions = append(extensions, XMPPReceipt{}, XMPPMarker{})
 	}
+	m.Extensions = append(m.Extensions, extensions...)
 
 	err := nc.sendXMPP(m)
 	if err != nil {
@@ -141,25 +144,12 @@ func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridge
 		return nil, fmt.Errorf("target message is missing")
 	}
 
-	jid := UnescapeJID(string(msg.Portal.ID))
-	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
-	msgType := stanza.MessageTypeChat
-	if meta != nil && meta.IsMUC {
-		msgType = stanza.MessageTypeGroupchat
+	reactions, err := nc.currentMatrixReactionSet(ctx, msg.Portal, msg.TargetMessage.ID, nc.reactionSenderID(msg.Event.Sender), emoji, "")
+	if err != nil {
+		return nil, err
 	}
-
-	xmppMsg := stanza.NewMessage(stanza.Attrs{
-		To:   jid,
-		Type: msgType,
-		Id:   uuid.NewString(),
-	})
-	xmppMsg.Extensions = append(xmppMsg.Extensions, XMPPReactions{
-		ID:     string(msg.TargetMessage.ID),
-		Reacts: []string{emoji},
-	})
-
-	if err := nc.sendXMPP(xmppMsg); err != nil {
-		return nil, fmt.Errorf("failed to send XMPP reaction: %w", err)
+	if err := nc.sendXMPPReactionSet(ctx, msg.Portal, msg.TargetMessage, reactions); err != nil {
+		return nil, err
 	}
 
 	return &database.Reaction{
@@ -173,6 +163,96 @@ func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridge
 }
 
 func (nc *MyNetworkClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) error {
+	if !nc.isXMPPConnected() {
+		return fmt.Errorf("XMPP client not connected")
+	}
+	if msg.TargetReaction == nil || msg.TargetReaction.MessageID == "" {
+		return fmt.Errorf("target reaction is missing")
+	}
+	reactions, err := nc.currentMatrixReactionSet(ctx, msg.Portal, msg.TargetReaction.MessageID, msg.TargetReaction.SenderID, "", string(msg.TargetReaction.EmojiID))
+	if err != nil {
+		return err
+	}
+	targetMessage, err := nc.bridge.DB.Message.GetLastPartByID(ctx, msg.Portal.Receiver, msg.TargetReaction.MessageID)
+	if err != nil {
+		return fmt.Errorf("load target message for reaction removal: %w", err)
+	}
+	if targetMessage == nil {
+		targetMessage = &database.Message{ID: msg.TargetReaction.MessageID}
+	}
+	if err := nc.sendXMPPReactionSet(ctx, msg.Portal, targetMessage, reactions); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (nc *MyNetworkClient) currentMatrixReactionSet(ctx context.Context, portal *bridgev2.Portal, messageID networkid.MessageID, senderID networkid.UserID, addEmoji string, removeEmojiID string) ([]string, error) {
+	if portal == nil {
+		return nil, fmt.Errorf("portal is missing")
+	}
+	existing, err := nc.bridge.DB.Reaction.GetAllToMessageBySender(ctx, portal.Receiver, messageID, senderID)
+	if err != nil {
+		return nil, fmt.Errorf("load current reactions: %w", err)
+	}
+	seen := make(map[string]struct{}, len(existing)+1)
+	reactions := make([]string, 0, len(existing)+1)
+	for _, reaction := range existing {
+		emojiID := string(reaction.EmojiID)
+		if emojiID == "" {
+			emojiID = reaction.Emoji
+		}
+		if removeEmojiID != "" && emojiID == removeEmojiID {
+			continue
+		}
+		emoji := strings.TrimSpace(reaction.Emoji)
+		if emoji == "" {
+			emoji = strings.TrimSpace(emojiID)
+		}
+		if emoji == "" {
+			continue
+		}
+		if _, ok := seen[emoji]; ok {
+			continue
+		}
+		seen[emoji] = struct{}{}
+		reactions = append(reactions, emoji)
+	}
+	addEmoji = strings.TrimSpace(addEmoji)
+	if addEmoji != "" {
+		if _, ok := seen[addEmoji]; !ok {
+			reactions = append(reactions, addEmoji)
+		}
+	}
+	return reactions, nil
+}
+
+func (nc *MyNetworkClient) sendXMPPReactionSet(ctx context.Context, portal *bridgev2.Portal, target *database.Message, reactions []string) error {
+	if portal == nil || target == nil || target.ID == "" {
+		return fmt.Errorf("target message is missing")
+	}
+	jid := UnescapeJID(string(portal.ID))
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	msgType := stanza.MessageTypeChat
+	if meta != nil && meta.IsMUC {
+		msgType = stanza.MessageTypeGroupchat
+	}
+	xmppMsg := stanza.NewMessage(stanza.Attrs{
+		To:   jid,
+		Type: msgType,
+		Id:   uuid.NewString(),
+	})
+	extensions := []stanza.MsgExtension{XMPPReactions{ID: string(target.ID), Reacts: reactions}}
+	if reply := buildOutgoingXMPPReply(target); reply != nil {
+		extensions = append(extensions, reply)
+		if len(reactions) > 0 {
+			xmppMsg.Body, extensions = addReplyFallbackToBody(strings.Join(reactions, " "), extensions, nc.buildOutgoingXMPPReplyQuote(ctx, portal, target))
+			extensions = append(extensions, XMPPFallback{For: NSReactions})
+		}
+	}
+	xmppMsg.Extensions = append(xmppMsg.Extensions, extensions...)
+	if err := nc.sendXMPP(xmppMsg); err != nil {
+		return fmt.Errorf("failed to send XMPP reaction: %w", err)
+	}
 	return nil
 }
 

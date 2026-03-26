@@ -2325,6 +2325,8 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				if caption != "" {
 					body = caption
 				}
+			} else {
+				body = mergeXMPPSubjectAndBody(msg.Subject, body)
 			}
 			if remoteURL == "" && (strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://")) {
 				remoteURL = data
@@ -2433,12 +2435,8 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 }
 
 func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timestamp time.Time, reactions XMPPReactions, isFromMe bool) {
-	emoji := reactions.First()
-	if emoji == "" {
-		nc.log.Debug().
-			Str("from", msg.From).
-			Str("target_id", reactions.ID).
-			Msg("Skipping XMPP reaction without emoji")
+	if reactions.ID == "" {
+		nc.log.Debug().Str("from", msg.From).Msg("Skipping XMPP reaction without target ID")
 		return
 	}
 
@@ -2483,20 +2481,37 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 		},
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
+	reactionList := reactions.All()
+	reactionItems := make([]*bridgev2.BackfillReaction, 0, len(reactionList))
+	sender := bridgev2.EventSender{
+		Sender:   MakeUserID(senderID),
+		IsFromMe: isFromMe,
+	}
+	for _, emoji := range reactionList {
+		reactionItems = append(reactionItems, &bridgev2.BackfillReaction{
+			Timestamp: timestamp,
+			Sender:    sender,
+			EmojiID:   networkid.EmojiID(emoji),
+			Emoji:     emoji,
+		})
+	}
 
-	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Reaction{
+	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.ReactionSync{
 		EventMeta: simplevent.EventMeta{
-			Type:      bridgev2.RemoteEventReaction,
+			Type:      bridgev2.RemoteEventReactionSync,
 			PortalKey: networkid.PortalKey{ID: portalID},
-			Sender: bridgev2.EventSender{
-				Sender:   MakeUserID(senderID),
-				IsFromMe: isFromMe,
-			},
+			Sender:    sender,
 			Timestamp: timestamp,
 		},
 		TargetMessage: networkid.MessageID(reactions.ID),
-		EmojiID:       networkid.EmojiID(emoji),
-		Emoji:         emoji,
+		Reactions: &bridgev2.ReactionSyncData{
+			Users: map[networkid.UserID]*bridgev2.ReactionSyncUser{
+				MakeUserID(senderID): &bridgev2.ReactionSyncUser{
+					Reactions:       reactionItems,
+					HasAllReactions: true,
+				},
+			},
+		},
 	})
 }
 
