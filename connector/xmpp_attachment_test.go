@@ -202,3 +202,15 @@ func TestParseSIMSDurationMillis(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyContentTypeMessageType(t *testing.T) {
+	if got := classifyContentTypeMessageType("text/html", false); got != event.MsgText {
+		t.Fatalf("expected plain URL content-type to stay text, got %q", got)
+	}
+	if got := classifyContentTypeMessageType("text/html", true); got != event.MsgFile {
+		t.Fatalf("expected attachment content-type to map to file, got %q", got)
+	}
+	if got := classifyContentTypeMessageType("image/jpeg", false); got != event.MsgImage {
+		t.Fatalf("expected image/jpeg to map to image, got %q", got)
+	}
+}

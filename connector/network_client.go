@@ -2348,7 +2348,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 								if contentType == "" {
 									contentType = http.DetectContentType(dataBytes)
 								}
-								candidateType := classifyContentTypeMessageType(contentType)
+								candidateType := classifyContentTypeMessageType(contentType, attachment != nil)
 								if candidateType != event.MsgText {
 									if fileName == "" {
 										fileName = path.Base(u.Path)

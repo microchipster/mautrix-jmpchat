@@ -216,7 +216,7 @@ func trimBlankLines(input string) string {
 	return input
 }
 
-func classifyContentTypeMessageType(contentType string) event.MessageType {
+func classifyContentTypeMessageType(contentType string, treatGenericAsFile bool) event.MessageType {
 	contentType = strings.TrimSpace(strings.ToLower(contentType))
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
@@ -225,7 +225,7 @@ func classifyContentTypeMessageType(contentType string) event.MessageType {
 		return event.MsgVideo
 	case strings.HasPrefix(contentType, "audio/"):
 		return event.MsgAudio
-	case contentType != "":
+	case contentType != "" && treatGenericAsFile:
 		return event.MsgFile
 	default:
 		return event.MsgText
