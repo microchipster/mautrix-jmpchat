@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -89,6 +90,27 @@ type collectedMAMMessage struct {
 	IsFromMe   bool
 }
 
+func formatMAMTimestamp(ts time.Time) string {
+	return ts.UTC().Format("2006-01-02T15:04:05.000Z")
+}
+
+func formatIQError(err *stanza.Err) string {
+	if err == nil {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if err.Type != "" {
+		parts = append(parts, string(err.Type))
+	}
+	if err.Reason != "" {
+		parts = append(parts, err.Reason)
+	}
+	if err.Text != "" {
+		parts = append(parts, err.Text)
+	}
+	return strings.Join(parts, "/")
+}
+
 func init() {
 	for _, ns := range supportedMAMNamespaces {
 		stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: ns, Local: "query"}, MAMQuery{})
@@ -156,10 +178,10 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 		fields = append(fields, XDataField{Var: "with", Values: []string{withJID}})
 	}
 	if !start.IsZero() {
-		fields = append(fields, XDataField{Var: "start", Values: []string{start.UTC().Format(time.RFC3339)}})
+		fields = append(fields, XDataField{Var: "start", Values: []string{formatMAMTimestamp(start)}})
 	}
 	if !nc.sessionEstablishedAt.IsZero() {
-		fields = append(fields, XDataField{Var: "end", Values: []string{nc.sessionEstablishedAt.UTC().Format(time.RFC3339)}})
+		fields = append(fields, XDataField{Var: "end", Values: []string{formatMAMTimestamp(nc.sessionEstablishedAt)}})
 	}
 
 	set := &stanza.ResultSet{Max: &max}
@@ -219,8 +241,13 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 				nc.log.Debug().
 					Str("query_id", queryID).
 					Str("type", string(resp.Type)).
+					Interface("xmpp_error", resp.Error).
 					Interface("payload", resp.Payload).
 					Msg("MAM request returned non-result IQ")
+			}
+			detail := formatIQError(resp.Error)
+			if detail != "" {
+				return nil, nil, fmt.Errorf("MAM request failed: %s (%s)", resp.Type, detail)
 			}
 			return nil, nil, fmt.Errorf("MAM request failed: %s", resp.Type)
 		}

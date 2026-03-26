@@ -321,7 +321,11 @@ func (nc *MyNetworkClient) scheduleDMBackfill(withJID string, start time.Time) {
 		nc.dmBackfillPending = map[string]time.Time{}
 	}
 	nc.dmBackfillPending[withJID] = start
+	fullSyncRosterPending := nc.fullSyncRequested && nc.fullSyncRosterPending
 	nc.syncMu.Unlock()
+	if fullSyncRosterPending {
+		return
+	}
 	nc.maybeStartPendingDMBackfills()
 }
 
@@ -336,11 +340,16 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 	}
 
 	nc.syncMu.Lock()
-	pending := nc.dmBackfillPending
-	nc.dmBackfillPending = map[string]time.Time{}
 	if nc.fullSyncAccountDiscoPending {
 		nc.fullSyncAccountDiscoPending = false
 	}
+	if nc.fullSyncRequested && nc.fullSyncRosterPending {
+		nc.syncMu.Unlock()
+		nc.maybeClearFullSync()
+		return
+	}
+	pending := nc.dmBackfillPending
+	nc.dmBackfillPending = map[string]time.Time{}
 	nc.syncMu.Unlock()
 
 	if len(pending) == 0 {
@@ -837,6 +846,12 @@ func (nc *MyNetworkClient) recordSyncError(msg string) {
 		return
 	}
 	nc.syncStatsMu.Lock()
+	for _, existing := range nc.syncStats.lastErrors {
+		if existing == msg {
+			nc.syncStatsMu.Unlock()
+			return
+		}
+	}
 	if len(nc.syncStats.lastErrors) < maxErrors {
 		nc.syncStats.lastErrors = append(nc.syncStats.lastErrors, msg)
 	} else {
@@ -858,6 +873,12 @@ func (nc *MyNetworkClient) notifyManagement(msg string) {
 
 func (nc *MyNetworkClient) reportSyncError(msg string) {
 	nc.recordSyncError(msg)
+	nc.syncMu.Lock()
+	fullSyncRequested := nc.fullSyncRequested
+	nc.syncMu.Unlock()
+	if fullSyncRequested {
+		return
+	}
 	nc.notifyManagement(msg)
 }
 
@@ -1704,6 +1725,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				nc.fullSyncRosterPending = false
 				nc.maybeClearFullSync()
 			}
+			nc.maybeStartPendingDMBackfills()
 		case *stanza.Roster:
 			nc.log.Debug().Msg("Received roster result without items")
 		case *BookmarkStorage:

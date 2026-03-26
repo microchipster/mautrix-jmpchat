@@ -109,6 +109,12 @@ func (nc *MyNetworkClient) runAutomaticDMCatchup(ctx context.Context) {
 	if !nc.isXMPPConnected() || nc.bridge == nil || nc.login == nil {
 		return
 	}
+	nc.syncMu.Lock()
+	fullSyncRequested := nc.fullSyncRequested
+	nc.syncMu.Unlock()
+	if fullSyncRequested {
+		return
+	}
 	nc.scheduleDMBackfill("", nc.historySyncStartForDMs())
 }
 

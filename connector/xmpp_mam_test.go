@@ -1,6 +1,10 @@
 package connector
 
-import "testing"
+import (
+	"testing"
+
+	"gosrc.io/xmpp/stanza"
+)
 
 func TestBestMAMNamespace(t *testing.T) {
 	tests := []struct {
@@ -18,5 +22,14 @@ func TestBestMAMNamespace(t *testing.T) {
 		if got := bestMAMNamespace(tt.features); got != tt.want {
 			t.Fatalf("%s: bestMAMNamespace() = %q, want %q", tt.name, got, tt.want)
 		}
+	}
+}
+
+func TestFormatIQError(t *testing.T) {
+	err := &stanza.Err{Type: stanza.ErrorTypeCancel, Reason: "service-unavailable", Text: "archive disabled"}
+	got := formatIQError(err)
+	want := "cancel/service-unavailable/archive disabled"
+	if got != want {
+		t.Fatalf("formatIQError() = %q, want %q", got, want)
 	}
 }
