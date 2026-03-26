@@ -103,6 +103,8 @@ type MyNetworkClient struct {
 	sessionEstablishedAt         time.Time
 	mamQueryMu                   sync.Mutex
 	mamQueryResults              map[string][]collectedMAMMessage
+	callSessionsMu               sync.Mutex
+	callSessions                 map[string]*xmppCallSessionState
 	connected                    bool
 	connectedCh                  chan struct{}
 	syncMu                       sync.Mutex
@@ -1211,6 +1213,9 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	if nc.bookmarkedRooms == nil {
 		nc.bookmarkedRooms = map[string]bool{}
 	}
+	if nc.callSessions == nil {
+		nc.callSessions = map[string]*xmppCallSessionState{}
+	}
 	nc.connected = false
 	nc.connectedCh = make(chan struct{})
 
@@ -2149,6 +2154,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	replyTargetID := extractXMPPReplyTarget(msg)
 	if replyTargetID != "" {
 		msg.Body = trimBlankLines(strings.TrimSpace(stripXMPPFallbackFromMessage(msg, NSReply)))
+	}
+	if nc.handleIncomingXMPPCall(msg, timestamp, bareFromJid, isMUC, isFromMe) {
+		return
 	}
 
 	// Ignore empty bodies unless we have OOB

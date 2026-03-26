@@ -24,6 +24,9 @@ const (
 	NSEvent     = "jabber:x:event"
 	NSConf      = "jabber:x:conference"
 	NSReply     = "urn:xmpp:reply:0"
+	NSJingleMsg = "urn:xmpp:jingle-message:0"
+	NSJingle    = "urn:xmpp:jingle:1"
+	NSJingleRTP = "urn:xmpp:jingle:apps:rtp:1"
 )
 
 type XMPPReference struct {
@@ -228,6 +231,80 @@ type XMPPConference struct {
 	InnerXML string   `xml:",innerxml"`
 }
 
+type XMPPJingleDescription struct {
+	XMLName xml.Name
+	Media   string `xml:"media,attr,omitempty"`
+}
+
+type XMPPJinglePropose struct {
+	stanza.MsgExtension
+	XMLName      xml.Name                `xml:"urn:xmpp:jingle-message:0 propose"`
+	ID           string                  `xml:"id,attr,omitempty"`
+	Descriptions []XMPPJingleDescription `xml:",any"`
+	InnerXML     string                  `xml:",innerxml"`
+}
+
+func (p XMPPJinglePropose) HasRTPDescription() bool {
+	for _, description := range p.Descriptions {
+		if description.XMLName.Local == "description" && description.XMLName.Space == NSJingleRTP {
+			return true
+		}
+	}
+	return false
+}
+
+type XMPPJingleProceed struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:jingle-message:0 proceed"`
+	ID      string   `xml:"id,attr,omitempty"`
+}
+
+type XMPPJingleAccept struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:jingle-message:0 accept"`
+	ID      string   `xml:"id,attr,omitempty"`
+}
+
+type XMPPJingleReject struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:jingle-message:0 reject"`
+	ID      string   `xml:"id,attr,omitempty"`
+}
+
+type XMPPJingleRetract struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:jingle-message:0 retract"`
+	ID      string   `xml:"id,attr,omitempty"`
+}
+
+type XMPPJingleRinging struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:jingle-message:0 ringing"`
+	ID      string   `xml:"id,attr,omitempty"`
+}
+
+type XMPPJingleFinish struct {
+	stanza.MsgExtension
+	XMLName xml.Name          `xml:"urn:xmpp:jingle-message:0 finish"`
+	ID      string            `xml:"id,attr,omitempty"`
+	Reason  *XMPPJingleReason `xml:"urn:xmpp:jingle:1 reason"`
+}
+
+type XMPPJingleReason struct {
+	Condition *XMPPJingleReasonCondition `xml:",any"`
+}
+
+type XMPPJingleReasonCondition struct {
+	XMLName xml.Name
+}
+
+func (f XMPPJingleFinish) ReasonName() string {
+	if f.Reason == nil || f.Reason.Condition == nil {
+		return ""
+	}
+	return strings.TrimSpace(f.Reason.Condition.XMLName.Local)
+}
+
 func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSReference, Local: "reference"}, XMPPReference{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSSIMS, Local: "media-sharing"}, XMPPMediaSharing{})
@@ -251,4 +328,11 @@ func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSDelayOld, Local: "x"}, XMPPDelayOld{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSEvent, Local: "x"}, XMPPEvent{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSConf, Local: "x"}, XMPPConference{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "propose"}, XMPPJinglePropose{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "proceed"}, XMPPJingleProceed{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "accept"}, XMPPJingleAccept{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "reject"}, XMPPJingleReject{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "retract"}, XMPPJingleRetract{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "ringing"}, XMPPJingleRinging{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSJingleMsg, Local: "finish"}, XMPPJingleFinish{})
 }
