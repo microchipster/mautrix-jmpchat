@@ -74,6 +74,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 
 		m.Extensions = append(m.Extensions, oob, fallback)
+		if ref := buildOutgoingXMPPAttachmentReference(msg.Content, uploadedURL); ref != nil {
+			m.Extensions = append(m.Extensions, ref)
+		}
 		m.Body = body
 	} else {
 		m.Body = strings.TrimSpace(msg.Content.Body)
@@ -86,6 +89,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 	if msg.Event.ID != "" {
 		m.Extensions = append(m.Extensions, XMPPOriginID{ID: string(msg.Event.ID)})
+	}
+	if reply := buildOutgoingXMPPReply(msg.ReplyTo); reply != nil {
+		m.Extensions = append(m.Extensions, reply)
 	}
 	if !isMUC {
 		m.Extensions = append(m.Extensions, XMPPReceipt{}, XMPPMarker{})
@@ -246,22 +252,27 @@ func (nc *MyNetworkClient) GetCapabilities(ctx context.Context, portal *bridgev2
 		File: map[event.CapabilityMsgType]*event.FileFeatures{
 			event.MsgImage: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+				Caption:   event.CapLevelFullySupported,
 			},
 			event.MsgVideo: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+				Caption:   event.CapLevelFullySupported,
 			},
 			event.MsgAudio: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+				Caption:   event.CapLevelFullySupported,
 			},
 			event.CapMsgVoice: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+				Caption:   event.CapLevelFullySupported,
 			},
 			event.MsgFile: {
 				MimeTypes: map[string]event.CapabilitySupportLevel{"*/*": event.CapLevelFullySupported},
+				Caption:   event.CapLevelFullySupported,
 			},
 		},
 		Edit:     event.CapLevelUnsupported,
-		Reply:    event.CapLevelUnsupported,
+		Reply:    event.CapLevelPartialSupport,
 		Thread:   event.CapLevelUnsupported,
 		Reaction: event.CapLevelPartialSupport,
 	}

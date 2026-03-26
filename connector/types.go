@@ -10,12 +10,42 @@ import (
 // LoginMetadata stores additional remote-auth/session data in the bridge database.
 // Use this for connector-specific fields that don't fit in core bridge tables.
 type LoginMetadata struct {
-	RemoteUserID string     `json:"remote_user_id,omitempty"` // XMPP JID
-	AccessToken  string     `json:"access_token,omitempty"`   // XMPP Password
-	ExpiresAt    time.Time  `json:"expires_at,omitempty"`
-	DeviceID     string     `json:"device_id,omitempty"`
-	Scopes       []string   `json:"scopes,omitempty"`
-	LastSyncAt   *time.Time `json:"last_sync_at,omitempty"`
+	RemoteUserID        string                        `json:"remote_user_id,omitempty"` // XMPP JID
+	AccessToken         string                        `json:"access_token,omitempty"`   // XMPP Password
+	ExpiresAt           time.Time                     `json:"expires_at,omitempty"`
+	DeviceID            string                        `json:"device_id,omitempty"`
+	Scopes              []string                      `json:"scopes,omitempty"`
+	LastSyncAt          *time.Time                    `json:"last_sync_at,omitempty"`
+	PendingGatewayForms map[string]PendingGatewayForm `json:"pending_gateway_forms,omitempty"`
+}
+
+type PendingGatewayForm struct {
+	TargetJID       string                `json:"target_jid,omitempty"`
+	Node            string                `json:"node,omitempty"`
+	RemoteSessionID string                `json:"remote_session_id,omitempty"`
+	Title           string                `json:"title,omitempty"`
+	Instructions    []string              `json:"instructions,omitempty"`
+	Fields          []PendingGatewayField `json:"fields,omitempty"`
+	Notes           []string              `json:"notes,omitempty"`
+	AllowedActions  []string              `json:"allowed_actions,omitempty"`
+	DefaultAction   string                `json:"default_action,omitempty"`
+	CreatedAt       time.Time             `json:"created_at,omitempty"`
+	LastStatus      string                `json:"last_status,omitempty"`
+}
+
+type PendingGatewayField struct {
+	Var         string                 `json:"var,omitempty"`
+	Type        string                 `json:"type,omitempty"`
+	Label       string                 `json:"label,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Required    bool                   `json:"required,omitempty"`
+	Values      []string               `json:"values,omitempty"`
+	Options     []PendingGatewayOption `json:"options,omitempty"`
+}
+
+type PendingGatewayOption struct {
+	Label string `json:"label,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 // New creates a new instance for database registration.

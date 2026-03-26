@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"gosrc.io/xmpp/stanza"
+	"maunium.net/go/mautrix/event"
 )
 
 func TestExtractXMPPAttachmentFromReference(t *testing.T) {
@@ -70,6 +71,94 @@ func TestExtractXMPPAttachmentFromOOB(t *testing.T) {
 	}
 	if attachment.Description != "Voice mail" {
 		t.Fatalf("unexpected attachment description: %q", attachment.Description)
+	}
+}
+
+func TestExtractXMPPAttachmentCaptionPrefersBodyWithoutFallbackURL(t *testing.T) {
+	msg := stanza.Message{
+		Body:    "Family picture\nhttps://example.com/pic.jpg",
+		Subject: "Holiday",
+		Extensions: []stanza.MsgExtension{
+			&stanza.OOB{URL: "https://example.com/pic.jpg", Desc: "Photo"},
+			&XMPPFallback{
+				For:  "jabber:x:oob",
+				Body: []XMPPFallbackBody{{Start: 15, End: 42}},
+			},
+		},
+	}
+
+	attachment := extractXMPPAttachment(msg)
+	caption := extractXMPPAttachmentCaption(msg, attachment)
+	if caption != "Family picture" {
+		t.Fatalf("unexpected caption: %q", caption)
+	}
+}
+
+func TestExtractXMPPAttachmentCaptionFallsBackToSubject(t *testing.T) {
+	msg := stanza.Message{
+		Body:    "https://example.com/vm.ogg",
+		Subject: "Voicemail Recording",
+		Extensions: []stanza.MsgExtension{
+			&stanza.OOB{URL: "https://example.com/vm.ogg"},
+		},
+	}
+
+	attachment := extractXMPPAttachment(msg)
+	caption := extractXMPPAttachmentCaption(msg, attachment)
+	if caption != "Voicemail Recording" {
+		t.Fatalf("unexpected caption: %q", caption)
+	}
+}
+
+func TestExtractXMPPAttachmentCaptionStripsReplyAndOOBFallbacks(t *testing.T) {
+	msg := stanza.Message{
+		Body: `> Alice wrote:
+old message
+
+Here is the photo
+https://example.com/pic.jpg`,
+		Extensions: []stanza.MsgExtension{
+			&stanza.OOB{URL: "https://example.com/pic.jpg"},
+			&XMPPFallback{For: NSReply, Body: []XMPPFallbackBody{{Start: 0, End: 27}}},
+			&XMPPFallback{For: "jabber:x:oob", Body: []XMPPFallbackBody{{Start: 46, End: 73}}},
+		},
+	}
+
+	attachment := extractXMPPAttachment(msg)
+	caption := extractXMPPAttachmentCaption(msg, attachment)
+	if caption != "Here is the photo" {
+		t.Fatalf("unexpected caption after stripping fallbacks: %q", caption)
+	}
+}
+
+func TestBuildOutgoingXMPPAttachmentReference(t *testing.T) {
+	content := &event.MessageEventContent{
+		MsgType:  event.MsgAudio,
+		Body:     "Voicemail Recording",
+		FileName: "voicemail.ogg",
+		Info: &event.FileInfo{
+			MimeType: "audio/ogg",
+			Size:     4096,
+			Duration: 12500,
+		},
+	}
+
+	ref := buildOutgoingXMPPAttachmentReference(content, "https://example.com/voicemail.ogg")
+	if ref == nil {
+		t.Fatal("expected attachment reference")
+	}
+	if ref.Type != "data" || ref.URI != "https://example.com/voicemail.ogg" {
+		t.Fatalf("unexpected reference metadata: %#v", ref)
+	}
+	if ref.MediaSharing == nil || ref.MediaSharing.File() == nil {
+		t.Fatal("expected media-sharing file metadata")
+	}
+	file := ref.MediaSharing.File()
+	if file.Name != "voicemail.ogg" || file.MediaType != "audio/ogg" || file.Size != 4096 {
+		t.Fatalf("unexpected file metadata: %#v", file)
+	}
+	if file.Duration != "PT12.500S" {
+		t.Fatalf("unexpected duration: %q", file.Duration)
 	}
 }
 

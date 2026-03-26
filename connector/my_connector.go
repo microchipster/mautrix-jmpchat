@@ -48,6 +48,9 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandSetName)
 		proc.AddHandler(CommandJoinRoom)
 		proc.AddHandler(CommandListDiscoveredRooms)
+		proc.AddHandler(CommandGatewayActions)
+		proc.AddHandler(CommandGatewayForm)
+		proc.AddHandler(CommandGatewaySubmit)
 		proc.AddHandler(CommandDeleteAllPortals)
 		proc.AddHandler(CommandLogout)
 		c.log.Info().Msg("Registered sync command")
@@ -245,6 +248,9 @@ func managementRoomHelpText() string {
 		"- sync [full|30d] (default 30d)\n" +
 		"- sync-status\n" +
 		"- create <jid> [jid...]\n" +
+		"- gateway-actions [jid]\n" +
+		"- gateway-form <jid> <node>\n" +
+		"- gateway-submit <session> field=value\n" +
 		"- list-logins [--verbose]\n" +
 		"- list-users\n" +
 		"- set-name <jid> <name>"

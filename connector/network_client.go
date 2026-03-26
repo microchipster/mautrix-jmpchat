@@ -2146,6 +2146,10 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		}
 	}
 	attachment := extractXMPPAttachment(msg)
+	replyTargetID := extractXMPPReplyTarget(msg)
+	if replyTargetID != "" {
+		msg.Body = trimBlankLines(strings.TrimSpace(stripXMPPFallbackFromMessage(msg, NSReply)))
+	}
 
 	// Ignore empty bodies unless we have OOB
 	if msg.Body == "" {
@@ -2312,12 +2316,14 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			fileName := ""
 			contentType := ""
 			remoteURL := ""
+			caption := ""
 			if attachment != nil {
 				remoteURL = attachment.URL
 				fileName = attachment.FileName
 				contentType = attachment.ContentType
-				if attachment.Description != "" {
-					body = attachment.Description
+				caption = extractXMPPAttachmentCaption(msg, attachment)
+				if caption != "" {
+					body = caption
 				}
 			}
 			if remoteURL == "" && (strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://")) {
@@ -2387,14 +2393,23 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				Body:    body,
 			}
 			if mediaURL != "" {
+				if body == "" && fileName != "" {
+					content.Body = fileName
+				}
 				content.URL = id.ContentURIString(mediaURL)
 				content.Info = info
-				if fileName != "" && body != fileName {
+				if fileName != "" && content.Body != fileName {
 					content.FileName = fileName
 				}
 			}
 
 			return &bridgev2.ConvertedMessage{
+				ReplyTo: func() *networkid.MessageOptionalPartID {
+					if replyTargetID == "" {
+						return nil
+					}
+					return &networkid.MessageOptionalPartID{MessageID: networkid.MessageID(replyTargetID)}
+				}(),
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					Type:    event.EventMessage,
 					Content: content,

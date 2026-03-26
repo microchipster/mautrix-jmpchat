@@ -39,16 +39,29 @@ func (q *MAMQuery) GetSet() *stanza.ResultSet {
 }
 
 type XData struct {
-	XMLName xml.Name     `xml:"jabber:x:data x"`
-	Type    string       `xml:"type,attr,omitempty"`
-	Fields  []XDataField `xml:"field"`
+	XMLName      xml.Name     `xml:"jabber:x:data x"`
+	Type         string       `xml:"type,attr,omitempty"`
+	Title        string       `xml:"title,omitempty"`
+	Instructions []string     `xml:"instructions,omitempty"`
+	Fields       []XDataField `xml:"field"`
 }
 
 type XDataField struct {
-	Var    string   `xml:"var,attr,omitempty"`
-	Type   string   `xml:"type,attr,omitempty"`
-	Values []string `xml:"value"`
+	Var         string        `xml:"var,attr,omitempty"`
+	Type        string        `xml:"type,attr,omitempty"`
+	Label       string        `xml:"label,attr,omitempty"`
+	Description string        `xml:"desc,omitempty"`
+	Required    *XDataBoolean `xml:"required,omitempty"`
+	Values      []string      `xml:"value"`
+	Options     []XDataOption `xml:"option,omitempty"`
 }
+
+type XDataOption struct {
+	Label string `xml:"label,attr,omitempty"`
+	Value string `xml:"value,omitempty"`
+}
+
+type XDataBoolean struct{}
 
 type MAMFin struct {
 	XMLName  xml.Name          `xml:"fin"`

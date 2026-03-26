@@ -1,9 +1,11 @@
 package connector
 
 import (
+	"fmt"
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -101,6 +103,107 @@ func defaultString(value, fallback string) string {
 	return value
 }
 
+func extractXMPPAttachmentCaption(msg stanza.Message, attachment *xmppAttachment) string {
+	caption := strings.TrimSpace(stripXMPPFallbackFromMessage(msg, NSReply, "jabber:x:oob"))
+	if attachment != nil && attachment.URL != "" {
+		caption = strings.TrimSpace(strings.ReplaceAll(caption, attachment.URL, ""))
+	}
+	caption = trimBlankLines(caption)
+	if caption != "" {
+		return caption
+	}
+	if attachment != nil && strings.TrimSpace(attachment.Description) != "" {
+		return trimBlankLines(strings.TrimSpace(attachment.Description))
+	}
+	return trimBlankLines(strings.TrimSpace(msg.Subject))
+}
+
+func stripXMPPFallbackFromMessage(msg stanza.Message, fallbackFor ...string) string {
+	body := msg.Body
+	if body == "" {
+		return ""
+	}
+	allowedFallbacks := make(map[string]struct{}, len(fallbackFor))
+	for _, item := range fallbackFor {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			allowedFallbacks[item] = struct{}{}
+		}
+	}
+	type bodyRange struct{ start, end int }
+	ranges := make([]bodyRange, 0, len(msg.Extensions))
+	for _, ext := range msg.Extensions {
+		var fallback XMPPFallback
+		switch typed := ext.(type) {
+		case *XMPPFallback:
+			fallback = *typed
+		case XMPPFallback:
+			fallback = typed
+		default:
+			continue
+		}
+		if len(allowedFallbacks) > 0 && fallback.For != "" {
+			if _, ok := allowedFallbacks[fallback.For]; !ok {
+				continue
+			}
+		}
+		for _, item := range fallback.Body {
+			if item.End <= item.Start || item.Start < 0 {
+				continue
+			}
+			ranges = append(ranges, bodyRange{start: item.Start, end: item.End})
+		}
+	}
+	if len(ranges) == 0 {
+		return body
+	}
+	sort.Slice(ranges, func(i, j int) bool {
+		if ranges[i].start == ranges[j].start {
+			return ranges[i].end < ranges[j].end
+		}
+		return ranges[i].start < ranges[j].start
+	})
+	runes := []rune(body)
+	var builder strings.Builder
+	last := 0
+	for _, r := range ranges {
+		start := clampRuneIndex(r.start, len(runes))
+		end := clampRuneIndex(r.end, len(runes))
+		if start < last {
+			start = last
+		}
+		if end < start {
+			end = start
+		}
+		if start > last {
+			builder.WriteString(string(runes[last:start]))
+		}
+		last = end
+	}
+	if last < len(runes) {
+		builder.WriteString(string(runes[last:]))
+	}
+	return builder.String()
+}
+
+func clampRuneIndex(index, max int) int {
+	if index < 0 {
+		return 0
+	}
+	if index > max {
+		return max
+	}
+	return index
+}
+
+func trimBlankLines(input string) string {
+	input = strings.TrimSpace(input)
+	for strings.Contains(input, "\n\n\n") {
+		input = strings.ReplaceAll(input, "\n\n\n", "\n\n")
+	}
+	return input
+}
+
 func classifyContentTypeMessageType(contentType string) event.MessageType {
 	contentType = strings.TrimSpace(strings.ToLower(contentType))
 	switch {
@@ -115,4 +218,42 @@ func classifyContentTypeMessageType(contentType string) event.MessageType {
 	default:
 		return event.MsgText
 	}
+}
+
+func buildOutgoingXMPPAttachmentReference(content *event.MessageEventContent, uploadedURL string) *XMPPReference {
+	uploadedURL = strings.TrimSpace(uploadedURL)
+	if content == nil || uploadedURL == "" {
+		return nil
+	}
+	file := &XMPPSIMSFile{
+		Name: content.GetFileName(),
+	}
+	if info := content.Info; info != nil {
+		file.MediaType = strings.TrimSpace(info.MimeType)
+		file.Size = int64(info.Size)
+		file.Width = info.Width
+		file.Height = info.Height
+		file.Duration = formatSIMSDurationMillis(info.Duration)
+	}
+	return &XMPPReference{
+		Type: "data",
+		URI:  uploadedURL,
+		MediaSharing: &XMPPMediaSharing{
+			FileV5: file,
+			Sources: &XMPPSIMSSources{
+				Reference: &XMPPSIMSReference{URI: uploadedURL},
+			},
+		},
+	}
+}
+
+func formatSIMSDurationMillis(durationMS int) string {
+	if durationMS <= 0 {
+		return ""
+	}
+	seconds := float64(durationMS) / 1000
+	if durationMS%1000 == 0 {
+		return fmt.Sprintf("PT%dS", durationMS/1000)
+	}
+	return fmt.Sprintf("PT%.3fS", seconds)
 }

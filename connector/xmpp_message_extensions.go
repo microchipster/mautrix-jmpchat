@@ -23,6 +23,7 @@ const (
 	NSDelayOld  = "jabber:x:delay"
 	NSEvent     = "jabber:x:event"
 	NSConf      = "jabber:x:conference"
+	NSReply     = "urn:xmpp:reply:0"
 )
 
 type XMPPReference struct {
@@ -83,6 +84,13 @@ type XMPPFallback struct {
 type XMPPFallbackBody struct {
 	Start int `xml:"start,attr,omitempty"`
 	End   int `xml:"end,attr,omitempty"`
+}
+
+type XMPPReply struct {
+	stanza.MsgExtension
+	XMLName xml.Name `xml:"urn:xmpp:reply:0 reply"`
+	To      string   `xml:"to,attr,omitempty"`
+	ID      string   `xml:"id,attr,omitempty"`
 }
 
 type XMPPMucUser struct {
@@ -207,6 +215,7 @@ func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSReference, Local: "reference"}, XMPPReference{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSSIMS, Local: "media-sharing"}, XMPPMediaSharing{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSFallback, Local: "fallback"}, XMPPFallback{})
+	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSReply, Local: "reply"}, XMPPReply{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSMucUser, Local: "x"}, XMPPMucUser{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSReactions, Local: "reactions"}, XMPPReactions{})
 	stanza.TypeRegistry.MapExtension(stanza.PKTMessage, xml.Name{Space: NSEME, Local: "encryption"}, XMPPEME{})

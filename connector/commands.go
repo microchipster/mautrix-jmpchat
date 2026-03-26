@@ -332,6 +332,143 @@ var CommandListDiscoveredRooms = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+var CommandGatewayActions = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		targetJID := "cheogram.com"
+		if len(ce.Args) > 0 {
+			targetJID = strings.TrimSpace(ce.Args[0])
+		}
+		result, err := client.discoverGatewayActions(ce.Ctx, targetJID)
+		if err != nil {
+			ce.Reply("Failed to inspect gateway actions for %s: %v", targetJID, err)
+			return
+		}
+		ce.Reply(formatGatewayActions(result))
+	},
+	Name:    "gateway-actions",
+	Aliases: []string{"service-actions"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List gateway prompts and ad-hoc commands (use: gateway-actions [jid])",
+	},
+	RequiresLogin: true,
+}
+
+var CommandGatewayForm = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if len(ce.Args) < 2 {
+			ce.Reply("Usage: gateway-form <jid> <command node>")
+			return
+		}
+		targetJID := strings.TrimSpace(ce.Args[0])
+		node := strings.TrimSpace(strings.Join(ce.Args[1:], " "))
+		if node == "" {
+			ce.Reply("Usage: gateway-form <jid> <command node>")
+			return
+		}
+		resp, err := client.executeGatewayCommand(ce.Ctx, targetJID, node)
+		if err != nil {
+			ce.Reply("Failed to execute gateway command %q on %s: %v", node, targetJID, err)
+			return
+		}
+		pending := gatewayPendingFormFromCommand(targetJID, resp)
+		if resp.Form == nil || len(pending.Fields) == 0 {
+			ce.Reply(formatGatewayCommandCompletion(targetJID, resp))
+			return
+		}
+		sessionKey, err := client.storePendingGatewayForm(ce.Ctx, pending)
+		if err != nil {
+			ce.Reply("Command returned a form, but saving the pending session failed: %v", err)
+			return
+		}
+		ce.Reply(formatPendingGatewayForm(sessionKey, pending))
+	},
+	Name: "gateway-form",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Execute a gateway ad-hoc command and render its form (use: gateway-form <jid> <node>)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandGatewaySubmit = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if len(ce.Args) < 2 {
+			ce.Reply("Usage: gateway-submit <session> field=value [field=value ...]")
+			return
+		}
+		sessionKey := strings.TrimSpace(ce.Args[0])
+		pending, ok := client.getPendingGatewayForm(sessionKey)
+		if !ok {
+			ce.Reply("No pending gateway form found for session %s", sessionKey)
+			return
+		}
+		assignmentsRaw := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ce.RawArgs), sessionKey))
+		values, err := parseGatewayAssignments(assignmentsRaw)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		if err := validateGatewayAssignments(pending, values); err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		resp, err := client.submitGatewayCommand(ce.Ctx, pending, values)
+		if err != nil {
+			ce.Reply("Failed to submit gateway form %s: %v", sessionKey, err)
+			return
+		}
+		nextPending := gatewayPendingFormFromCommand(pending.TargetJID, resp)
+		if resp.Form == nil || len(nextPending.Fields) == 0 || resp.Status == "completed" {
+			_ = client.deletePendingGatewayForm(ce.Ctx, sessionKey)
+			ce.Reply(formatGatewayCommandCompletion(pending.TargetJID, resp))
+			return
+		}
+		nextPending.CreatedAt = pending.CreatedAt
+		if err := client.replacePendingGatewayForm(ce.Ctx, sessionKey, nextPending); err != nil {
+			ce.Reply("Gateway form advanced, but saving the updated session failed: %v", err)
+			return
+		}
+		ce.Reply(formatPendingGatewayForm(sessionKey, nextPending))
+	},
+	Name: "gateway-submit",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Submit a pending gateway form (use: gateway-submit <session> field=value ...)",
+	},
+	RequiresLogin: true,
+}
+
 var CommandListLogins = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		verbose := false
@@ -715,6 +852,225 @@ func resolveLoginForCommand(ce *commands.Event, loginID string) (*bridgev2.UserL
 		return nil, fmt.Errorf("Login %q not found", loginID)
 	}
 	return login, nil
+}
+
+func formatGatewayActions(result *GatewayActionDiscovery) string {
+	if result == nil {
+		return "No gateway actions found"
+	}
+	parts := []string{fmt.Sprintf("Gateway target: %s", result.TargetJID)}
+	if result.GatewayDescription != "" {
+		parts = append(parts, fmt.Sprintf("Description: %s", result.GatewayDescription))
+	}
+	parts = append(parts, fmt.Sprintf("Supports ad-hoc commands: %t", result.SupportsCommands))
+	parts = append(parts, fmt.Sprintf("Supports gateway IQ: %t", result.SupportsGatewayIQ))
+	if result.GatewayPrompt != "" {
+		parts = append(parts, fmt.Sprintf("Gateway prompt: %s", result.GatewayPrompt))
+	}
+	if result.GatewayPromptError != "" {
+		parts = append(parts, fmt.Sprintf("Gateway prompt error: %s", result.GatewayPromptError))
+	}
+	if result.CommandListError != "" {
+		parts = append(parts, fmt.Sprintf("Command list error: %s", result.CommandListError))
+	}
+	if len(result.Commands) == 0 {
+		parts = append(parts, "Commands: (none advertised)")
+		return strings.Join(parts, "\n")
+	}
+	lines := make([]string, 0, len(result.Commands))
+	for _, item := range result.Commands {
+		label := firstNonEmpty(item.Name, item.Node, item.JID)
+		if item.Node != "" && item.Name != "" && item.Name != item.Node {
+			label = fmt.Sprintf("%s (node: %s)", item.Name, item.Node)
+		}
+		lines = append(lines, "- "+label)
+	}
+	parts = append(parts, "Commands:\n"+strings.Join(lines, "\n"))
+	parts = append(parts, fmt.Sprintf("Run `gateway-form %s <node>` to execute one.", result.TargetJID))
+	return strings.Join(parts, "\n")
+}
+
+func formatPendingGatewayForm(sessionKey string, pending PendingGatewayForm) string {
+	parts := []string{
+		fmt.Sprintf("Gateway form session: %s", sessionKey),
+		fmt.Sprintf("Target: %s", pending.TargetJID),
+		fmt.Sprintf("Command node: %s", pending.Node),
+	}
+	if pending.Title != "" {
+		parts = append(parts, fmt.Sprintf("Title: %s", pending.Title))
+	}
+	for _, note := range pending.Notes {
+		parts = append(parts, fmt.Sprintf("Note: %s", note))
+	}
+	for _, instruction := range pending.Instructions {
+		parts = append(parts, fmt.Sprintf("Instruction: %s", instruction))
+	}
+	fieldLines := make([]string, 0, len(pending.Fields))
+	for _, field := range pending.Fields {
+		if field.Var == "" {
+			continue
+		}
+		line := field.Var
+		if field.Label != "" {
+			line = fmt.Sprintf("%s - %s", line, field.Label)
+		}
+		if field.Type != "" {
+			line = fmt.Sprintf("%s [%s]", line, field.Type)
+		}
+		if field.Required {
+			line += " required"
+		}
+		if field.Description != "" {
+			line = fmt.Sprintf("%s - %s", line, field.Description)
+		}
+		if len(field.Options) > 0 {
+			options := make([]string, 0, len(field.Options))
+			for _, option := range field.Options {
+				options = append(options, firstNonEmpty(option.Label, option.Value))
+			}
+			line = fmt.Sprintf("%s (options: %s)", line, strings.Join(options, ", "))
+		}
+		fieldLines = append(fieldLines, "- "+line)
+	}
+	if len(fieldLines) == 0 {
+		parts = append(parts, "Fields: (none)")
+	} else {
+		parts = append(parts, "Fields:\n"+strings.Join(fieldLines, "\n"))
+	}
+	parts = append(parts, fmt.Sprintf("Submit with `gateway-submit %s field=value ...`.", sessionKey))
+	return strings.Join(parts, "\n")
+}
+
+func formatGatewayCommandCompletion(targetJID string, resp *AdHocCommand) string {
+	parts := []string{fmt.Sprintf("Gateway command finished for %s.", targetJID)}
+	if resp != nil {
+		if resp.Node != "" {
+			parts = append(parts, fmt.Sprintf("Command node: %s", resp.Node))
+		}
+		if resp.Status != "" {
+			parts = append(parts, fmt.Sprintf("Status: %s", resp.Status))
+		}
+		for _, note := range resp.Notes {
+			text := strings.TrimSpace(note.Text)
+			if text != "" {
+				parts = append(parts, fmt.Sprintf("Note: %s", text))
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func parseGatewayAssignments(raw string) (map[string]string, error) {
+	tokens, err := splitGatewayTokens(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("Usage: gateway-submit <session> field=value [field=value ...]")
+	}
+	values := make(map[string]string, len(tokens))
+	for _, token := range tokens {
+		parts := strings.SplitN(token, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("Invalid field assignment %q (expected field=value)", token)
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" {
+			return nil, fmt.Errorf("Invalid empty field name in %q", token)
+		}
+		values[key] = value
+	}
+	return values, nil
+}
+
+func splitGatewayTokens(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	tokens := make([]string, 0, 4)
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, current.String())
+		current.Reset()
+	}
+	for _, r := range raw {
+		switch {
+		case escaped:
+			current.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == ' ' || r == '\t' || r == '\n':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	if escaped {
+		return nil, fmt.Errorf("Trailing escape in gateway-submit arguments")
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("Unterminated quote in gateway-submit arguments")
+	}
+	flush()
+	return tokens, nil
+}
+
+func validateGatewayAssignments(pending PendingGatewayForm, values map[string]string) error {
+	known := make(map[string]PendingGatewayField, len(pending.Fields))
+	for _, field := range pending.Fields {
+		if field.Var == "" {
+			continue
+		}
+		known[field.Var] = field
+	}
+	for key := range values {
+		field, ok := known[key]
+		if !ok {
+			return fmt.Errorf("Field %q is not part of pending session %s", key, pending.Node)
+		}
+		if len(field.Options) > 0 {
+			matched := false
+			for _, option := range field.Options {
+				if values[key] == option.Value || values[key] == option.Label {
+					matched = true
+					values[key] = option.Value
+					break
+				}
+			}
+			if !matched {
+				choices := make([]string, 0, len(field.Options))
+				for _, option := range field.Options {
+					choices = append(choices, firstNonEmpty(option.Label, option.Value))
+				}
+				return fmt.Errorf("Field %q must be one of: %s", key, strings.Join(choices, ", "))
+			}
+		}
+	}
+	for _, field := range pending.Fields {
+		if !field.Required || field.Var == "" || field.Type == "hidden" {
+			continue
+		}
+		if _, ok := values[field.Var]; !ok && len(field.Values) == 0 {
+			return fmt.Errorf("Missing required field %q", field.Var)
+		}
+	}
+	return nil
 }
 
 func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {
