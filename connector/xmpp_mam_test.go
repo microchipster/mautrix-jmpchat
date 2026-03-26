@@ -33,3 +33,22 @@ func TestFormatIQError(t *testing.T) {
 		t.Fatalf("formatIQError() = %q, want %q", got, want)
 	}
 }
+
+func TestIsServiceUnavailableMAMError(t *testing.T) {
+	if !isServiceUnavailableMAMError(assertErr("MAM request failed: error (cancel/service-unavailable)")) {
+		t.Fatal("expected service-unavailable error to match")
+	}
+	if isServiceUnavailableMAMError(assertErr("MAM request failed: error (modify/bad-request)")) {
+		t.Fatal("did not expect bad-request to match")
+	}
+}
+
+func assertErr(msg string) error {
+	return stanzaErrorString(msg)
+}
+
+type stanzaErrorString string
+
+func (e stanzaErrorString) Error() string {
+	return string(e)
+}

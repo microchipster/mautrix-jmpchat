@@ -111,6 +111,13 @@ func formatIQError(err *stanza.Err) string {
 	return strings.Join(parts, "/")
 }
 
+func isServiceUnavailableMAMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "service-unavailable")
+}
+
 func init() {
 	for _, ns := range supportedMAMNamespaces {
 		stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: ns, Local: "query"}, MAMQuery{})
@@ -137,7 +144,16 @@ func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max i
 }
 
 func (nc *MyNetworkClient) backfillAccountDMs(ctx context.Context, start time.Time) error {
-	return nc.backfillMAM(ctx, "", "", start)
+	err := nc.backfillMAM(ctx, "", "", start)
+	if !isServiceUnavailableMAMError(err) {
+		return err
+	}
+	ownJID := nc.ownBareJID()
+	if ownJID == "" {
+		return err
+	}
+	nc.log.Info().Str("to_jid", ownJID).Msg("Retrying account DM MAM query against own bare JID after service-unavailable")
+	return nc.backfillMAM(ctx, ownJID, "", start)
 }
 
 func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before, after *string) (*MAMFin, []collectedMAMMessage, error) {
@@ -329,6 +345,7 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 	before := ""
 	after := ""
 	forward := !start.IsZero()
+	mucArchive := withJID == "" && toJID != "" && bareJID(toJID) != nc.ownBareJID()
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().
 			Str("to_jid", toJID).
@@ -372,7 +389,7 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 					Int("page", page).
 					Msg("MAM backfill ended: missing result set")
 			}
-			if withJID == "" {
+			if mucArchive {
 				nc.maybeFallbackToMUCHistory(toJID, start, fin)
 			}
 			break
@@ -385,7 +402,7 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 					Int("page", page).
 					Msg("MAM backfill complete")
 			}
-			if withJID == "" {
+			if mucArchive {
 				nc.maybeFallbackToMUCHistory(toJID, start, fin)
 			}
 			break
@@ -411,7 +428,7 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 						Int("page", page).
 						Msg("MAM backfill ended: missing result set first")
 				}
-				if withJID == "" {
+				if mucArchive {
 					nc.maybeFallbackToMUCHistory(toJID, start, fin)
 				}
 				break
