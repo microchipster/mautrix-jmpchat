@@ -90,11 +90,13 @@ type MyNetworkClient struct {
 	mamServerUnsupportedNotified bool
 	mamMUCUnsupportedNotified    map[string]bool
 	mamMUCUnsupportedPendingSync map[string]bool
+	dmBackfillPending            map[string]time.Time
 	rosterItems                  map[string]bool
 	bookmarkedRooms              map[string]bool
 	fullSyncRequested            bool
 	fullSyncRosterPending        bool
 	fullSyncBookmarksPending     bool
+	fullSyncAccountDiscoPending  bool
 	fullSyncBackfillsPending     int
 	fullSyncStart                time.Time
 	fullSyncUseStart             bool
@@ -307,6 +309,65 @@ func (nc *MyNetworkClient) requestOwnDiscoInfo() {
 		return
 	}
 	nc.requestDiscoInfoAsync(bare, "disco_info_account")
+}
+
+func (nc *MyNetworkClient) scheduleDMBackfill(withJID string, start time.Time) {
+	withJID = bareJID(strings.TrimSpace(withJID))
+	if withJID == "" {
+		return
+	}
+	nc.syncMu.Lock()
+	if nc.dmBackfillPending == nil {
+		nc.dmBackfillPending = map[string]time.Time{}
+	}
+	nc.dmBackfillPending[withJID] = start
+	nc.syncMu.Unlock()
+	nc.maybeStartPendingDMBackfills()
+}
+
+func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
+	if !nc.isXMPPConnected() {
+		return
+	}
+	supported, known := nc.mamSupportedForServer()
+	if !known {
+		nc.requestOwnDiscoInfo()
+		return
+	}
+
+	nc.syncMu.Lock()
+	pending := nc.dmBackfillPending
+	nc.dmBackfillPending = map[string]time.Time{}
+	if nc.fullSyncAccountDiscoPending {
+		nc.fullSyncAccountDiscoPending = false
+	}
+	nc.syncMu.Unlock()
+
+	if len(pending) == 0 {
+		nc.maybeClearFullSync()
+		return
+	}
+	if !supported {
+		nc.ensureMAMSupportForServer()
+		nc.maybeClearFullSync()
+		return
+	}
+
+	for jid, start := range pending {
+		nc.recordMAMBackfillDM()
+		tracked := nc.trackFullSyncBackfill()
+		go func(jid string, start time.Time, tracked bool) {
+			defer nc.finishTrackedFullSyncBackfill(tracked)
+			if err := nc.backfillDM(context.Background(), jid, start); err != nil {
+				nc.log.Err(err).Str("jid", jid).Msg("Failed to request DM MAM history")
+				if tracked {
+					nc.reportSyncError(fmt.Sprintf("DM backfill failed for %s: %v", jid, err))
+				} else {
+					nc.log.Debug().Str("jid", jid).Err(err).Msg("Automatic DM backfill failed")
+				}
+			}
+		}(jid, start, tracked)
+	}
 }
 
 func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
@@ -1622,21 +1683,11 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				nc.bridge.QueueRemoteEvent(nc.login, resync)
 				nc.recordDMPortal(string(portalID))
 				if nc.fullSyncRequested {
-					if nc.ensureMAMSupportForServer() {
-						start := time.Time{}
-						if nc.fullSyncUseStart {
-							start = nc.fullSyncStart
-						}
-						nc.recordMAMBackfillDM()
-						tracked := nc.trackFullSyncBackfill()
-						go func(jid string, start time.Time) {
-							defer nc.finishTrackedFullSyncBackfill(tracked)
-							if err := nc.backfillDM(context.Background(), jid, start); err != nil {
-								nc.log.Err(err).Str("jid", jid).Msg("Failed to request DM MAM history")
-								nc.reportSyncError(fmt.Sprintf("DM backfill failed for %s: %v", jid, err))
-							}
-						}(bareJID, start)
+					start := time.Time{}
+					if nc.fullSyncUseStart {
+						start = nc.fullSyncStart
 					}
+					nc.scheduleDMBackfill(bareJID, start)
 				}
 			}
 			if nc.fullSyncRosterPending {
@@ -1819,6 +1870,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 			}
 		case *stanza.DiscoInfo:
 			nc.recordDiscoFeatures(iq.From, payload.Features)
+			if iq.From == nc.ownBareJID() {
+				nc.maybeStartPendingDMBackfills()
+			}
 			nc.maybeStartPendingMUCBackfill(iq.From)
 			if iq.From != "" {
 				nc.mucBackfillMu.Lock()
@@ -2489,7 +2543,7 @@ func (nc *MyNetworkClient) maybeClearFullSync() {
 	if !nc.fullSyncRequested {
 		return
 	}
-	if nc.fullSyncRosterPending || nc.fullSyncBookmarksPending || nc.fullSyncBackfillsPending > 0 {
+	if nc.fullSyncRosterPending || nc.fullSyncBookmarksPending || nc.fullSyncAccountDiscoPending || nc.fullSyncBackfillsPending > 0 {
 		return
 	}
 	nc.fullSyncRequested = false
@@ -2547,6 +2601,8 @@ func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string
 	nc.syncLastErr = ""
 	nc.syncStartedAt = time.Now()
 	nc.fullSyncBackfillsPending = 0
+	nc.fullSyncAccountDiscoPending = false
+	nc.dmBackfillPending = map[string]time.Time{}
 	if full {
 		nc.fullSyncUseStart = false
 		nc.fullSyncStart = time.Time{}
@@ -2635,6 +2691,7 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 	nc.fullSyncRequested = true
 	nc.fullSyncRosterPending = true
 	nc.fullSyncBookmarksPending = true
+	nc.fullSyncAccountDiscoPending = nc.ownBareJID() != ""
 	nc.requestOwnDiscoInfo()
 	if err := nc.requestRoster(); err != nil {
 		nc.setSyncError(err)

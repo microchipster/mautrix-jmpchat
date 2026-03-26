@@ -101,9 +101,6 @@ func (nc *MyNetworkClient) runAutomaticDMCatchup(ctx context.Context) {
 	if !nc.isXMPPConnected() || nc.bridge == nil || nc.login == nil {
 		return
 	}
-	if !nc.ensureMAMSupportForServer() {
-		return
-	}
 	portals, err := nc.bridge.DB.UserPortal.GetAllForLogin(ctx, nc.login.UserLogin)
 	if err != nil {
 		nc.log.Err(err).Msg("Failed to enumerate portals for automatic DM catchup")
@@ -126,11 +123,7 @@ func (nc *MyNetworkClient) runAutomaticDMCatchup(ctx context.Context) {
 			continue
 		}
 		start := nc.historySyncStartForPortal(ctx, userPortal.Portal)
-		go func(jid string, start time.Time) {
-			if err := nc.backfillDM(context.Background(), jid, start); err != nil {
-				nc.log.Err(err).Str("jid", jid).Time("start", start).Msg("Automatic DM catchup failed")
-			}
-		}(jid, start)
+		nc.scheduleDMBackfill(jid, start)
 	}
 }
 
