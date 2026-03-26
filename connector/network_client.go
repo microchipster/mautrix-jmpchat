@@ -314,7 +314,7 @@ func (nc *MyNetworkClient) requestOwnDiscoInfo() {
 func (nc *MyNetworkClient) scheduleDMBackfill(withJID string, start time.Time) {
 	withJID = bareJID(strings.TrimSpace(withJID))
 	if withJID == "" {
-		return
+		withJID = "*"
 	}
 	nc.syncMu.Lock()
 	if nc.dmBackfillPending == nil {
@@ -353,20 +353,30 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 		return
 	}
 
-	for jid, start := range pending {
-		nc.recordMAMBackfillDM()
-		tracked := nc.trackFullSyncBackfill()
-		go func(jid string, start time.Time, tracked bool) {
-			defer nc.finishTrackedFullSyncBackfill(tracked)
-			if err := nc.backfillDM(context.Background(), jid, start); err != nil {
-				nc.log.Err(err).Str("jid", jid).Msg("Failed to request DM MAM history")
-				if tracked {
-					nc.reportSyncError(fmt.Sprintf("DM backfill failed for %s: %v", jid, err))
-				} else {
-					nc.log.Debug().Str("jid", jid).Err(err).Msg("Automatic DM backfill failed")
-				}
+	start := time.Time{}
+	for _, candidate := range pending {
+		if start.IsZero() || (!candidate.IsZero() && candidate.Before(start)) {
+			start = candidate
+		}
+	}
+	nc.recordMAMBackfillDM()
+	tracked := nc.trackFullSyncBackfill()
+	go func(start time.Time, tracked bool) {
+		defer nc.finishTrackedFullSyncBackfill(tracked)
+		if err := nc.backfillAccountDMs(context.Background(), start); err != nil {
+			nc.log.Err(err).Time("start", start).Msg("Failed to request account DM MAM history")
+			if tracked {
+				nc.reportSyncError(fmt.Sprintf("DM backfill failed: %v", err))
+			} else {
+				nc.log.Debug().Err(err).Time("start", start).Msg("Automatic DM backfill failed")
 			}
-		}(jid, start, tracked)
+		}
+	}(start, tracked)
+	for jid := range pending {
+		if jid == "*" {
+			continue
+		}
+		nc.recordDMPortal(string(MakePortalID(jid)))
 	}
 }
 
@@ -1047,7 +1057,7 @@ func (nc *MyNetworkClient) mamNamespaceForTarget(toJID, withJID string) string {
 		if ns, known := nc.mamNamespaceForMUC(toJID); known && ns != "" {
 			return ns
 		}
-	} else if withJID != "" {
+	} else if withJID != "" || (toJID == "" && withJID == "") {
 		if ns, known := nc.mamNamespaceForServer(); known && ns != "" {
 			return ns
 		}
@@ -2226,6 +2236,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	roomType = ptr.Ptr(database.RoomTypeDefault)
 	if !isMUC {
 		roomType = ptr.Ptr(database.RoomTypeDM)
+		nc.recordDMPortal(string(portalID))
 	}
 
 	// First send a ChatResync to create or update the portal with correct info

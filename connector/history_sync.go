@@ -89,6 +89,14 @@ func (nc *MyNetworkClient) defaultAutomaticCatchupStart() time.Time {
 	return end.Add(-automaticCatchupLookback)
 }
 
+func (nc *MyNetworkClient) historySyncStartForDMs() time.Time {
+	loginMeta, _ := nc.login.Metadata.(*LoginMetadata)
+	if loginMeta != nil && loginMeta.LastSyncAt != nil && !loginMeta.LastSyncAt.IsZero() {
+		return loginMeta.LastSyncAt.UTC().Add(-historySyncOverlap)
+	}
+	return nc.defaultAutomaticCatchupStart()
+}
+
 func (nc *MyNetworkClient) triggerAutomaticDMCatchup() {
 	go nc.runAutomaticDMCatchup(context.Background())
 }
@@ -101,30 +109,7 @@ func (nc *MyNetworkClient) runAutomaticDMCatchup(ctx context.Context) {
 	if !nc.isXMPPConnected() || nc.bridge == nil || nc.login == nil {
 		return
 	}
-	portals, err := nc.bridge.DB.UserPortal.GetAllForLogin(ctx, nc.login.UserLogin)
-	if err != nil {
-		nc.log.Err(err).Msg("Failed to enumerate portals for automatic DM catchup")
-		return
-	}
-	for _, userPortal := range portals {
-		if userPortal == nil || userPortal.Portal.ID == "" {
-			continue
-		}
-		portal, err := nc.bridge.GetExistingPortalByKey(ctx, userPortal.Portal)
-		if err != nil || portal == nil {
-			continue
-		}
-		meta, _ := portal.Metadata.(*PortalMetadata)
-		if meta != nil && meta.IsMUC {
-			continue
-		}
-		jid := UnescapeJID(string(userPortal.Portal.ID))
-		if jid == "" {
-			continue
-		}
-		start := nc.historySyncStartForPortal(ctx, userPortal.Portal)
-		nc.scheduleDMBackfill(jid, start)
-	}
+	nc.scheduleDMBackfill("", nc.historySyncStartForDMs())
 }
 
 func (nc *MyNetworkClient) runAutomaticMUCCatchup(ctx context.Context) {

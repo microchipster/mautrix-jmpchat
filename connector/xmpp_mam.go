@@ -114,12 +114,13 @@ func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max i
 	return err
 }
 
+func (nc *MyNetworkClient) backfillAccountDMs(ctx context.Context, start time.Time) error {
+	return nc.backfillMAM(ctx, "", "", start)
+}
+
 func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before, after *string) (*MAMFin, []collectedMAMMessage, error) {
 	if nc.xmppClient == nil {
 		return nil, nil, fmt.Errorf("XMPP client not connected")
-	}
-	if toJID == "" && withJID == "" {
-		return nil, nil, fmt.Errorf("MAM target JID is empty")
 	}
 	if max <= 0 {
 		max = 100
