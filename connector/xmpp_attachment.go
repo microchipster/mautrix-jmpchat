@@ -232,6 +232,59 @@ func classifyContentTypeMessageType(contentType string, treatGenericAsFile bool)
 	}
 }
 
+func isLikelyXMPPVoiceNote(msg stanza.Message, attachment *xmppAttachment) bool {
+	if attachment == nil {
+		return false
+	}
+	contentType := strings.ToLower(strings.TrimSpace(attachment.ContentType))
+	if !strings.HasPrefix(contentType, "audio/") {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		msg.Subject,
+		msg.Body,
+		attachment.Description,
+		attachment.FileName,
+	}, "\n")))
+	return strings.Contains(text, "voicemail") || strings.Contains(text, "voice mail") || strings.Contains(text, "voice note")
+}
+
+func preferredXMPPVoiceNoteBody(msg stanza.Message, attachment *xmppAttachment, currentBody string) string {
+	if !isLikelyXMPPVoiceNote(msg, attachment) {
+		return currentBody
+	}
+	for _, candidate := range []string{
+		strings.TrimSpace(msg.Subject),
+		strings.TrimSpace(attachment.Description),
+		trimBlankLines(strings.TrimSpace(currentBody)),
+	} {
+		if candidate == "" {
+			continue
+		}
+		if looksLikeAttachmentPlaceholder(candidate, attachment) {
+			continue
+		}
+		return candidate
+	}
+	return "Voicemail"
+}
+
+func looksLikeAttachmentPlaceholder(text string, attachment *xmppAttachment) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return true
+	}
+	if attachment != nil {
+		if text == strings.TrimSpace(attachment.URL) || text == strings.TrimSpace(attachment.FileName) {
+			return true
+		}
+	}
+	if strings.HasPrefix(text, "http://") || strings.HasPrefix(text, "https://") {
+		return true
+	}
+	return false
+}
+
 func buildOutgoingXMPPAttachmentReference(content *event.MessageEventContent, uploadedURL string) *XMPPReference {
 	uploadedURL = strings.TrimSpace(uploadedURL)
 	if content == nil || uploadedURL == "" {

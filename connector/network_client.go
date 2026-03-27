@@ -2321,6 +2321,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			body := data
 			var info *event.FileInfo
 			var mediaURL string
+			var encryptedFile *event.EncryptedFileInfo
 			fileName := ""
 			contentType := ""
 			remoteURL := ""
@@ -2364,9 +2365,10 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 											fileName = "file"
 										}
 									}
-									mediaMxc, _, err := intent.UploadMedia(ctx, portal.MXID, dataBytes, fileName, contentType)
+									mediaMxc, uploadedFile, err := intent.UploadMedia(ctx, portal.MXID, dataBytes, fileName, contentType)
 									if err == nil {
 										mediaURL = string(mediaMxc)
+										encryptedFile = uploadedFile
 										msgType = candidateType
 										if body == "" {
 											body = fileName
@@ -2402,14 +2404,24 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				MsgType: msgType,
 				Body:    body,
 			}
-			if mediaURL != "" {
+			if mediaURL != "" || encryptedFile != nil {
 				if body == "" && fileName != "" {
 					content.Body = fileName
 				}
-				content.URL = id.ContentURIString(mediaURL)
+				if mediaURL != "" {
+					content.URL = id.ContentURIString(mediaURL)
+				}
+				content.File = encryptedFile
 				content.Info = info
 				if fileName != "" && content.Body != fileName {
 					content.FileName = fileName
+				}
+				if msgType == event.MsgAudio && info != nil && info.Duration > 0 {
+					content.Body = preferredXMPPVoiceNoteBody(msg, attachment, content.Body)
+					content.MSC1767Audio = &event.MSC1767Audio{Duration: info.Duration}
+					if isLikelyXMPPVoiceNote(msg, attachment) {
+						content.MSC3245Voice = &event.MSC3245Voice{}
+					}
 				}
 			}
 			applyMatrixLinkFormatting(content)

@@ -214,3 +214,34 @@ func TestClassifyContentTypeMessageType(t *testing.T) {
 		t.Fatalf("expected image/jpeg to map to image, got %q", got)
 	}
 }
+
+func TestIsLikelyXMPPVoiceNote(t *testing.T) {
+	msg := stanza.Message{Subject: "New Voicemail"}
+	attachment := &xmppAttachment{ContentType: "audio/mpeg", FileName: "vm.mp3"}
+	if !isLikelyXMPPVoiceNote(msg, attachment) {
+		t.Fatal("expected voicemail audio to be treated as voice note")
+	}
+	attachment.Description = "podcast episode"
+	msg.Subject = ""
+	if isLikelyXMPPVoiceNote(msg, attachment) {
+		t.Fatal("expected generic audio attachment to not be treated as voice note")
+	}
+}
+
+func TestPreferredXMPPVoiceNoteBody(t *testing.T) {
+	msg := stanza.Message{Subject: "New Voicemail"}
+	attachment := &xmppAttachment{ContentType: "audio/mpeg", FileName: "vm.mp3", URL: "https://example.com/vm.mp3"}
+	if got := preferredXMPPVoiceNoteBody(msg, attachment, attachment.URL); got != "New Voicemail" {
+		t.Fatalf("unexpected preferred voice note body: %q", got)
+	}
+	msg.Subject = ""
+	attachment.Description = "Voicemail Recording"
+	if got := preferredXMPPVoiceNoteBody(msg, attachment, attachment.FileName); got != "Voicemail Recording" {
+		t.Fatalf("unexpected description-based voice note body: %q", got)
+	}
+	attachment.Description = ""
+	msg.Body = "voice note"
+	if got := preferredXMPPVoiceNoteBody(msg, attachment, attachment.FileName); got != "Voicemail" {
+		t.Fatalf("unexpected fallback voice note body: %q", got)
+	}
+}
