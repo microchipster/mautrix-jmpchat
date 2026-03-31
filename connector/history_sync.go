@@ -29,7 +29,7 @@ func shouldUpdateHistoryProgress(existingTS *time.Time, existingID string, newTS
 	return false
 }
 
-func (nc *MyNetworkClient) markPortalHistoryProgress(ctx context.Context, portal *bridgev2.Portal, timestamp time.Time, messageID string) {
+func (nc *MyNetworkClient) markPortalHistoryProgress(ctx context.Context, portal *bridgev2.Portal, timestamp time.Time, messageID string, serverMessageID string) {
 	if portal == nil || timestamp.IsZero() {
 		return
 	}
@@ -43,6 +43,9 @@ func (nc *MyNetworkClient) markPortalHistoryProgress(ctx context.Context, portal
 		meta.LastSyncedAt = &timestamp
 		if messageID != "" {
 			meta.LastMessageID = messageID
+		}
+		if serverMessageID != "" {
+			meta.LastServerMessageID = serverMessageID
 		}
 		if err := portal.Save(ctx); err != nil {
 			nc.log.Err(err).Str("portal_id", string(portal.ID)).Msg("Failed to save portal history progress")

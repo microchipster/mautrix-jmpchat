@@ -43,6 +43,10 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandSync)
 		proc.AddHandler(CommandSyncStatus)
 		proc.AddHandler(CommandStartChat)
+		proc.AddHandler(CommandListContacts)
+		proc.AddHandler(CommandListContacted)
+		proc.AddHandler(CommandBlockContact)
+		proc.AddHandler(CommandReportContact)
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandListLogins)
 		proc.AddHandler(CommandSetName)
@@ -248,6 +252,10 @@ func managementRoomHelpText() string {
 		"- sync [full|30d] (default 30d)\n" +
 		"- sync-status\n" +
 		"- create <jid> [jid...]\n" +
+		"- list-contacts\n" +
+		"- list-contacted\n" +
+		"- block [--report] <jid>\n" +
+		"- report <jid>\n" +
 		"- gateway-actions [jid]\n" +
 		"- gateway-form <jid> <node>\n" +
 		"- gateway-submit <session> field=value\n" +

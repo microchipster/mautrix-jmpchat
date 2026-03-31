@@ -224,6 +224,123 @@ var CommandListUsers = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+var CommandListContacts = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		contacts := client.rosterContactList()
+		if len(contacts) == 0 {
+			if client.isXMPPConnected() {
+				if err := client.requestRoster(); err != nil {
+					ce.Reply("No roster contacts loaded and roster refresh failed: %v", err)
+					return
+				}
+				ce.Reply("No roster contacts loaded yet. Requested a roster refresh; retry in a moment.")
+				return
+			}
+			ce.Reply("No roster contacts found")
+			return
+		}
+		ce.Reply(strings.Join(contacts, "\n"))
+	},
+	Name: "list-contacts",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List contacts currently present in your XMPP roster",
+	},
+	RequiresLogin: true,
+}
+
+var CommandListContacted = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		rows, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+		contacted := map[string]struct{}{}
+		for _, row := range rows {
+			portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, row.Portal)
+			if err != nil || portal == nil {
+				jid := UnescapeJID(string(row.Portal.ID))
+				if groupContacts := splitCheogramGroupContacts(jid); len(groupContacts) > 0 {
+					for _, contact := range groupContacts {
+						addContactedJIDs(contacted, contact)
+					}
+				} else {
+					addContactedJIDs(contacted, jid)
+				}
+				continue
+			}
+			meta, _ := portal.Metadata.(*PortalMetadata)
+			if portal.RoomType == database.RoomTypeDM || (meta != nil && !meta.IsMUC) {
+				jid := string(portal.OtherUserID)
+				if jid == "" {
+					jid = string(portal.ID)
+				}
+				addContactedJIDs(contacted, UnescapeJID(jid))
+				continue
+			}
+			for _, contact := range splitCheogramGroupContacts(UnescapeJID(string(portal.ID))) {
+				addContactedJIDs(contacted, contact)
+			}
+		}
+		if len(contacted) == 0 {
+			ce.Reply("No contacted users found")
+			return
+		}
+		list := make([]string, 0, len(contacted))
+		for jid := range contacted {
+			list = append(list, jid)
+		}
+		sort.Strings(list)
+		ce.Reply(strings.Join(list, "\n"))
+	},
+	Name: "list-contacted",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List users you have contacted directly or via Cheogram group chats",
+	},
+	RequiresLogin: true,
+}
+
+var CommandBlockContact = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		handleBlockCommand(ce, false)
+	},
+	Name: "block",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Block a contact (use: block [--report] <jid>)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandReportContact = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		handleBlockCommand(ce, true)
+	},
+	Name: "report",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Report a contact as spam and block them (use: report <jid>)",
+	},
+	RequiresLogin: true,
+}
+
 var CommandJoinRoom = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		login := ce.User.GetDefaultLogin()
@@ -648,6 +765,101 @@ func normalizeJID(input string) string {
 		val = "+" + val
 	}
 	return val + "@cheogram.com"
+}
+
+func splitCheogramGroupContacts(jid string) []string {
+	jid = bareJID(strings.TrimSpace(strings.ToLower(jid)))
+	if jid == "" || !strings.Contains(jid, ",") || !strings.HasSuffix(jid, "@cheogram.com") {
+		return nil
+	}
+	localpart := strings.TrimSuffix(jid, "@cheogram.com")
+	parts := strings.Split(localpart, ",")
+	contacts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if !strings.HasPrefix(part, "+") {
+			part = "+" + part
+		}
+		contacts = append(contacts, part+"@cheogram.com")
+	}
+	return contacts
+}
+
+func addContactedJIDs(dst map[string]struct{}, jid string) {
+	jid = bareJID(strings.TrimSpace(jid))
+	if jid == "" {
+		return
+	}
+	if strings.Contains(jid, "/") || strings.Contains(jid, ",") {
+		return
+	}
+	dst[jid] = struct{}{}
+}
+
+func parseBlockCommandArgs(args []string, defaultReport bool) (string, bool, error) {
+	report := defaultReport
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "" {
+			continue
+		}
+		if arg == "--report" {
+			report = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	if len(filtered) != 1 {
+		return "", false, fmt.Errorf("Usage: block [--report] <jid>")
+	}
+	jid := normalizeJID(filtered[0])
+	if jid == "" {
+		return "", false, fmt.Errorf("Usage: block [--report] <jid>")
+	}
+	return jid, report, nil
+}
+
+func handleBlockCommand(ce *commands.Event, defaultReport bool) {
+	login := ce.User.GetDefaultLogin()
+	if login == nil {
+		ce.Reply("No login found")
+		return
+	}
+	client, ok := login.Client.(*MyNetworkClient)
+	if !ok || client == nil {
+		ce.Reply("Network client not available")
+		return
+	}
+	jid, report, err := parseBlockCommandArgs(ce.Args, defaultReport)
+	if err != nil {
+		ce.Reply("%v", err)
+		return
+	}
+	serverMsgID := ""
+	if report {
+		if portal, err := findExistingPortalByJID(ce.Ctx, ce, login, jid); err == nil && portal != nil {
+			if meta, ok := portal.Metadata.(*PortalMetadata); ok && meta != nil {
+				serverMsgID = meta.LastServerMessageID
+			}
+		} else if err != nil {
+			if ce.Log != nil {
+				ce.Log.Debug().Err(err).Str("jid", jid).Msg("Failed to look up portal for spam report stanza-id")
+			}
+		}
+	}
+	if err := client.blockContact(ce.Ctx, jid, report, serverMsgID); err != nil {
+		ce.Reply("Failed to block %s: %v", jid, err)
+		return
+	}
+	if report {
+		ce.Reply("Blocked and reported %s", jid)
+		return
+	}
+	ce.Reply("Blocked %s", jid)
 }
 
 func findExistingPortalByJID(ctx context.Context, ce *commands.Event, login *bridgev2.UserLogin, jid string) (*bridgev2.Portal, error) {

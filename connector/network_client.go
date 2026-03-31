@@ -101,6 +101,7 @@ type MyNetworkClient struct {
 	fullSyncStart                time.Time
 	fullSyncUseStart             bool
 	sessionEstablishedAt         time.Time
+	rosterMu                     sync.RWMutex
 	mamQueryMu                   sync.Mutex
 	mamQueryResults              map[string][]collectedMAMMessage
 	callSessionsMu               sync.Mutex
@@ -1208,7 +1209,9 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.mamMUCUnsupportedNotified = map[string]bool{}
 	}
 	if nc.rosterItems == nil {
+		nc.rosterMu.Lock()
 		nc.rosterItems = map[string]bool{}
+		nc.rosterMu.Unlock()
 	}
 	if nc.bookmarkedRooms == nil {
 		nc.bookmarkedRooms = map[string]bool{}
@@ -1689,9 +1692,11 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				if err := nc.sendXMPP(discoIq); err != nil {
 					nc.log.Err(err).Str("to", bareJID).Msg("Failed to send disco info for roster item")
 				}
+				nc.rosterMu.Lock()
 				if nc.rosterItems != nil {
 					nc.rosterItems[bareJID] = true
 				}
+				nc.rosterMu.Unlock()
 				name := item.Name
 				if name == "" {
 					name = bareJID
@@ -2293,6 +2298,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	if msgID == "" {
 		msgID = idOverride
 	}
+	serverMsgID := nc.extractServerMessageID(msg)
 
 	evt := &simplevent.Message[string]{
 		EventMeta: simplevent.EventMeta{
@@ -2304,7 +2310,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			},
 			Timestamp: timestamp,
 			PostHandleFunc: func(ctx context.Context, portal *bridgev2.Portal) {
-				nc.markPortalHistoryProgress(ctx, portal, timestamp, msgID)
+				nc.markPortalHistoryProgress(ctx, portal, timestamp, msgID, serverMsgID)
 			},
 		},
 		Data: msg.Body,
@@ -2547,6 +2553,14 @@ func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
 	}
 	if msg.Id != "" {
 		return msg.Id
+	}
+	return ""
+}
+
+func (nc *MyNetworkClient) extractServerMessageID(msg stanza.Message) string {
+	var stanzaID XMPPStanzaID
+	if msg.Get(&stanzaID) && stanzaID.ID != "" {
+		return stanzaID.ID
 	}
 	return ""
 }
