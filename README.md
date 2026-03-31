@@ -1,171 +1,273 @@
-# Minimal Mautrix-Go Bridge: Quickstart Template 🚀
+# mautrix-jmpchat
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/mautrix/go.svg)](https://pkg.go.dev/github.com/mautrix/go)
+`mautrix-jmpchat` is a Matrix appservice bridge for [JMP](https://jmp.chat/) and the Cheogram XMPP network.
 
-Welcome! This project provides a minimal, bare-bones template for creating a [Matrix](https://matrix.org/) bridge using the powerful [mautrix-go](https://github.com/mautrix/go) library, specifically leveraging its modern `bridgev2` framework.
+Its purpose is to let a Matrix user operate a JMP-backed XMPP account from Matrix: direct chats, Cheogram phone-number chats, and related account actions are bridged through Matrix portal rooms.
 
-**What is a Matrix Bridge?**
+This repository lives inside a `matrix-docker-ansible-deploy` workspace and is written to integrate cleanly with that playbook's appservice deployment model.
 
-A Matrix bridge connects the decentralized, open Matrix communication network to other, often proprietary, chat networks (like WhatsApp, Telegram, Discord, etc.). It acts as a translator, allowing users on Matrix to communicate with users on the other network, and vice-versa.
+## What This Is
 
-Building a bridge involves a lot of standard setup: handling Matrix connections, managing user logins, storing data, processing configuration, etc. This template handles that common boilerplate for you, letting you jump straight into the interesting part: connecting to _your_ specific target network.
+JMP gives users a real phone number that works through XMPP/Jabber apps such as Cheogram. This bridge connects that XMPP side to Matrix using `mautrix` `bridgev2`.
 
-## ⚙️ Project Structure
+The project is not a generic bridge template anymore. It is specifically aimed at:
 
-Here's a breakdown of the key files:
+- Matrix <-> JMP/Cheogram XMPP bridging
+- Cheogram phone-number contacts such as `+15550101100@cheogram.com`
+- Cheogram multi-recipient group chats
+- deployment as a self-hosted Matrix appservice, especially with `matrix-docker-ansible-deploy`
 
-- **`main.go`**:
-  - The main entry point. Handles command-line flags, configuration, logging, and the bridge's start/stop lifecycle using `mxmain`.
-  - You usually **won't need to modify this** much initially.
+The `cheogram-android/` tree is kept around as a behavior reference while bringing this bridge closer to real Cheogram/JMP behavior.
 
-- **`connector/my_connector.go`**:
-  - **⭐ This is the main implementation of the network side of the bridge! ⭐**
-  - Contains the `MyConnector` struct, which implements the `bridgev2.NetworkConnector` interface.
-  - This file defines the bridge's core properties (`GetName`, `GetCapabilities`), handles loading user sessions (`LoadUserLogin`), and initiates the login process (`GetLoginFlows`, `CreateLogin`).
-  - It also contains the main logic for handling events _from_ Matrix (`HandleMatrixMessage`, etc. - though these might be delegated).
+## Current Scope
 
-- **`connector/login.go`**:
-  - Contains the logic for specific login flows (e.g., `SimpleLogin` for username/password).
-  - Implements `bridgev2.LoginProcess` interfaces to handle steps like asking for user input (`Start`, `SubmitUserInput`) and finalizing login.
+The codebase currently includes bridge logic for:
 
-- **`connector/network_client.go`** (Optional but Recommended):
-  - This file typically holds the client logic for interacting with the _remote network_ for a _specific logged-in user_.
-  - You'd create a struct (e.g., `MyNetworkClient`) that implements `bridgev2.NetworkClient`.
-  - Methods here would handle sending messages _to_ the remote network, fetching user/room info, handling typing notifications, etc., based on Matrix events forwarded from `connector/my_connector.go`.
-  - The `LoadUserLogin` method in `connector/my_connector.go` would instantiate this client.
+- XMPP login using a JMP/Cheogram JID and password
+- per-user XMPP connections through `gosrc.io/xmpp`, with local patches in `patched-xmpp/`
+- Matrix portal rooms for DMs and Cheogram-style group chats
+- roster fetches, bookmarks/discovery, and MUC joins
+- MAM-based history sync/backfill
+- management-room commands for chat creation, sync, discovery, blocking, and reporting spam
+- Matrix -> XMPP handling for messages, reactions, and read receipts
 
----
+This is still an active bridge implementation, not a finished polished product. When behavior differs from Cheogram Android, Cheogram is the reference.
 
-## 🚀 Getting Started: Building Your Bridge
+## Repository Layout
 
-Follow these steps to get your basic bridge running:
+- `cmd/mautrix-jmpchat/main.go`: binary entrypoint
+- `connector/`: bridge implementation
+- `patched-xmpp/`: local fork of `gosrc.io/xmpp` used by this bridge
+- `docker-run.sh`: container entrypoint used by the image
+- `Dockerfile`: container build for deployment
+- `DEVEL.md`: maintainer-oriented Go/codebase walkthrough
+- `docs/CHEOGRAM_ANALYSIS.md`: notes comparing this bridge to Cheogram Android and JMP behavior
 
-1.  **Clone/Copy Template:**
-    - Get a local copy of this template directory (e.g., `git clone ...` or download ZIP).
+## Important Implementation Notes
 
-2.  **Implement Your Connector (`connector/my_connector.go`):**
-    - Open `connector/my_connector.go`. This is where you'll spend most of your time.
-    - **Goal:** Replace the placeholder logic with real code to interact with your target network.
-    - Start by filling in:
-      - `GetName()`: Provide accurate details about your bridge and the network it connects to.
-      - `GetCapabilities()`: Define what features your bridge supports (e.g., message formatting, read receipts).
-      - `GetLoginFlows()` / `CreateLogin()`: Implement the actual login mechanism for your target network. The current example is just a placeholder!
-      - `LoadUserLogin()`: This is crucial. When a user logs in, this function should establish their _persistent_ connection to the remote network.
-      - `Start()` / `Stop()`: Add any global setup/teardown logic for your network connection.
-    - **Configuration:** If your network needs API keys or other settings, implement `GetConfig()` to load them from a file (like `simple-config.yaml`) and create that YAML file.
+- The Go module replaces upstream XMPP with a local fork:
 
-3.  **Historic messages / chat history:**
-    - This is called _backfilling_ and happens in `network_client_backfill.go`
-    - When the user opens a room, this function will get called. Use this hook to backfill messages
-    - For this to get called, you need to set `backfill` to true in config.yaml
+```go
+replace gosrc.io/xmpp => ./patched-xmpp
+```
 
-4.  **Generate Registration File:**
-    - Open your terminal in the project directory.
-    - Run: `go run . -g -c config.yaml -r registration.yaml`
-    - This creates the initial `registration.yaml`. **Keep this file safe!**
+- The binary identifies itself as `A Matrix-XMPP bridge for JMP.chat/Cheogram`.
+- The bridge registers custom management-room commands in `connector/my_connector.go`.
+- The Docker image persists runtime state in `/data`.
 
-5.  **Configure the Bridge (`config.yaml`):**
-    - Edit `config.yaml` (generate it with `go run . --generate-example-config`).
-    - Set `homeserver.address` (e.g., `https://matrix.example.com`) and `homeserver.domain` (e.g., `matrix.example.com`).
-    - **Crucial:** Copy the `id`, `as_token`, `hs_token` from the _generated_ `registration.yaml` into the `appservice` section of `config.yaml`. Also, copy `bot.username` and potentially adjust `username_template`.
-    - Review and adjust `database` (default is `./simple-bridge.db`), `logging`, and `permissions` as needed.
-    - If you created a network-specific config file (e.g., `simple-config.yaml`), configure its settings now.
+## Logging In And Basic Usage
 
-6.  **Configure Your Homeserver:**
-    - Copy the generated `registration.yaml` file to your Matrix homeserver's configuration directory.
-      - For Synapse, this is often `/etc/synapse/conf.d/` or similar. Check your homeserver's documentation.
-    - **Restart your homeserver** software (e.g., `systemctl restart synapse`). This makes it load the registration file and know about your bridge.
+From a Matrix user's point of view, the bridge is normally used through its management room.
 
-7.  **Build the Bridge:**
-    - In the project directory, run: `go build`
-    - This creates an executable binary (e.g., `minibridge`).
+Typical flow:
 
-8.  **Run the Bridge:**
-    - Execute the binary, pointing it to your config files:
-      ```bash
-      go run . -c config.yaml -r registration.yaml
-      ```
-    - Check the terminal output for logs and potential errors.
+1. Install and start the bridge, then register its appservice with your homeserver.
+2. Open a DM with the bridge bot or otherwise reach the bridge management room.
+3. Run `login <jid>`.
+4. When prompted, enter your JMP/Cheogram XMPP JID and password.
+5. After login, let the bridge connect and create its per-user space/management-room structure.
+6. Use commands like `sync`, `create`, and `list-contacts` to discover chats or create new ones.
+7. Talk in the bridged portal rooms that the bridge creates.
 
-## 🧭 CLI Help & Config Generation
+Current login expectations:
 
-View available flags:
+- the username is your XMPP JID, for example `user@cheogram.com`
+- the password is your JMP/Cheogram account password
+- the bridge verifies the credentials by making a real XMPP connection during login
+
+Important behavior:
+
+- Matrix rooms created directly by a user are not automatically bridged to JMP
+- use bridge-created portal rooms for actual message routing
+- use `create <jid>` or `create <jid> [jid...]` to start new bridged DMs or Cheogram group chats
+- use `sync` to pull in roster/bookmarks and trigger backfill of history
+
+If a user logs in successfully, the bridge stores a user login entry, starts a per-user XMPP client, and then uses portal rooms to carry future Matrix <-> XMPP traffic.
+
+## Management Room Commands
+
+When the bridge is running and a user has a management room, the quick-help text currently includes:
+
+- `login <jid>`
+- `logout [login_id]`
+- `logout [login_id] purge`
+- `delete-all-portals yes`
+- `sync [full|30d]`
+- `sync-status`
+- `create <jid> [jid...]`
+- `list-contacts`
+- `list-contacted`
+- `block [--report] <jid>`
+- `report <jid>`
+- `gateway-actions [jid]`
+- `gateway-form <jid> <node>`
+- `gateway-submit <session> field=value`
+- `list-logins [--verbose]`
+- `list-users`
+- `set-name <jid> <name>`
+
+Recent bridge-specific additions include:
+
+- `list-contacts`: show the loaded XMPP roster
+- `list-contacted`: show contacts derived from bridged rooms, including split-out Cheogram group participants
+- `block <jid>`: block a contact over XMPP blocking
+- `block --report <jid>` / `report <jid>`: report spam using Cheogram-style XMPP reporting and block the contact
+
+## Common User Workflows
+
+Start a direct chat with a phone-number contact:
+
+```text
+create +15550101100@cheogram.com
+```
+
+Start a Cheogram group chat with multiple contacts:
+
+```text
+create +15550101100@cheogram.com +15550101200@cheogram.com
+```
+
+Sync existing server-side state and recent history:
+
+```text
+sync
+```
+
+Run a deeper sync/backfill:
+
+```text
+sync full
+```
+
+Inspect contacts and already-contacted users:
+
+```text
+list-contacts
+list-contacted
+```
+
+Block or report spam:
+
+```text
+block +15550101100@cheogram.com
+block --report +15550101100@cheogram.com
+```
+
+## Local Development
+
+Build the binary:
 
 ```bash
-go run . --help
+go build ./cmd/mautrix-jmpchat
 ```
 
-Generate an example config file at the path you pass to `-c`/`--config`:
+Run the bridge from source:
 
 ```bash
-go run . --generate-example-config -c config.yaml
+go run ./cmd/mautrix-jmpchat -c config.yaml -r registration.yaml
 ```
 
-## 🐳 Docker Builds
+Generate a registration file:
 
-The Docker build uses a vendored module directory so patched dependencies (like XMPP auth) are included in the image.
-
-🎉 **Congratulations!** You have a running (though perhaps very basic) Matrix bridge.
-
----
-
-## 🧩 Common Bridge Patterns
-
-### 1) How do I create rooms from remote rooms?
-
-Use the portal + `simplevent.ChatResync` flow. When you discover a new remote chat, create or load the portal, store metadata, then queue a resync with `CreatePortal = true`. The framework will call `GetChatInfo` to build the room state and create the Matrix room. Suggested locations: `connector/handle_remote.go` (queue helper), `connector/handle_matrix.go` (`GetChatInfo`), and `connector/types.go` (portal metadata).
-
-```go
-portalKey := networkid.PortalKey{ID: networkid.PortalID(remoteRoomID)}
-portal, _ := bridge.GetPortalByKey(ctx, portalKey)
-portal.OtherUserID = networkid.UserID(remoteUserID)
-_ = portal.Update(ctx)
-
-bridge.QueueRemoteEvent(login, &simplevent.ChatResync{
-	EventMeta: simplevent.EventMeta{
-		Type:         bridgev2.RemoteEventChatResync,
-		PortalKey:    portalKey,
-		CreatePortal: true,
-	},
-	ChatInfo: nil, // GetChatInfo will be called by the framework
-})
+```bash
+go run ./cmd/mautrix-jmpchat -g -c config.yaml -r registration.yaml
 ```
 
-### 2) How do I send a message into a Matrix room?
+Generate an example config file:
 
-Queue a `simplevent.Message` (remote → Matrix). The framework converts and inserts it. See `connector/handle_remote.go` (`QueueRemoteMessage`).
-
-```go
-nc.QueueRemoteMessage(ctx, msg.Portal.ID, "Hi there too")
+```bash
+go run ./cmd/mautrix-jmpchat -e -c config.yaml
 ```
 
-### 3) How do I backfill messages?
+Run tests:
 
-Implement `FetchMessages` (BackfillingNetworkAPI). When backfill is enabled, the framework will call it and insert the returned messages. See `connector/network_client_backfill.go`.
-
-```go
-func (nc *MyNetworkClient) FetchMessages(ctx context.Context, p bridgev2.FetchMessagesParams) (*bridgev2.FetchMessagesResponse, error) {
-	// build []*bridgev2.BackfillMessage and return
-}
+```bash
+go test ./...
+go test ./connector
 ```
 
-### 4) How do I react on a Matrix message?
+If you use the pinned toolchain from this repo:
 
-Implement `HandleMatrixMessage` and take action for Matrix → remote, or queue a remote reply. See `connector/handle_matrix.go`.
-
-```go
-func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
-	nc.QueueRemoteMessage(ctx, msg.Portal.ID, "Hi there too")
-	return &bridgev2.MatrixMessageResponse{}, nil
-}
+```bash
+mise exec go@1.25.5 -- go test ./connector
 ```
 
-## ⏭️ Next Steps
+## Docker Runtime Behavior
 
-- **Flesh out `connector/my_connector.go`:** Implement message handling, user/room synchronization, presence, typing notifications, etc.
-- **Consult `mautrix-go` Docs:** Explore the `bridgev2` package documentation for detailed information on interfaces and helpers: [pkg.go.dev/maunium.net/go/mautrix/bridgev2](https://pkg.go.dev/maunium.net/go/mautrix/bridgev2)
-- **Study Other Bridges:** Look at the source code of other `mautrix-go` based bridges (like `mautrix-whatsapp`, `mautrix-telegram`) for inspiration and examples.
-- **Testing:** Implement unit and integration tests for your connector logic.
-- **Refine Configuration:** Make your bridge more robust by handling configuration validation and updates.
+The container image is built around `/usr/bin/mautrix-jmpchat` and `docker-run.sh`.
 
-Good luck with your bridge development!
+On startup:
+
+1. If `/data/config.yaml` does not exist, the container generates it and exits.
+2. If `/data/registration.yaml` does not exist, the container generates it and exits.
+3. Once both files exist, the bridge starts normally from `/data`.
+
+That means the normal first-run flow is:
+
+1. Start the container once to get `/data/config.yaml`.
+2. Edit `/data/config.yaml`.
+3. Start it again to get `/data/registration.yaml`.
+4. Install the registration into your homeserver.
+5. Start the bridge again for normal operation.
+
+## Configuration Notes
+
+At minimum, you will need to review and set:
+
+- `homeserver.address`
+- `homeserver.domain`
+- `appservice.address`
+- `appservice.hostname`
+- `appservice.port`
+- `appservice.id`
+- `appservice.bot.username`
+- `appservice.as_token`
+- `appservice.hs_token`
+- `appservice.username_template`
+- `database.*`
+- `bridge.permissions`
+
+The generated `registration.yaml` must match the appservice values in `config.yaml`.
+
+For JMP/Cheogram usage, users log in with their XMPP JID and password, for example `user@cheogram.com`.
+
+## Using With matrix-docker-ansible-deploy
+
+This repo is intended to plug into a [`matrix-docker-ansible-deploy`](https://github.com/spantaleev/matrix-docker-ansible-deploy) setup rather than act as a standalone polished installer.
+
+In practice, that means:
+
+- build a container image from this repository
+- persist `/data`
+- expose the bridge on the appservice listener configured in `config.yaml`
+- register the generated `registration.yaml` with the homeserver managed by the playbook
+- keep the bridge and homeserver on the same private network when possible
+
+The exact Ansible wiring depends on how your playbook is customized, but the bridge follows the same appservice lifecycle expected by the playbook: persistent config, generated registration, then long-running service.
+
+## JMP Context
+
+Minimal context that matters for this bridge:
+
+- JMP provides phone numbers and messaging/calling through XMPP/Jabber
+- Cheogram is the main reference client for that network
+- phone-number contacts are represented as XMPP JIDs
+- group texting is represented through Cheogram-specific group JID conventions
+
+This README is intentionally not a JMP marketing page. For product/user-facing information, see:
+
+- <https://jmp.chat/>
+- <https://f-droid.org/en/packages/com.cheogram.android/>
+- <https://play.google.com/store/apps/details?id=com.cheogram.android.playstore>
+
+## Development References
+
+- `DEVEL.md` for a codebase-specific Go tutorial and maintenance guide
+- `docs/CHEOGRAM_ANALYSIS.md` for protocol and behavior notes
+- `TODO.md` for remaining bridge-parity work
+
+## Caveats
+
+- `example-config.yaml` still contains some template-era naming and defaults; treat it as a starting point, not authoritative product documentation.
+- This bridge depends on local `patched-xmpp` behavior, so upstream library documentation is not always enough.
+- Full compatibility with Cheogram/JMP behavior is still in progress.
