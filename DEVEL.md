@@ -90,6 +90,8 @@ Important ideas:
 
 That `replace` line is the kind of thing a maintainer must notice early. If behavior is weird, do not assume upstream `gosrc.io/xmpp` docs exactly match runtime behavior. Check `patched-xmpp/` too.
 
+For the upstream-tracking workflow and the local patch checklist, see `docs/PATCHED_XMPP.md`.
+
 ## Step 3: Structs and Methods Replace Classes
 
 Open `connector/my_connector.go`.

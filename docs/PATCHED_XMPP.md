@@ -1,0 +1,130 @@
+# Patched XMPP Module
+
+## TLDR For Maintainers
+
+`patched-xmpp/` is a git submodule, not an in-tree fork. It points at our `go-xmpp` integration branch:
+
+```sh
+ssh://git@git.example.com:2222/microchipster/go-xmpp.git
+branch: jmpchat-patches
+```
+
+Keep the bridge's root `go.mod` replacement:
+
+```go
+replace gosrc.io/xmpp => ./patched-xmpp
+```
+
+To rebase our XMPP work against upstream:
+
+```sh
+cd /home/user/src/repos/go-xmpp
+git fetch upstream
+git switch jmpchat-patches
+git rebase upstream/main
+```
+
+If the rebase conflicts, inspect the conflicted files:
+
+```sh
+git status --short
+git diff --name-only --diff-filter=U
+```
+
+Resolve conflicts manually. Preserve the local behavior listed in "Why This Fork Exists", especially SCRAM auth in `auth.go`, XEP-0440 parsing in `stanza/stream_features.go`, XML depth limiting in `stanza/node.go`, stream-management resume behavior in `client.go`, `session.go`, `router.go`, and `xmpp_transport.go`, and the exported `Config.StreamManagementResume` field.
+
+Do not blindly choose `--theirs` for `auth.go`; upstream currently lacks the SCRAM functionality this bridge needs. If the rebase is clearly wrong and you have not completed it, abort it:
+
+```sh
+git rebase --abort
+```
+
+After resolving conflicts:
+
+```sh
+gofmt -w .
+git grep -n -E '<<<<<<<|=======|>>>>>>>' || true
+git add <resolved-files>
+git rebase --continue
+```
+
+The conflict-marker check must print nothing before continuing.
+
+Then test and update the remote integration branch:
+
+```sh
+rtk go test ./...
+git push --force-with-lease origin jmpchat-patches
+```
+
+Update this bridge to the newly tested submodule commit:
+
+```sh
+cd /home/user/src/repos/matrix-docker-ansible-deploy/mautrix-jmpchat
+git submodule update --init --recursive
+git -C patched-xmpp fetch origin
+git -C patched-xmpp checkout jmpchat-patches
+git -C patched-xmpp pull --ff-only
+rtk go test ./...
+(cd patched-xmpp && rtk go test ./...)
+git add patched-xmpp
+git commit -m "Update patched-xmpp"
+```
+
+## PR Branches
+
+The integration branch is a stack of smaller commits. Each upstream-friendly topic also has its own branch in the `go-xmpp` fork:
+
+- `pr/fix-readme-newclient-example`: fixes the `NewClient` README example.
+- `pr/fix-jid-string-rendering`: fixes server-only bare/full JID rendering.
+- `pr/limit-xml-node-depth`: adds generic XML node depth limiting.
+- `pr/add-scram-sasl-auth`: adds SCRAM auth plus Cheogram-aligned SASL hardening and downgrade protection.
+- `pr/fix-stream-management-resume`: fixes stream-management resume behavior used by this bridge.
+- `pr/command-rsm-compat`: preserves command/RSM compatibility from the current bridge patch set; review carefully before proposing upstream.
+
+To refresh a PR branch before opening or updating a PR:
+
+```sh
+cd /home/user/src/repos/go-xmpp
+git fetch upstream
+git switch pr/add-scram-sasl-auth
+git rebase upstream/main
+rtk go test ./...
+git push --force-with-lease origin pr/add-scram-sasl-auth
+```
+
+Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--force`, because these branches are intentionally rebased.
+
+## Current Baseline
+
+The local `go-xmpp` fork was rebased against upstream `main` at commit `784ff58cc201e448b671096b2f6be34f3785a9bd`.
+
+This bridge currently pins the `patched-xmpp` submodule to integration commit `1396d7c9a9528918cb847d76d360667118ec0b48` on `jmpchat-patches`.
+
+## Why This Fork Exists
+
+Do not remove the `replace` directive or the submodule unless these local changes have been upstreamed or replaced another way:
+
+- SCRAM password auth support in `auth.go`, including `SCRAM-SHA-512`, `SCRAM-SHA-256`, and `SCRAM-SHA-1`.
+- Cheogram-aligned SCRAM hardening: minimum iteration count `4096`, GS2 `y,,` header, strict SCRAM attribute parsing, duplicate attribute rejection, reserved `m` rejection, and XEP-0474 downgrade hash verification.
+- XEP-0440 SASL channel-binding feature parsing in `stanza/stream_features.go` so downgrade protection can include advertised binding names.
+- XML generic node depth limiting in `stanza/node.go` to reject excessively nested XML.
+- Stream-management resume fixes across `client.go`, `session.go`, `router.go`, and `xmpp_transport.go` that this bridge relies on for reconnect behavior.
+- Exported `Config.StreamManagementResume`, used by bridge configuration in `connector/network_client.go`.
+- Local tests in `auth_test.go` and `stanza/node_test.go` that guard the security-sensitive behavior.
+
+## Verification
+
+Run both modules after every submodule update:
+
+```sh
+rtk go test ./...
+(cd patched-xmpp && rtk go test ./...)
+```
+
+If using a direct Go toolchain instead of `rtk`:
+
+```sh
+go test ./...
+(cd patched-xmpp && go test ./...)
+```
