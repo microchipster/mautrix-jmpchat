@@ -53,7 +53,9 @@ The conflict-marker check must print nothing before continuing.
 Then test and update the remote integration branch:
 
 ```sh
-rtk go test ./...
+GOTOOLCHAIN=go1.25.5 rtk go get -u ./...
+GOTOOLCHAIN=go1.25.5 rtk go mod tidy
+GOTOOLCHAIN=go1.25.5 rtk go test ./...
 git push --force-with-lease origin jmpchat-patches
 ```
 
@@ -64,9 +66,11 @@ cd /home/user/src/repos/matrix-docker-ansible-deploy/mautrix-jmpchat
 git submodule update --init --recursive
 git -C patched-xmpp fetch origin
 git -C patched-xmpp checkout jmpchat-patches
-git -C patched-xmpp pull --ff-only
-rtk go test ./...
-(cd patched-xmpp && rtk go test ./...)
+git -C patched-xmpp reset --hard origin/jmpchat-patches
+GOTOOLCHAIN=go1.25.5 rtk go get -u ./...
+GOTOOLCHAIN=go1.25.5 rtk go mod tidy
+GOTOOLCHAIN=go1.25.5 rtk go test ./...
+(cd patched-xmpp && GOTOOLCHAIN=go1.25.5 rtk go test ./...)
 git add patched-xmpp
 git commit -m "Update patched-xmpp"
 ```
@@ -89,7 +93,9 @@ cd /home/user/src/repos/go-xmpp
 git fetch upstream
 git switch pr/add-scram-sasl-auth
 git rebase upstream/main
-rtk go test ./...
+GOTOOLCHAIN=go1.25.5 rtk go get -u ./...
+GOTOOLCHAIN=go1.25.5 rtk go mod tidy
+GOTOOLCHAIN=go1.25.5 rtk go test ./...
 git push --force-with-lease origin pr/add-scram-sasl-auth
 ```
 
@@ -99,7 +105,13 @@ Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--for
 
 The local `go-xmpp` fork was rebased against upstream `main` at commit `784ff58cc201e448b671096b2f6be34f3785a9bd`.
 
-This bridge currently pins the `patched-xmpp` submodule to integration commit `1396d7c9a9528918cb847d76d360667118ec0b48` on `jmpchat-patches`.
+This bridge currently pins the `patched-xmpp` submodule to integration commit `4cc1a1715df444ae7b214045f5b9461a4ff8acfd` on `jmpchat-patches`.
+
+## Go And Dependency Policy
+
+Do not hold this bridge or the `go-xmpp` fork on older Go or dependency versions for convenience. The preferred toolchain is Go `1.25.5`, matching `.mise.toml`; both modules declare `go 1.25.0` and `toolchain go1.25.5`.
+
+When dependencies or Go itself need to move forward, update code to match the new APIs instead of pinning old versions, then run the verification commands below.
 
 ## Why This Fork Exists
 
@@ -118,8 +130,8 @@ Do not remove the `replace` directive or the submodule unless these local change
 Run both modules after every submodule update:
 
 ```sh
-rtk go test ./...
-(cd patched-xmpp && rtk go test ./...)
+GOTOOLCHAIN=go1.25.5 rtk go test ./...
+(cd patched-xmpp && GOTOOLCHAIN=go1.25.5 rtk go test ./...)
 ```
 
 If using a direct Go toolchain instead of `rtk`:

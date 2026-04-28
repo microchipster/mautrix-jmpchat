@@ -72,11 +72,13 @@ Open `go.mod`.
 ```go
 module jmpchat
 
-go 1.24.2
+go 1.25.0
+
+toolchain go1.25.5
 
 require (
 	gosrc.io/xmpp v0.5.1
-	maunium.net/go/mautrix v0.26.1
+	maunium.net/go/mautrix v0.27.0
 )
 
 replace gosrc.io/xmpp => ./patched-xmpp
