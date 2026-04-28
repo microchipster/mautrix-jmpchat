@@ -1251,8 +1251,6 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			}
 		}
 
-		config.Insecure = true
-		nc.log.Warn().Msg("XMPP insecure mode enabled for debug logging")
 	}
 
 	nc.xmppRouter = xmpp.NewRouter()
@@ -2003,6 +2001,10 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			}
 		}
 		fwd := *mam.Forwarded.Message
+		if !isValidMAMForwardedJID(fwd.From) {
+			nc.log.Warn().Str("from", fwd.From).Str("mam_id", mam.ID).Msg("Dropping MAM result with invalid forwarded from JID")
+			return
+		}
 		idOverride := mam.ID
 		if fwd.Id != "" {
 			idOverride = fwd.Id
@@ -2123,6 +2125,15 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	nc.log.Debug().Interface("message", msg).Msg("Message details")
 
 	nc.handleIncomingXMPPMessage(msg, time.Now(), "", false, false)
+}
+
+func isValidMAMForwardedJID(jid string) bool {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return true
+	}
+	_, err := stanza.NewJid(jid)
+	return err == nil
 }
 
 func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timestamp time.Time, idOverride string, isFromMe bool, fromMAM bool) {

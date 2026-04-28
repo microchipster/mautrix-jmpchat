@@ -1,6 +1,9 @@
 package stanza
 
-import "encoding/xml"
+import (
+	"encoding/xml"
+	"fmt"
+)
 
 // ============================================================================
 // Generic / unknown content
@@ -13,6 +16,8 @@ type Node struct {
 	Content string     `xml:",cdata"`
 	Nodes   []Node     `xml:",any"`
 }
+
+const xmlElementMaxDepth = 128
 
 func (n *Node) Namespace() string {
 	return n.XMLName.Space
@@ -28,6 +33,17 @@ type Attr struct {
 // UnmarshalXML is a custom unmarshal function used by xml.Unmarshal to
 // transform generic XML content into hierarchical Node structure.
 func (n *Node) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	return n.unmarshalXMLDepth(d, start, 1)
+}
+
+func (n *Node) unmarshalXMLDepth(d *xml.Decoder, start xml.StartElement, depth int) error {
+	if depth >= xmlElementMaxDepth {
+		return fmt.Errorf("reached maximum depth of XML stream")
+	}
+	n.XMLName = start.Name
+	n.Attrs = nil
+	n.Content = ""
+	n.Nodes = nil
 	// Assign	"n.Attrs = start.Attr", without repeating xmlns in attributes:
 	for _, attr := range start.Attr {
 		// Do not repeat xmlns, it is already in XMLName
@@ -35,8 +51,26 @@ func (n *Node) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 			n.Attrs = append(n.Attrs, attr)
 		}
 	}
-	type node Node
-	return d.DecodeElement((*node)(n), &start)
+	for {
+		tok, err := d.Token()
+		if err != nil {
+			return err
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			var child Node
+			if err := child.unmarshalXMLDepth(d, t, depth+1); err != nil {
+				return err
+			}
+			n.Nodes = append(n.Nodes, child)
+		case xml.EndElement:
+			if t.Name == start.Name {
+				return nil
+			}
+		case xml.CharData:
+			n.Content += string(t)
+		}
+	}
 }
 
 // MarshalXML is a custom XML serializer used by xml.Marshal to serialize a

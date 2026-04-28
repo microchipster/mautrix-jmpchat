@@ -15,10 +15,11 @@ type StreamFeatures struct {
 	// Server capabilities hash
 	Caps Caps
 	// Stream features
-	StartTLS         TlsStartTLS
-	Mechanisms       saslMechanisms
-	Bind             Bind
-	StreamManagement streamManagement
+	StartTLS           TlsStartTLS
+	Mechanisms         saslMechanisms
+	SASLChannelBinding SASLChannelBinding
+	Bind               Bind
+	StreamManagement   streamManagement
 	// Obsolete
 	Session StreamSession
 	// ProcessOne Stream Features
@@ -44,8 +45,10 @@ func (streamFeatureDecoder) decode(p *xml.Decoder, se xml.StartElement) (StreamF
 
 // Capabilities
 // Reference: https://xmpp.org/extensions/xep-0115.html#stream
-//    "A server MAY include its entity capabilities in a stream feature element so that connecting clients
-//     and peer servers do not need to send service discovery requests each time they connect."
+//
+//	"A server MAY include its entity capabilities in a stream feature element so that connecting clients
+//	 and peer servers do not need to send service discovery requests each time they connect."
+//
 // This is not a stream feature but a way to let client cache server disco info.
 type Caps struct {
 	XMLName xml.Name `xml:"http://jabber.org/protocol/caps c"`
@@ -110,6 +113,26 @@ func (sf *StreamFeatures) DoesStartTLS() (feature TlsStartTLS, isSupported bool)
 type saslMechanisms struct {
 	XMLName   xml.Name `xml:"urn:ietf:params:xml:ns:xmpp-sasl mechanisms"`
 	Mechanism []string `xml:"mechanism"`
+}
+
+type SASLChannelBinding struct {
+	XMLName        xml.Name             `xml:"urn:xmpp:sasl-cb:0 sasl-channel-binding"`
+	ChannelBinding []ChannelBindingType `xml:"channel-binding"`
+}
+
+type ChannelBindingType struct {
+	Type string `xml:"type,attr"`
+}
+
+func (cb SASLChannelBinding) Types() []string {
+	if cb.XMLName.Local == "" {
+		return nil
+	}
+	types := make([]string, 0, len(cb.ChannelBinding))
+	for _, binding := range cb.ChannelBinding {
+		types = append(types, binding.Type)
+	}
+	return types
 }
 
 // StreamManagement

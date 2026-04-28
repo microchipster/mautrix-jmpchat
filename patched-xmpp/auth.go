@@ -12,12 +12,15 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/pbkdf2"
 	"gosrc.io/xmpp/stanza"
 )
+
+const scramIterationCountMinimum = 4096
 
 type Credential struct {
 	secret     string
@@ -51,11 +54,11 @@ func authSASL(socket io.ReadWriter, decoder *xml.Decoder, f stanza.StreamFeature
 
 	switch matchingMech {
 	case "SCRAM-SHA-512":
-		return authScram(socket, decoder, matchingMech, user, credential.secret)
+		return authScram(socket, decoder, matchingMech, f.Mechanisms.Mechanism, f.SASLChannelBinding.Types(), user, credential.secret)
 	case "SCRAM-SHA-256":
-		return authScram(socket, decoder, matchingMech, user, credential.secret)
+		return authScram(socket, decoder, matchingMech, f.Mechanisms.Mechanism, f.SASLChannelBinding.Types(), user, credential.secret)
 	case "SCRAM-SHA-1":
-		return authScram(socket, decoder, matchingMech, user, credential.secret)
+		return authScram(socket, decoder, matchingMech, f.Mechanisms.Mechanism, f.SASLChannelBinding.Types(), user, credential.secret)
 	case "PLAIN", "X-OAUTH2":
 		return authPlain(socket, decoder, matchingMech, user, credential.secret)
 	default:
@@ -110,14 +113,14 @@ func authPlain(socket io.ReadWriter, decoder *xml.Decoder, mech string, user str
 	return err
 }
 
-func authScram(socket io.ReadWriter, decoder *xml.Decoder, mech string, user string, secret string) error {
+func authScram(socket io.ReadWriter, decoder *xml.Decoder, mech string, advertisedMechanisms []string, advertisedChannelBindings []string, user string, secret string) error {
 	clientNonce, err := scramNonce()
 	if err != nil {
 		return err
 	}
 
 	clientFirstBare := fmt.Sprintf("n=%s,r=%s", scramEscape(user), clientNonce)
-	gs2Header := "n,,"
+	gs2Header := "y,,"
 	clientFirstMessage := gs2Header + clientFirstBare
 
 	if err := sendSASLAuth(socket, mech, clientFirstMessage); err != nil {
@@ -133,10 +136,16 @@ func authScram(socket io.ReadWriter, decoder *xml.Decoder, mech string, user str
 		return err
 	}
 	serverFirst := string(serverFirstBytes)
-	serverFields := parseSCRAMFields(serverFirst)
+	serverFields, err := parseSCRAMFields(serverFirst)
+	if err != nil {
+		return NewConnError(err, true)
+	}
 	serverNonce := serverFields["r"]
 	if serverNonce == "" || !strings.HasPrefix(serverNonce, clientNonce) {
 		return NewConnError(errors.New("scram: server nonce missing or invalid"), true)
+	}
+	if serverFields["m"] != "" {
+		return NewConnError(errors.New("scram: server sent reserved m attribute"), true)
 	}
 
 	saltB64 := serverFields["s"]
@@ -150,12 +159,12 @@ func authScram(socket io.ReadWriter, decoder *xml.Decoder, mech string, user str
 
 	iterStr := serverFields["i"]
 	iter, err := strconv.Atoi(iterStr)
-	if err != nil || iter <= 0 {
+	if err != nil {
 		return NewConnError(errors.New("scram: invalid iteration count"), true)
 	}
-
-	clientFinalWithoutProof := fmt.Sprintf("c=biws,r=%s", serverNonce)
-	authMessage := clientFirstBare + "," + serverFirst + "," + clientFinalWithoutProof
+	if iter < scramIterationCountMinimum {
+		return NewConnError(fmt.Errorf("scram: weak iteration count %d instead of %d", iter, scramIterationCountMinimum), true)
+	}
 
 	var h func() hash.Hash
 	switch mech {
@@ -166,6 +175,15 @@ func authScram(socket io.ReadWriter, decoder *xml.Decoder, mech string, user str
 	default:
 		h = sha1.New
 	}
+	if serverHash := serverFields["h"]; serverHash != "" {
+		if err := verifySCRAMDowngradeHash(serverHash, advertisedMechanisms, advertisedChannelBindings, h); err != nil {
+			return NewConnError(err, true)
+		}
+	}
+
+	gs2HeaderB64 := base64.StdEncoding.EncodeToString([]byte(gs2Header))
+	clientFinalWithoutProof := fmt.Sprintf("c=%s,r=%s", gs2HeaderB64, serverNonce)
+	authMessage := clientFirstBare + "," + serverFirst + "," + clientFinalWithoutProof
 
 	saltedPassword := pbkdf2.Key([]byte(secret), salt, iter, h().Size(), h)
 	clientKey := hmacHash(h, saltedPassword, []byte("Client Key"))
@@ -198,7 +216,10 @@ func authScram(socket io.ReadWriter, decoder *xml.Decoder, mech string, user str
 			return err
 		}
 		serverFinal := string(serverFinalBytes)
-		finalFields := parseSCRAMFields(serverFinal)
+		finalFields, err := parseSCRAMFields(serverFinal)
+		if err != nil {
+			return NewConnError(err, true)
+		}
 		if errMsg := finalFields["e"]; errMsg != "" {
 			return NewConnError(errors.New("scram auth failure: "+errMsg), true)
 		}
@@ -302,19 +323,86 @@ func scramEscape(value string) string {
 	return replacer.Replace(value)
 }
 
-func parseSCRAMFields(message string) map[string]string {
+func parseSCRAMFields(message string) (map[string]string, error) {
 	fields := map[string]string{}
 	for _, part := range strings.Split(message, ",") {
 		if part == "" {
-			continue
+			return nil, errors.New("scram: empty attribute")
 		}
 		kv := strings.SplitN(part, "=", 2)
 		if len(kv) != 2 {
-			continue
+			return nil, errors.New("scram: malformed attribute")
+		}
+		if _, ok := fields[kv[0]]; ok {
+			return nil, fmt.Errorf("scram: duplicate attribute %q", kv[0])
 		}
 		fields[kv[0]] = kv[1]
 	}
-	return fields
+	return fields, nil
+}
+
+func verifySCRAMDowngradeHash(serverHash string, mechanisms []string, channelBindings []string, h func() hash.Hash) error {
+	downgradeString, err := scramDowngradeString(mechanisms, channelBindings)
+	if err != nil {
+		return err
+	}
+	hashInst := h()
+	_, _ = hashInst.Write([]byte(downgradeString))
+	expectedHash := base64.StdEncoding.EncodeToString(hashInst.Sum(nil))
+	if serverHash != expectedHash {
+		return errors.New("scram: mismatch in SASL SCRAM downgrade protection")
+	}
+	return nil
+}
+
+func scramDowngradeString(mechanisms []string, channelBindings []string) (string, error) {
+	filtered := make([]string, 0, len(mechanisms))
+	for _, mechanism := range mechanisms {
+		if !isValidSASLMechanismName(mechanism) {
+			return "", fmt.Errorf("scram: invalid SASL mechanism name %q", mechanism)
+		}
+		filtered = append(filtered, mechanism)
+	}
+	sort.Strings(filtered)
+	mechanismString := strings.Join(filtered, string(rune(0x1e)))
+	if channelBindings == nil {
+		return mechanismString, nil
+	}
+	bindings := make([]string, 0, len(channelBindings))
+	for _, binding := range channelBindings {
+		if !isValidChannelBindingName(binding) {
+			return "", fmt.Errorf("scram: invalid channel binding name %q", binding)
+		}
+		bindings = append(bindings, binding)
+	}
+	sort.Strings(bindings)
+	return mechanismString + string(rune(0x1f)) + strings.Join(bindings, string(rune(0x1e))), nil
+}
+
+func isValidSASLMechanismName(name string) bool {
+	if name == "" || len(name) > 20 || name[0] >= '0' && name[0] <= '9' {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isValidChannelBindingName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func hmacHash(h func() hash.Hash, key []byte, data []byte) []byte {

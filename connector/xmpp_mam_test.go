@@ -55,6 +55,18 @@ func TestIncludeMAMEndBound(t *testing.T) {
 	}
 }
 
+func TestIsValidMAMForwardedJID(t *testing.T) {
+	if !isValidMAMForwardedJID("user@example.com/resource") {
+		t.Fatal("expected full JID to be valid")
+	}
+	if !isValidMAMForwardedJID("") {
+		t.Fatal("expected empty from JID to be accepted")
+	}
+	if isValidMAMForwardedJID("bad jid@example.com") {
+		t.Fatal("expected JID with spaces to be invalid")
+	}
+}
+
 func assertErr(msg string) error {
 	return stanzaErrorString(msg)
 }
