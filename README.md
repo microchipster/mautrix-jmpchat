@@ -186,15 +186,17 @@ go test ./...
 go test ./connector
 ```
 
-If you use the pinned toolchain from this repo:
+If you use the repo's configured toolchain wrapper:
 
 ```bash
-mise exec go@1.25.5 -- go test ./connector
+mise install
+mise exec -- go test ./connector
 ```
 
 ## Docker Runtime Behavior
 
 The container image is built around `/usr/bin/mautrix-jmpchat` and `docker-run.sh`.
+The `Dockerfile` hardcodes the Go patch release for reproducible image builds; keep it in sync with `.mise.toml` when updating Go.
 
 On startup:
 

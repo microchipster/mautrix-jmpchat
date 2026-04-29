@@ -74,8 +74,6 @@ module jmpchat
 
 go 1.25.0
 
-toolchain go1.25.5
-
 require (
 	gosrc.io/xmpp v0.5.1
 	maunium.net/go/mautrix v0.27.0
@@ -862,10 +860,11 @@ go run ./cmd/mautrix-jmpchat -c config.yaml -r registration.yaml
 go run ./cmd/mautrix-jmpchat -g -c config.yaml -r registration.yaml
 ```
 
-If you use the repo's preferred toolchain wrapper:
+If you use the repo's configured toolchain wrapper:
 
 ```bash
-mise exec go@1.25.5 -- go test ./connector
+mise install
+mise exec -- go test ./connector
 ```
 
 ## Final Mental Model

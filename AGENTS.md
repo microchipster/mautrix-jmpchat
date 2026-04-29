@@ -13,7 +13,8 @@
 - `go run . -c config.yaml -r registration.yaml` runs the bridge from source.
 - `go build` builds the binary (default name `jmpchat`).
 - `go test ./...` runs tests (currently no test files).
-- Toolchain: `mise install` and `mise exec go@1.25.5 -- <cmd>`.
+- Toolchain: `mise install` and `mise exec -- <cmd>`.
+- Docker builds use the Go patch release hardcoded in `Dockerfile`; keep it in sync with `.mise.toml`.
 
 ## Coding Style & Naming Conventions
 - Go code follows `gofmt` (tabs; standard Go formatting).
