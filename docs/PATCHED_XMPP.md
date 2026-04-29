@@ -124,7 +124,7 @@ The integration branch is a stack of upstream-friendly commits. Each topic also 
 
 - `pr/protocol-edge-cases`: fixes the `NewClient` README example, server-only JID rendering, and SASL failure reason decoding.
 - `pr/limit-xml-node-depth`: adds generic XML node depth limiting.
-- `pr/add-scram-sasl-auth`: adds SCRAM auth plus Cheogram-aligned SASL hardening, downgrade protection, channel-binding parsing, and legacy GS2 compatibility.
+- `pr/add-scram-sasl-auth`: adds SCRAM and SCRAM-PLUS auth plus Cheogram-aligned SASL hardening, downgrade protection, and channel-binding parsing.
 - `pr/fix-stream-management-resume`: fixes stream-management resume behavior used by this bridge.
 - `pr/command-rsm-compat`: preserves command/RSM compatibility from the current bridge patch set; review carefully before proposing upstream.
 
@@ -148,7 +148,7 @@ Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--for
 
 The local `go-xmpp` fork was rebased against upstream `main` at commit `784ff58cc201e448b671096b2f6be34f3785a9bd`.
 
-This bridge currently pins the `patched-xmpp` submodule to integration commit `3ec7bfa775ae85a259b3d2a88e4c76f89a57f2a5` on `jmpchat-patches`.
+This bridge currently pins the `patched-xmpp` submodule to integration commit `a6fdb5548f05f8c2b627f301ef3784c1a120ce02` on `jmpchat-patches`.
 
 ## Go And Dependency Policy
 
@@ -164,8 +164,8 @@ When dependencies or Go itself need to move forward, update code to match the ne
 
 Do not remove the `replace` directive or the submodule unless these local changes have been upstreamed or replaced another way:
 
-- SCRAM password auth support in `auth.go`, including `SCRAM-SHA-512`, `SCRAM-SHA-256`, and `SCRAM-SHA-1`.
-- Cheogram-aligned SCRAM hardening: minimum iteration count `4096`, legacy non-PLUS GS2 header compatibility, strict SCRAM attribute parsing, duplicate attribute rejection, reserved `m` rejection, and XEP-0474 downgrade hash verification.
+- SCRAM password auth support in `auth.go`, including `SCRAM-SHA-512`, `SCRAM-SHA-256`, `SCRAM-SHA-1`, and their SCRAM-PLUS channel-binding variants.
+- Cheogram-aligned SCRAM hardening: minimum iteration count `4096`, Cheogram-style GS2 headers for non-PLUS and PLUS SCRAM, strict SCRAM attribute parsing, duplicate attribute rejection, reserved `m` rejection, and XEP-0474 downgrade hash verification.
 - XEP-0440 SASL channel-binding feature parsing in `stanza/stream_features.go` so downgrade protection can include advertised binding names.
 - XML generic node depth limiting in `stanza/node.go` to reject excessively nested XML.
 - Stream-management resume fixes across `client.go`, `session.go`, `router.go`, and `xmpp_transport.go` that this bridge relies on for reconnect behavior.
