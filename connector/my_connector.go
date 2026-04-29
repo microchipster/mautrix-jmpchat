@@ -40,6 +40,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		c.log.Info().Msg("Enabled personal_filtering_spaces by default")
 	}
 	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
+		proc.AddHandler(CommandPing)
 		proc.AddHandler(CommandSync)
 		proc.AddHandler(CommandSyncStatus)
 		proc.AddHandler(CommandStartChat)
@@ -249,6 +250,7 @@ func managementRoomHelpText() string {
 		"- logout [login_id] (soft)\n" +
 		"- logout [login_id] purge (delete rooms + space)\n" +
 		"- delete-all-portals yes\n" +
+		"- ping\n" +
 		"- sync [full|30d] (default 30d)\n" +
 		"- sync-status\n" +
 		"- create <jid> [jid...]\n" +

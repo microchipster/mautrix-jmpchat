@@ -2,7 +2,12 @@ package connector
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+	"time"
+
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 )
 
 func TestSplitCheogramGroupContacts(t *testing.T) {
@@ -66,5 +71,64 @@ func TestParseBlockCommandArgs(t *testing.T) {
 	}
 	if !report {
 		t.Fatal("expected default report=true")
+	}
+}
+
+func TestFormatPingStatusConnected(t *testing.T) {
+	t.Parallel()
+
+	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{Metadata: &LoginMetadata{RemoteUserID: "user@cheogram.com"}}}
+	state := loginBridgeStateSummaryResult{State: "connected", Timestamp: "2026-01-02T03:04:05Z"}
+	conn := loginConnectionStatus{
+		Connected:          true,
+		SessionEstablished: true,
+		BindJID:            "user@cheogram.com/resource",
+		Uptime:             2*time.Minute + 3*time.Second,
+	}
+	got := formatPingStatus(login, state, conn, xmppPingSummary{RTT: 42 * time.Millisecond})
+	for _, want := range []string{
+		"Remote: user@cheogram.com",
+		"Bridge state: connected at 2026-01-02T03:04:05Z",
+		"XMPP session: connected",
+		"Bound JID: user@cheogram.com/resource",
+		"Session uptime: 2m3s",
+		"XMPP ping: ok (42ms)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatPingStatus() missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatPingStatusDisconnected(t *testing.T) {
+	t.Parallel()
+
+	got := formatPingStatus(nil, loginBridgeStateSummaryResult{State: "unknown", Timestamp: "unknown"}, loginConnectionStatus{}, xmppPingSummary{Skipped: true, Detail: "not connected"})
+	for _, want := range []string{
+		"Login: (unknown)",
+		"Remote: (unknown)",
+		"XMPP session: disconnected",
+		"XMPP ping: skipped (not connected)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatPingStatus() missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestServerDomainFromJID(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"user@example.com/resource": "example.com",
+		"user@example.com":          "example.com",
+		"example.com/resource":      "example.com",
+		"example.com":               "example.com",
+		"":                          "",
+	}
+	for input, want := range tests {
+		if got := serverDomainFromJID(input); got != want {
+			t.Fatalf("serverDomainFromJID(%q) = %q, want %q", input, got, want)
+		}
 	}
 }

@@ -55,6 +55,42 @@ var CommandSync = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+var CommandPing = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+
+		state := loginBridgeStateSummary(login)
+		conn := client.ConnectionStatus()
+		ping := xmppPingSummary{Skipped: true, Detail: "not connected"}
+		if conn.Connected {
+			rtt, err := client.PingXMPP(ce.Ctx)
+			if err != nil {
+				ping = xmppPingSummary{Err: err}
+			} else {
+				ping = xmppPingSummary{RTT: rtt}
+			}
+		}
+
+		ce.Reply(formatPingStatus(login, state, conn, ping))
+	},
+	Name:    "ping",
+	Aliases: []string{"status", "login-status"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Show login connection state and ping the XMPP server",
+	},
+	RequiresLogin: true,
+}
+
 var CommandSyncStatus = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		login := ce.User.GetDefaultLogin()
@@ -87,6 +123,100 @@ var CommandSyncStatus = &commands.FullHandler{
 		Description: "Show full sync progress",
 	},
 	RequiresLogin: true,
+}
+
+type loginBridgeStateSummaryResult struct {
+	State     string
+	Timestamp string
+	Message   string
+	Error     string
+}
+
+type xmppPingSummary struct {
+	RTT     time.Duration
+	Err     error
+	Skipped bool
+	Detail  string
+}
+
+func loginBridgeStateSummary(login *bridgev2.UserLogin) loginBridgeStateSummaryResult {
+	state := loginBridgeStateSummaryResult{State: "unknown", Timestamp: "unknown"}
+	if login == nil || login.BridgeState == nil {
+		return state
+	}
+	prev := login.BridgeState.GetPrev()
+	if prev.StateEvent != "" {
+		state.State = string(prev.StateEvent)
+	}
+	if !prev.Timestamp.Time.IsZero() {
+		state.Timestamp = prev.Timestamp.Time.Local().Format(time.RFC3339)
+	}
+	state.Message = strings.TrimSpace(prev.Message)
+	state.Error = string(prev.Error)
+	return state
+}
+
+func formatPingStatus(login *bridgev2.UserLogin, state loginBridgeStateSummaryResult, conn loginConnectionStatus, ping xmppPingSummary) string {
+	remote := "(unknown)"
+	if login != nil {
+		remote = strings.TrimSpace(login.RemoteName)
+		if remote == "" {
+			if meta, ok := login.Metadata.(*LoginMetadata); ok && meta != nil {
+				remote = strings.TrimSpace(meta.RemoteUserID)
+			}
+		}
+		if remote == "" {
+			remote = "(unknown)"
+		}
+	}
+
+	loginID := "(unknown)"
+	if login != nil {
+		loginID = string(login.ID)
+	}
+
+	lines := []string{
+		fmt.Sprintf("Login: %s", loginID),
+		fmt.Sprintf("Remote: %s", remote),
+		fmt.Sprintf("Bridge state: %s at %s", state.State, state.Timestamp),
+	}
+	if state.Error != "" {
+		lines = append(lines, fmt.Sprintf("Bridge error: %s", state.Error))
+	}
+	if state.Message != "" {
+		lines = append(lines, fmt.Sprintf("Bridge message: %s", state.Message))
+	}
+
+	if conn.Connected {
+		lines = append(lines, "XMPP session: connected")
+	} else if conn.SessionEstablished {
+		lines = append(lines, "XMPP session: reconnecting")
+	} else {
+		lines = append(lines, "XMPP session: disconnected")
+	}
+	if conn.BindJID != "" {
+		lines = append(lines, fmt.Sprintf("Bound JID: %s", conn.BindJID))
+	}
+	if conn.Uptime > 0 {
+		lines = append(lines, fmt.Sprintf("Session uptime: %s", conn.Uptime.Truncate(time.Second)))
+	}
+	if conn.ReconnectAttempt > 0 {
+		lines = append(lines, fmt.Sprintf("Reconnect attempt: %d", conn.ReconnectAttempt))
+	}
+
+	switch {
+	case ping.Err != nil:
+		lines = append(lines, fmt.Sprintf("XMPP ping: failed (%v)", ping.Err))
+	case ping.Skipped:
+		if ping.Detail == "" {
+			ping.Detail = "not available"
+		}
+		lines = append(lines, fmt.Sprintf("XMPP ping: skipped (%s)", ping.Detail))
+	default:
+		lines = append(lines, fmt.Sprintf("XMPP ping: ok (%s)", ping.RTT.Truncate(time.Millisecond)))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 var CommandStartChat = &commands.FullHandler{

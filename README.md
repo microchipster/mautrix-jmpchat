@@ -92,6 +92,7 @@ When the bridge is running and a user has a management room, the quick-help text
 - `logout [login_id]`
 - `logout [login_id] purge`
 - `delete-all-portals yes`
+- `ping`
 - `sync [full|30d]`
 - `sync-status`
 - `create <jid> [jid...]`
@@ -108,6 +109,7 @@ When the bridge is running and a user has a management room, the quick-help text
 
 Recent bridge-specific additions include:
 
+- `ping`: show login state, XMPP session state, and run an XMPP server ping when connected
 - `list-contacts`: show the loaded XMPP roster
 - `list-contacted`: show contacts derived from bridged rooms, including split-out Cheogram group participants
 - `block <jid>`: block a contact over XMPP blocking

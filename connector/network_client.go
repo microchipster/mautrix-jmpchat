@@ -31,6 +31,18 @@ type CarbonsEnable struct {
 	XMLName xml.Name `xml:"urn:xmpp:carbons:2 enable"`
 }
 
+type XMPPPing struct {
+	XMLName xml.Name `xml:"urn:xmpp:ping ping"`
+}
+
+type loginConnectionStatus struct {
+	Connected          bool
+	SessionEstablished bool
+	BindJID            string
+	Uptime             time.Duration
+	ReconnectAttempt   int
+}
+
 type syncStats struct {
 	dmPortals           map[string]bool
 	mucBookmarkPortals  map[string]bool
@@ -52,6 +64,14 @@ func (c *CarbonsEnable) Namespace() string {
 }
 
 func (c *CarbonsEnable) GetSet() *stanza.ResultSet {
+	return nil
+}
+
+func (p *XMPPPing) Namespace() string {
+	return "urn:xmpp:ping"
+}
+
+func (p *XMPPPing) GetSet() *stanza.ResultSet {
 	return nil
 }
 
@@ -1442,6 +1462,96 @@ func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
 func (nc *MyNetworkClient) isXMPPConnected() bool {
 	client := nc.xmppClient
 	return nc.connected && client != nil && client.Session != nil
+}
+
+func (nc *MyNetworkClient) ConnectionStatus() loginConnectionStatus {
+	client := nc.xmppClient
+	status := loginConnectionStatus{
+		Connected:        nc.connected && client != nil && client.Session != nil,
+		ReconnectAttempt: nc.reconnectAttempt,
+	}
+	if client != nil && client.Session != nil {
+		status.SessionEstablished = true
+		status.BindJID = client.Session.BindJid
+	}
+	if !nc.sessionEstablishedAt.IsZero() {
+		status.Uptime = time.Since(nc.sessionEstablishedAt).Truncate(time.Second)
+	}
+	return status
+}
+
+func (nc *MyNetworkClient) PingXMPP(ctx context.Context) (time.Duration, error) {
+	client := nc.xmppClient
+	if client == nil {
+		return 0, fmt.Errorf("XMPP client not connected")
+	}
+	if client.Session == nil {
+		return 0, fmt.Errorf("XMPP session is not established")
+	}
+	if !nc.connected {
+		return 0, fmt.Errorf("XMPP client is disconnecting")
+	}
+
+	target := serverDomainFromJID(client.Session.BindJid)
+	if target == "" {
+		target = serverDomainFromJID(nc.ownBareJID())
+	}
+	if target == "" {
+		return 0, fmt.Errorf("could not determine XMPP server domain")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	iq, err := stanza.NewIQ(stanza.Attrs{
+		Type: stanza.IQTypeGet,
+		To:   target,
+		Id:   fmt.Sprintf("ping_%d", time.Now().UnixNano()),
+	})
+	if err != nil {
+		return 0, err
+	}
+	iq.Payload = &XMPPPing{}
+
+	startedAt := time.Now()
+	resultCh, err := client.SendIQ(ctx, iq)
+	if err != nil {
+		return 0, err
+	}
+
+	select {
+	case resp, ok := <-resultCh:
+		elapsed := time.Since(startedAt)
+		if !ok {
+			return elapsed, fmt.Errorf("XMPP ping result channel closed")
+		}
+		if resp.Type == stanza.IQTypeError {
+			detail := formatIQError(resp.Error)
+			if detail == "" {
+				detail = "unknown error"
+			}
+			return elapsed, fmt.Errorf("XMPP ping returned error: %s", detail)
+		}
+		if resp.Type != stanza.IQTypeResult {
+			return elapsed, fmt.Errorf("unexpected XMPP ping response type: %s", resp.Type)
+		}
+		return elapsed, nil
+	case <-ctx.Done():
+		return time.Since(startedAt), ctx.Err()
+	}
+}
+
+func serverDomainFromJID(jid string) string {
+	jid = strings.TrimSpace(jid)
+	if jid == "" {
+		return ""
+	}
+	jid = strings.SplitN(jid, "/", 2)[0]
+	if before, after, ok := strings.Cut(jid, "@"); ok {
+		_ = before
+		return after
+	}
+	return jid
 }
 
 func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr error) {
