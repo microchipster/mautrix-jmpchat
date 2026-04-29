@@ -1,4 +1,4 @@
 [submodule "patched-xmpp"]
 	path = patched-xmpp
-	url = ssh://git@git.example.com:2222/microchipster/go-xmpp.git
+	url = https://git.example.com/microchipster/go-xmpp.git
 	branch = jmpchat-patches

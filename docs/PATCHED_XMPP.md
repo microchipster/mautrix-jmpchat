@@ -5,9 +5,11 @@
 `patched-xmpp/` is a git submodule, not an in-tree fork. It points at our `go-xmpp` integration branch:
 
 ```sh
-ssh://git@git.example.com:2222/microchipster/go-xmpp.git
+https://git.example.com/microchipster/go-xmpp.git
 branch: jmpchat-patches
 ```
+
+The submodule URL intentionally uses HTTPS so deployment hosts can run recursive clones without SSH host-key or deploy-key setup. Maintainers who push to the fork can configure an SSH push URL locally in `patched-xmpp/` or in `/home/user/src/repos/go-xmpp` without changing `.gitmodules`.
 
 Keep the bridge's root `go.mod` replacement:
 
