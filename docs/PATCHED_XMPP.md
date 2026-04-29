@@ -16,9 +16,9 @@ The submodule URL intentionally uses public HTTPS on GitHub so deployment hosts 
 There are two repositories involved, and each has a distribution remote plus a private mirror:
 
 - `mautrix-jmpchat` distribution remote: `https://codeberg.org/microchipster/mautrix-jmpchat.git`
-- `mautrix-jmpchat` push/mirror remote: `ssh://git@git.example.com:2222/microchipster/jmpchat.git`
+- `mautrix-jmpchat` push/mirror remote: `ssh://git@git.custom.com:2222/microchipster/jmpchat.git`
 - `go-xmpp` submodule distribution remote: `https://github.com/microchipster/go-xmpp.git`
-- `go-xmpp` push/mirror remote: `ssh://git@git.example.com:2222/microchipster/go-xmpp.git`
+- `go-xmpp` push/mirror remote: `ssh://git@git.custom.com:2222/microchipster/go-xmpp.git`
 
 The playbook should clone `mautrix-jmpchat` from Codeberg. Its recursive submodule checkout should then clone `patched-xmpp/` from GitHub. The git host is kept as a mirror, not as the deploy-facing URL.
 
@@ -26,14 +26,14 @@ Recommended local remotes for this bridge checkout:
 
 ```sh
 git remote set-url codeberg ssh://git@codeberg.org/microchipster/mautrix-jmpchat.git
-git remote set-url origin ssh://git@git.example.com:2222/microchipster/jmpchat.git
+git remote set-url origin ssh://git@git.backup.com:2222/microchipster/jmpchat.git
 ```
 
 Recommended local remotes for `/home/user/src/repos/go-xmpp`:
 
 ```sh
 git remote set-url origin ssh://git@github.com/microchipster/go-xmpp
-git remote set-url mirror ssh://git@git.example.com:2222/microchipster/go-xmpp.git
+git remote set-url backup ssh://git@git.backup.com:2222/microchipster/go-xmpp.git
 git remote set-url upstream https://github.com/FluuxIO/go-xmpp.git
 ```
 
@@ -48,7 +48,7 @@ When publishing `go-xmpp` changes, push GitHub for submodule distribution and th
 
 ```sh
 git push origin main jmpchat-patches pr/protocol-edge-cases pr/limit-xml-node-depth pr/add-scram-sasl-auth pr/fix-stream-management-resume pr/command-rsm-compat
-git push origin main jmpchat-patches pr/protocol-edge-cases pr/limit-xml-node-depth pr/add-scram-sasl-auth pr/fix-stream-management-resume pr/command-rsm-compat
+git push backup main jmpchat-patches pr/protocol-edge-cases pr/limit-xml-node-depth pr/add-scram-sasl-auth pr/fix-stream-management-resume pr/command-rsm-compat
 ```
 
 Keep the bridge's root `go.mod` replacement:
@@ -99,7 +99,7 @@ rtk go get -u ./...
 rtk go mod tidy
 rtk go test ./...
 git push --force-with-lease origin jmpchat-patches
-git push --force-with-lease origin jmpchat-patches
+git push --force-with-lease backup jmpchat-patches
 ```
 
 Update this bridge to the newly tested submodule commit:
@@ -139,7 +139,7 @@ rtk go get -u ./...
 rtk go mod tidy
 rtk go test ./...
 git push --force-with-lease origin pr/add-scram-sasl-auth
-git push --force-with-lease origin pr/add-scram-sasl-auth
+git push --force-with-lease backup pr/add-scram-sasl-auth
 ```
 
 Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--force`, because these branches are intentionally rebased.
