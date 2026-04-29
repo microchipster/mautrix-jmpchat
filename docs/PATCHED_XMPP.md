@@ -16,9 +16,9 @@ The submodule URL intentionally uses public HTTPS on GitHub so deployment hosts 
 There are two repositories involved, and each has a distribution remote plus a private mirror:
 
 - `mautrix-jmpchat` distribution remote: `https://codeberg.org/microchipster/mautrix-jmpchat.git`
-- `mautrix-jmpchat` push/mirror remote: `ssh://git@git.custom.com:2222/microchipster/jmpchat.git`
+- `mautrix-jmpchat` push/mirror remote: `ssh://git@git.example.com:2222/microchipster/jmpchat.git`
 - `go-xmpp` submodule distribution remote: `https://github.com/microchipster/go-xmpp.git`
-- `go-xmpp` push/mirror remote: `ssh://git@git.custom.com:2222/microchipster/go-xmpp.git`
+- `go-xmpp` push/mirror remote: `ssh://git@git.example.com:2222/microchipster/go-xmpp.git`
 
 The playbook should clone `mautrix-jmpchat` from Codeberg. Its recursive submodule checkout should then clone `patched-xmpp/` from GitHub. The git host is kept as a mirror, not as the deploy-facing URL.
 
@@ -26,14 +26,14 @@ Recommended local remotes for this bridge checkout:
 
 ```sh
 git remote set-url codeberg ssh://git@codeberg.org/microchipster/mautrix-jmpchat.git
-git remote set-url origin ssh://git@git.backup.com:2222/microchipster/jmpchat.git
+git remote set-url origin ssh://git@git.example.com:2222/microchipster/jmpchat.git
 ```
 
 Recommended local remotes for `/home/user/src/repos/go-xmpp`:
 
 ```sh
 git remote set-url origin ssh://git@github.com/microchipster/go-xmpp
-git remote set-url backup ssh://git@git.backup.com:2222/microchipster/go-xmpp.git
+git remote set-url mirror ssh://git@git.example.com:2222/microchipster/go-xmpp.git
 git remote set-url upstream https://github.com/FluuxIO/go-xmpp.git
 ```
 
@@ -48,7 +48,7 @@ When publishing `go-xmpp` changes, push GitHub for submodule distribution and th
 
 ```sh
 git push origin main jmpchat-patches pr/protocol-edge-cases pr/limit-xml-node-depth pr/add-scram-sasl-auth pr/fix-stream-management-resume pr/command-rsm-compat
-git push backup main jmpchat-patches pr/protocol-edge-cases pr/limit-xml-node-depth pr/add-scram-sasl-auth pr/fix-stream-management-resume pr/command-rsm-compat
+git push origin main jmpchat-patches pr/protocol-edge-cases pr/limit-xml-node-depth pr/add-scram-sasl-auth pr/fix-stream-management-resume pr/command-rsm-compat
 ```
 
 Keep the bridge's root `go.mod` replacement:
@@ -99,7 +99,7 @@ rtk go get -u ./...
 rtk go mod tidy
 rtk go test ./...
 git push --force-with-lease origin jmpchat-patches
-git push --force-with-lease backup jmpchat-patches
+git push --force-with-lease origin jmpchat-patches
 ```
 
 Update this bridge to the newly tested submodule commit:
@@ -139,7 +139,7 @@ rtk go get -u ./...
 rtk go mod tidy
 rtk go test ./...
 git push --force-with-lease origin pr/add-scram-sasl-auth
-git push --force-with-lease backup pr/add-scram-sasl-auth
+git push --force-with-lease origin pr/add-scram-sasl-auth
 ```
 
 Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--force`, because these branches are intentionally rebased.
@@ -148,7 +148,7 @@ Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--for
 
 The local `go-xmpp` fork was rebased against upstream `main` at commit `784ff58cc201e448b671096b2f6be34f3785a9bd`.
 
-This bridge currently pins the `patched-xmpp` submodule to integration commit `22f4f6cb463e22a147eb3aff5a8f8ae0f247171c` on `jmpchat-patches`.
+This bridge currently pins the `patched-xmpp` submodule to integration commit `3ec7bfa775ae85a259b3d2a88e4c76f89a57f2a5` on `jmpchat-patches`.
 
 ## Go And Dependency Policy
 
@@ -165,7 +165,7 @@ When dependencies or Go itself need to move forward, update code to match the ne
 Do not remove the `replace` directive or the submodule unless these local changes have been upstreamed or replaced another way:
 
 - SCRAM password auth support in `auth.go`, including `SCRAM-SHA-512`, `SCRAM-SHA-256`, and `SCRAM-SHA-1`.
-- Cheogram-aligned SCRAM hardening: minimum iteration count `4096`, GS2 channel-binding signaling when advertised, strict SCRAM attribute parsing, duplicate attribute rejection, reserved `m` rejection, and XEP-0474 downgrade hash verification.
+- Cheogram-aligned SCRAM hardening: minimum iteration count `4096`, legacy non-PLUS GS2 header compatibility, strict SCRAM attribute parsing, duplicate attribute rejection, reserved `m` rejection, and XEP-0474 downgrade hash verification.
 - XEP-0440 SASL channel-binding feature parsing in `stanza/stream_features.go` so downgrade protection can include advertised binding names.
 - XML generic node depth limiting in `stanza/node.go` to reject excessively nested XML.
 - Stream-management resume fixes across `client.go`, `session.go`, `router.go`, and `xmpp_transport.go` that this bridge relies on for reconnect behavior.
