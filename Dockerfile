@@ -1,5 +1,5 @@
 # -- Build mautrix-jmpchat (with Go) --
-FROM golang:1.25.5-alpine3.23 AS go-builder
+FROM golang:1.26-alpine3.23 AS go-builder
 RUN apk add --no-cache git ca-certificates build-base olm-dev zlib-dev
 
 WORKDIR /build

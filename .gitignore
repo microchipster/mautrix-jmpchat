@@ -5,7 +5,6 @@ config.yaml
 *.db-wal
 logs/
 cheogram
-cheogram-android
 jmpchat
 /mautrix-jmpchat
 signal/
