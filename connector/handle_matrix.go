@@ -303,13 +303,12 @@ func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 
 // GetChatInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	name := UnescapeJID(string(portal.ID))
-
 	meta, _ := portal.Metadata.(*PortalMetadata)
 	roomType := ptr.Ptr(database.RoomTypeDM)
 	if meta != nil && meta.IsMUC {
 		roomType = ptr.Ptr(database.RoomTypeDefault)
 	}
+	name := portalDesiredName(ctx, nc.bridge, portal, nc.contactNameSuffix())
 
 	return &bridgev2.ChatInfo{
 		Name: &name,

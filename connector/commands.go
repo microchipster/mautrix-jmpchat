@@ -782,10 +782,10 @@ var CommandListLogins = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
-var CommandSetName = &commands.FullHandler{
+var CommandSetContactName = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		if len(ce.Args) < 2 {
-			ce.Reply("Usage: set-name <phone or JID> <display name>")
+			ce.Reply("Usage: set-contact-name <phone or JID> <display name>")
 			return
 		}
 		jid := normalizeJID(ce.Args[0])
@@ -811,12 +811,51 @@ var CommandSetName = &commands.FullHandler{
 		meta.CustomName = name
 		ghost.Metadata = meta
 		ghost.UpdateInfo(ce.Ctx, &bridgev2.UserInfo{Name: &name})
+		login := ce.User.GetDefaultLogin()
+		if login != nil {
+			suffix := defaultContactNameSuffix
+			if client, ok := login.Client.(*MyNetworkClient); ok && client != nil {
+				suffix = client.contactNameSuffix()
+			}
+			if err := refreshContactNamedPortals(ce.Ctx, ce.Bridge, login, jid, suffix); err != nil {
+				ce.Reply("Set display name for %s, but room refresh failed: %v", jid, err)
+				return
+			}
+		}
 		ce.Reply("Set display name for %s", jid)
 	},
-	Name: "set-name",
+	Name:    "set-contact-name",
+	Aliases: []string{"set-name"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Set a custom display name for a user",
+	},
+	RequiresLogin: true,
+}
+
+var CommandAutoRename = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		suffix := defaultContactNameSuffix
+		if ok && client != nil {
+			suffix = client.contactNameSuffix()
+		}
+		count, err := refreshAutoNamedPortals(ce.Ctx, ce.Bridge, login, suffix)
+		if err != nil {
+			ce.Reply("Failed to re-run auto rename: %v", err)
+			return
+		}
+		ce.Reply("Queued auto rename for %d rooms", count)
+	},
+	Name: "auto-rename",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Re-run auto naming for all auto-named rooms",
 	},
 	RequiresLogin: true,
 }

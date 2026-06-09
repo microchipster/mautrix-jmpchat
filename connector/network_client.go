@@ -740,10 +740,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 			}
 			continue
 		}
-		name := conf.Name
-		if name == "" {
-			name = roomJID
-		}
+		name := groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, conf.Name, nc.contactNameSuffix())
 
 		portalID := MakePortalID(roomJID)
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -1805,10 +1802,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nc.rosterItems[bareJID] = true
 				}
 				nc.rosterMu.Unlock()
-				name := item.Name
-				if name == "" {
-					name = bareJID
-				}
+				name := dmRoomName(context.Background(), nc.bridge, bareJID, item.Name, nc.contactNameSuffix())
 				portalID := MakePortalID(bareJID)
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
@@ -1990,7 +1984,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 							Timestamp:    time.Now(),
 						},
 						ChatInfo: &bridgev2.ChatInfo{
-							Name: ptr.Ptr(roomJID),
+							Name: ptr.Ptr(groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, "", nc.contactNameSuffix())),
 							Type: ptr.Ptr(database.RoomTypeDefault),
 						},
 					}
@@ -2166,7 +2160,6 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		}
 		if roomJID != "" {
 			portalID := MakePortalID(roomJID)
-			roomName := roomJID
 			resync := &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
 					Type:         bridgev2.RemoteEventChatResync,
@@ -2175,7 +2168,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 					Timestamp:    time.Now(),
 				},
 				ChatInfo: &bridgev2.ChatInfo{
-					Name: &roomName,
+					Name: ptr.Ptr(groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, "", nc.contactNameSuffix())),
 					Type: ptr.Ptr(database.RoomTypeDefault),
 				},
 			}
@@ -2199,7 +2192,6 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		roomJID := strings.TrimSpace(directInvite.JID)
 		if roomJID != "" {
 			portalID := MakePortalID(roomJID)
-			roomName := roomJID
 			resync := &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
 					Type:         bridgev2.RemoteEventChatResync,
@@ -2208,7 +2200,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 					Timestamp:    time.Now(),
 				},
 				ChatInfo: &bridgev2.ChatInfo{
-					Name: &roomName,
+					Name: ptr.Ptr(groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, "", nc.contactNameSuffix())),
 					Type: ptr.Ptr(database.RoomTypeDefault),
 				},
 			}
@@ -2408,7 +2400,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			Timestamp:    timestamp,
 		},
 		ChatInfo: &bridgev2.ChatInfo{
-			Name: &bareFromJid,
+			Name: ptr.Ptr(dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())),
 			Type: roomType,
 		},
 	}
@@ -2624,7 +2616,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 			Timestamp:    timestamp,
 		},
 		ChatInfo: &bridgev2.ChatInfo{
-			Name: &bareFromJid,
+			Name: ptr.Ptr(dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())),
 			Type: roomType,
 		},
 	}

@@ -21,12 +21,14 @@ var _ bridgev2.NetworkConnector = (*MyConnector)(nil)
 type MyConnector struct {
 	log    zerolog.Logger
 	bridge *bridgev2.Bridge
+	config *SimpleConfig
 }
 
 // NewMyConnector creates a new instance of MyConnector.
 func NewMyConnector(log zerolog.Logger) *MyConnector {
 	return &MyConnector{
-		log: log.With().Str("component", "network-connector").Logger(),
+		log:    log.With().Str("component", "network-connector").Logger(),
+		config: &SimpleConfig{ContactNameSuffix: defaultContactNameSuffix},
 	}
 }
 
@@ -50,7 +52,8 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandReportContact)
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandListLogins)
-		proc.AddHandler(CommandSetName)
+		proc.AddHandler(CommandSetContactName)
+		proc.AddHandler(CommandAutoRename)
 		proc.AddHandler(CommandJoinRoom)
 		proc.AddHandler(CommandListDiscoveredRooms)
 		proc.AddHandler(CommandGatewayActions)
@@ -141,7 +144,10 @@ func (c *MyConnector) CreateLogin(ctx context.Context, user *bridgev2.User, flow
 
 // GetConfig implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetConfig() (string, any, configupgrade.Upgrader) {
-	return "simple-config.yaml", nil, nil
+	if c.config == nil {
+		c.config = &SimpleConfig{ContactNameSuffix: defaultContactNameSuffix}
+	}
+	return "simple-config.yaml", c.config, nil
 }
 
 // GetBridgeInfoVersion implements bridgev2.NetworkConnector.
@@ -247,13 +253,13 @@ func (c *MyConnector) ensureManagementRoomInSpace(ctx context.Context, login *br
 func managementRoomHelpText() string {
 	return "Quick help:\n" +
 		"- login <jid>\n" +
-		"- logout [login_id] (soft)\n" +
-		"- logout [login_id] purge (delete rooms + space)\n" +
+		"- logout [login_id]\n" +
+		"- logout [login_id] purge\n" +
 		"- delete-all-portals yes\n" +
 		"- ping\n" +
 		"- sync [full|30d] (default 30d)\n" +
 		"- sync-status\n" +
-		"- create <jid> [jid...]\n" +
+		"- create [--name <name>] <jid> [jid...]\n" +
 		"- list-contacts\n" +
 		"- list-contacted\n" +
 		"- block [--report] <jid>\n" +
@@ -263,7 +269,10 @@ func managementRoomHelpText() string {
 		"- gateway-submit <session> field=value\n" +
 		"- list-logins [--verbose]\n" +
 		"- list-users\n" +
-		"- set-name <jid> <name>"
+		"- set-contact-name <jid> <name>\n" +
+		"- auto-rename\n" +
+		"- join-room <room_jid> [full|<duration>]\n" +
+		"- list-rooms"
 }
 
 func (c *MyConnector) addExistingPortalsToSpace(ctx context.Context, login *bridgev2.UserLogin) {

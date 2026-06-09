@@ -40,13 +40,12 @@ func init() {
 }
 
 func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, participants []string) error {
-	_ = ctx
 	roomJID, err := normalizedCheogramGroupJID(participants)
 	if err != nil {
 		return err
 	}
 	if name == "" {
-		name = "JMPChat Group"
+		name = groupRoomNameFromParticipants(ctx, nc.bridge, participants, "", nc.contactNameSuffix())
 	}
 
 	nc.queuePendingMUCCreation(roomJID, pendingMUCCreation{

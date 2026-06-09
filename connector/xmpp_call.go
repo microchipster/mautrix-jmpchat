@@ -214,17 +214,7 @@ func (nc *MyNetworkClient) resolveCallPartyLabel(ctx context.Context, bareFromJi
 }
 
 func callPartyLabelFromJID(jid string) string {
-	jid = strings.TrimSpace(jid)
-	if jid == "" {
-		return ""
-	}
-	if parts := strings.SplitN(jid, "@", 2); len(parts) == 2 && strings.HasPrefix(parts[0], "+") {
-		return parts[0]
-	}
-	if parts := strings.SplitN(jid, "/", 2); len(parts) == 2 && parts[1] != "" {
-		return parts[1]
-	}
-	return jid
+	return contactLabelFromJID(jid)
 }
 
 func rejectNoticeForSession(session *xmppCallSessionState, isFromMe bool) string {
@@ -375,7 +365,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCall(msg stanza.Message, timestamp 
 			Timestamp:    timestamp,
 		},
 		ChatInfo: &bridgev2.ChatInfo{
-			Name: &bareFromJid,
+			Name: ptr.Ptr(dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())),
 			Type: roomType,
 		},
 	}
