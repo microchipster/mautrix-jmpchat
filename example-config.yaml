@@ -1,5 +1,8 @@
 # Network-specific config options
-network: simple-config.yaml
+network:
+  # Suffix appended to auto-generated contact and group names.
+  # Set to an empty string to disable the suffix entirely.
+  contact_name_suffix: jmp
 
 # Config options that affect the central bridge module.
 bridge:
