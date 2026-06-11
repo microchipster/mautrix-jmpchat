@@ -9,7 +9,7 @@ import (
 
 func TestExtractXMPPAttachmentFromReference(t *testing.T) {
 	msg := stanza.Message{
-		Subject: "Voicemail Recording",
+		Subject: stanza.StringPtr("Voicemail Recording"),
 		Extensions: []stanza.MsgExtension{
 			&XMPPReference{
 				URI: "https://example.com/fallback.mp3",
@@ -76,8 +76,8 @@ func TestExtractXMPPAttachmentFromOOB(t *testing.T) {
 
 func TestExtractXMPPAttachmentCaptionPrefersBodyWithoutFallbackURL(t *testing.T) {
 	msg := stanza.Message{
-		Body:    "Family picture\nhttps://example.com/pic.jpg",
-		Subject: "Holiday",
+		Body:    stanza.StringPtr("Family picture\nhttps://example.com/pic.jpg"),
+		Subject: stanza.StringPtr("Holiday"),
 		Extensions: []stanza.MsgExtension{
 			&stanza.OOB{URL: "https://example.com/pic.jpg", Desc: "Photo"},
 			&XMPPFallback{
@@ -96,8 +96,8 @@ func TestExtractXMPPAttachmentCaptionPrefersBodyWithoutFallbackURL(t *testing.T)
 
 func TestExtractXMPPAttachmentCaptionFallsBackToSubject(t *testing.T) {
 	msg := stanza.Message{
-		Body:    "https://example.com/vm.ogg",
-		Subject: "Voicemail Recording",
+		Body:    stanza.StringPtr("https://example.com/vm.ogg"),
+		Subject: stanza.StringPtr("Voicemail Recording"),
 		Extensions: []stanza.MsgExtension{
 			&stanza.OOB{URL: "https://example.com/vm.ogg"},
 		},
@@ -112,8 +112,8 @@ func TestExtractXMPPAttachmentCaptionFallsBackToSubject(t *testing.T) {
 
 func TestExtractXMPPAttachmentCaptionMergesSubjectAndCaption(t *testing.T) {
 	msg := stanza.Message{
-		Body:    "Here is the photo\nhttps://example.com/pic.jpg",
-		Subject: "Holiday",
+		Body:    stanza.StringPtr("Here is the photo\nhttps://example.com/pic.jpg"),
+		Subject: stanza.StringPtr("Holiday"),
 		Extensions: []stanza.MsgExtension{
 			&stanza.OOB{URL: "https://example.com/pic.jpg"},
 			&XMPPFallback{For: "jabber:x:oob", Body: []XMPPFallbackBody{{Start: 18, End: 45}}},
@@ -129,11 +129,11 @@ func TestExtractXMPPAttachmentCaptionMergesSubjectAndCaption(t *testing.T) {
 
 func TestExtractXMPPAttachmentCaptionStripsReplyAndOOBFallbacks(t *testing.T) {
 	msg := stanza.Message{
-		Body: `> Alice wrote:
+		Body: stanza.StringPtr(`> Alice wrote:
 old message
 
 Here is the photo
-https://example.com/pic.jpg`,
+https://example.com/pic.jpg`),
 		Extensions: []stanza.MsgExtension{
 			&stanza.OOB{URL: "https://example.com/pic.jpg"},
 			&XMPPFallback{For: NSReply, Body: []XMPPFallbackBody{{Start: 0, End: 27}}},
@@ -216,31 +216,31 @@ func TestClassifyContentTypeMessageType(t *testing.T) {
 }
 
 func TestIsLikelyXMPPVoiceNote(t *testing.T) {
-	msg := stanza.Message{Subject: "New Voicemail"}
+	msg := stanza.Message{Subject: stanza.StringPtr("New Voicemail")}
 	attachment := &xmppAttachment{ContentType: "audio/mpeg", FileName: "vm.mp3"}
 	if !isLikelyXMPPVoiceNote(msg, attachment) {
 		t.Fatal("expected voicemail audio to be treated as voice note")
 	}
 	attachment.Description = "podcast episode"
-	msg.Subject = ""
+	msg.Subject = nil
 	if isLikelyXMPPVoiceNote(msg, attachment) {
 		t.Fatal("expected generic audio attachment to not be treated as voice note")
 	}
 }
 
 func TestPreferredXMPPVoiceNoteBody(t *testing.T) {
-	msg := stanza.Message{Subject: "New Voicemail"}
+	msg := stanza.Message{Subject: stanza.StringPtr("New Voicemail")}
 	attachment := &xmppAttachment{ContentType: "audio/mpeg", FileName: "vm.mp3", URL: "https://example.com/vm.mp3"}
 	if got := preferredXMPPVoiceNoteBody(msg, attachment, attachment.URL); got != "New Voicemail" {
 		t.Fatalf("unexpected preferred voice note body: %q", got)
 	}
-	msg.Subject = ""
+	msg.Subject = nil
 	attachment.Description = "Voicemail Recording"
 	if got := preferredXMPPVoiceNoteBody(msg, attachment, attachment.FileName); got != "Voicemail Recording" {
 		t.Fatalf("unexpected description-based voice note body: %q", got)
 	}
 	attachment.Description = ""
-	msg.Body = "voice note"
+	msg.Body = stanza.StringPtr("voice note")
 	if got := preferredXMPPVoiceNoteBody(msg, attachment, attachment.FileName); got != "Voicemail" {
 		t.Fatalf("unexpected fallback voice note body: %q", got)
 	}

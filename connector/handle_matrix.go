@@ -52,6 +52,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		Type: msgType,
 		Id:   uuid.NewString(),
 	})
+	body := ""
 	extensions := make([]stanza.MsgExtension, 0, 8)
 	if msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile {
 		uploadedURL, desc, err := nc.uploadMatrixMediaToXMPP(ctx, msg)
@@ -63,7 +64,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			oob.Desc = desc
 		}
 
-		body := uploadedURL
+		body = uploadedURL
 		fallback := XMPPFallback{For: "jabber:x:oob"}
 		if desc != "" {
 			body = desc + "\n" + uploadedURL
@@ -78,13 +79,12 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		if ref := buildOutgoingXMPPAttachmentReference(msg.Content, uploadedURL); ref != nil {
 			extensions = append(extensions, ref)
 		}
-		m.Body = body
 	} else {
-		m.Body = strings.TrimSpace(msg.Content.Body)
-		if m.Body == "" && msg.Content.FormattedBody != "" {
-			m.Body = strings.TrimSpace(htmlToPlainText(msg.Content.FormattedBody))
+		body = strings.TrimSpace(msg.Content.Body)
+		if body == "" && msg.Content.FormattedBody != "" {
+			body = strings.TrimSpace(htmlToPlainText(msg.Content.FormattedBody))
 		}
-		if m.Body == "" {
+		if body == "" {
 			return nil, fmt.Errorf("message body is empty after Matrix content conversion")
 		}
 	}
@@ -93,8 +93,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 	if reply := buildOutgoingXMPPReply(msg.ReplyTo); reply != nil {
 		extensions = append(extensions, reply)
-		m.Body, extensions = addReplyFallbackToBody(m.Body, extensions, nc.buildOutgoingXMPPReplyQuote(ctx, msg.Portal, msg.ReplyTo))
+		body, extensions = addReplyFallbackToBody(body, extensions, nc.buildOutgoingXMPPReplyQuote(ctx, msg.Portal, msg.ReplyTo))
 	}
+	m.Body = stanza.StringPtr(body)
 	if !isMUC {
 		extensions = append(extensions, XMPPReceipt{}, XMPPMarker{})
 	}
@@ -245,7 +246,9 @@ func (nc *MyNetworkClient) sendXMPPReactionSet(ctx context.Context, portal *brid
 	if reply := buildOutgoingXMPPReply(target); reply != nil {
 		extensions = append(extensions, reply)
 		if len(reactions) > 0 {
-			xmppMsg.Body, extensions = addReplyFallbackToBody(strings.Join(reactions, " "), extensions, nc.buildOutgoingXMPPReplyQuote(ctx, portal, target))
+			body, updatedExtensions := addReplyFallbackToBody(strings.Join(reactions, " "), extensions, nc.buildOutgoingXMPPReplyQuote(ctx, portal, target))
+			xmppMsg.Body = stanza.StringPtr(body)
+			extensions = updatedExtensions
 			extensions = append(extensions, XMPPFallback{For: NSReactions})
 		}
 	}

@@ -71,7 +71,7 @@ func extractXMPPAttachment(msg stanza.Message) *xmppAttachment {
 		}
 	}
 	if attachment.Description == "" {
-		attachment.Description = strings.TrimSpace(msg.Subject)
+		attachment.Description = strings.TrimSpace(stanza.StringValue(msg.Subject))
 	}
 
 	return attachment
@@ -112,7 +112,7 @@ func extractXMPPAttachmentCaption(msg stanza.Message, attachment *xmppAttachment
 	if caption == "" && attachment != nil && strings.TrimSpace(attachment.Description) != "" {
 		caption = trimBlankLines(strings.TrimSpace(attachment.Description))
 	}
-	return mergeXMPPSubjectAndBody(msg.Subject, caption)
+	return mergeXMPPSubjectAndBody(stanza.StringValue(msg.Subject), caption)
 }
 
 func mergeXMPPSubjectAndBody(subject, body string) string {
@@ -131,7 +131,7 @@ func mergeXMPPSubjectAndBody(subject, body string) string {
 }
 
 func stripXMPPFallbackFromMessage(msg stanza.Message, fallbackFor ...string) string {
-	body := msg.Body
+	body := stanza.StringValue(msg.Body)
 	if body == "" {
 		return ""
 	}
@@ -241,8 +241,8 @@ func isLikelyXMPPVoiceNote(msg stanza.Message, attachment *xmppAttachment) bool 
 		return false
 	}
 	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
-		msg.Subject,
-		msg.Body,
+		stanza.StringValue(msg.Subject),
+		stanza.StringValue(msg.Body),
 		attachment.Description,
 		attachment.FileName,
 	}, "\n")))
@@ -254,7 +254,7 @@ func preferredXMPPVoiceNoteBody(msg stanza.Message, attachment *xmppAttachment, 
 		return currentBody
 	}
 	for _, candidate := range []string{
-		strings.TrimSpace(msg.Subject),
+		strings.TrimSpace(stanza.StringValue(msg.Subject)),
 		strings.TrimSpace(attachment.Description),
 		trimBlankLines(strings.TrimSpace(currentBody)),
 	} {

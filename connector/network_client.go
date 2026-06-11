@@ -2181,7 +2181,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			portalKey := networkid.PortalKey{ID: MakePortalID(roomJID)}
 			nc.scheduleMUCBackfill(roomJID, nc.historySyncStartForPortal(context.Background(), portalKey))
 			nc.joinMUC(roomJID, "", mucInvite.Password)
-			if msg.Body == "" {
+			if stanza.StringValue(msg.Body) == "" {
 				return
 			}
 		}
@@ -2213,7 +2213,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			portalKey := networkid.PortalKey{ID: MakePortalID(roomJID)}
 			nc.scheduleMUCBackfill(roomJID, nc.historySyncStartForPortal(context.Background(), portalKey))
 			nc.joinMUC(roomJID, "", directInvite.Password)
-			if msg.Body == "" {
+			if stanza.StringValue(msg.Body) == "" {
 				return
 			}
 		}
@@ -2222,7 +2222,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	nc.log.Info().
 		Str("from", fromJidStr).
 		Str("type", string(msg.Type)).
-		Str("body", msg.Body).
+		Str("body", stanza.StringValue(msg.Body)).
 		Msg("Received XMPP message")
 	nc.log.Debug().Interface("message", msg).Msg("Message details")
 
@@ -2271,14 +2271,14 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	attachment := extractXMPPAttachment(msg)
 	replyTargetID := extractXMPPReplyTarget(msg)
 	if replyTargetID != "" {
-		msg.Body = trimBlankLines(strings.TrimSpace(stripXMPPFallbackFromMessage(msg, NSReply)))
+		msg.Body = stanza.StringPtr(trimBlankLines(strings.TrimSpace(stripXMPPFallbackFromMessage(msg, NSReply))))
 	}
 	if nc.handleIncomingXMPPCall(msg, timestamp, bareFromJid, isMUC, isFromMe) {
 		return
 	}
 
 	// Ignore empty bodies unless we have OOB
-	if msg.Body == "" {
+	if stanza.StringValue(msg.Body) == "" {
 		var reactions XMPPReactions
 		if msg.Get(&reactions) && reactions.ID != "" {
 			nc.handleIncomingXMPPReaction(msg, timestamp, reactions, isFromMe)
@@ -2288,7 +2288,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			return
 		}
 		if attachment != nil {
-			msg.Body = attachment.URL
+			msg.Body = stanza.StringPtr(attachment.URL)
 		} else {
 			nc.log.Debug().
 				Str("from", fromJidStr).
@@ -2327,19 +2327,19 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			// For MUCs, include the room and occupant nickname for uniqueness
 			senderID = fromJidStr
 		}
-		if prefJID, stripped, ok := extractPrefixedSender(msg.Body); ok {
+		if prefJID, stripped, ok := extractPrefixedSender(stanza.StringValue(msg.Body)); ok {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
 				nc.log.Debug().
 					Str("room_jid", bareFromJid).
 					Str("prefixed_sender", prefJID).
-					Str("body_before", msg.Body).
+					Str("body_before", stanza.StringValue(msg.Body)).
 					Str("body_after", stripped).
 					Msg("Using prefixed sender JID from message body")
 			}
 			senderID = prefJID
-			msg.Body = stripped
+			msg.Body = stanza.StringPtr(stripped)
 		} else if isMUC {
-			if bodyParts := strings.SplitN(msg.Body, " ", 2); len(bodyParts) == 2 && strings.HasPrefix(bodyParts[0], "+") {
+			if bodyParts := strings.SplitN(stanza.StringValue(msg.Body), " ", 2); len(bodyParts) == 2 && strings.HasPrefix(bodyParts[0], "+") {
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
 						Str("room_jid", bareFromJid).
@@ -2347,7 +2347,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 						Msg("Using phone number prefix as sender")
 				}
 				senderID = bodyParts[0] + "@cheogram.com"
-				msg.Body = bodyParts[1]
+				msg.Body = stanza.StringPtr(bodyParts[1])
 			}
 		}
 		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
@@ -2374,7 +2374,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		}
 	}
 	if isMUC {
-		msg.Body = stripMUCSenderPrefix(msg.Body, senderID)
+		msg.Body = stanza.StringPtr(stripMUCSenderPrefix(stanza.StringValue(msg.Body), senderID))
 	}
 	logJIDNormalization(nc.log, "message_sender", senderID)
 	if isMUC && !fromMAM {
@@ -2426,7 +2426,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				nc.markPortalHistoryProgress(ctx, portal, timestamp, msgID, serverMsgID)
 			},
 		},
-		Data: msg.Body,
+		Data: stanza.StringValue(msg.Body),
 		ID:   networkid.MessageID(msgID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data string) (*bridgev2.ConvertedMessage, error) {
 			// Save the room type metadata inside the ConvertMessageFunc as we have the portal
@@ -2454,7 +2454,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 					body = caption
 				}
 			} else {
-				body = mergeXMPPSubjectAndBody(msg.Subject, body)
+				body = mergeXMPPSubjectAndBody(stanza.StringValue(msg.Subject), body)
 			}
 			if remoteURL == "" && (strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://")) {
 				remoteURL = data
