@@ -1,8 +1,11 @@
 package connector
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"gopkg.in/yaml.v3"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -79,5 +82,47 @@ func TestPortalLooksAutoNamed(t *testing.T) {
 	}
 	if !portalLooksAutoNamed(portal, "jmp") {
 		t.Fatal("expected DM portal to be treated as auto-named")
+	}
+}
+
+func TestSimpleConfigUnmarshalYAMLInlineMapping(t *testing.T) {
+	var cfg struct {
+		Network SimpleConfig `yaml:"network"`
+	}
+	if err := yaml.Unmarshal([]byte("network:\n  contact_name_suffix: chat\n"), &cfg); err != nil {
+		t.Fatalf("failed to unmarshal inline config: %v", err)
+	}
+	if cfg.Network.ContactNameSuffix != "chat" {
+		t.Fatalf("unexpected contact name suffix: %q", cfg.Network.ContactNameSuffix)
+	}
+	if err := yaml.Unmarshal([]byte("network: custom\n"), &cfg); err != nil {
+		t.Fatalf("failed to unmarshal scalar config: %v", err)
+	}
+	if cfg.Network.ContactNameSuffix != "custom" {
+		t.Fatalf("unexpected shorthand contact name suffix: %q", cfg.Network.ContactNameSuffix)
+	}
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "simple-config.yaml")
+	if err := os.WriteFile(configPath, []byte("contact_name_suffix: bridge\n"), 0o600); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working directory: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("failed to chdir to temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	if err := yaml.Unmarshal([]byte("network: simple-config.yaml\n"), &cfg); err != nil {
+		t.Fatalf("failed to unmarshal file-backed config: %v", err)
+	}
+	if cfg.Network.ContactNameSuffix != "bridge" {
+		t.Fatalf("unexpected contact name suffix: %q", cfg.Network.ContactNameSuffix)
 	}
 }

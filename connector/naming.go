@@ -3,11 +3,13 @@ package connector
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"gopkg.in/yaml.v3"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -19,6 +21,39 @@ const defaultContactNameSuffix = "jmp"
 // SimpleConfig stores connector-specific network configuration.
 type SimpleConfig struct {
 	ContactNameSuffix string `yaml:"contact_name_suffix,omitempty"`
+}
+
+func (c *SimpleConfig) UnmarshalYAML(node *yaml.Node) error {
+	type simpleConfigAlias SimpleConfig
+	config := simpleConfigAlias{ContactNameSuffix: defaultContactNameSuffix}
+
+	switch node.Kind {
+	case yaml.MappingNode:
+		if err := node.Decode(&config); err != nil {
+			return err
+		}
+	case yaml.ScalarNode:
+		value := strings.TrimSpace(node.Value)
+		if value == "" {
+			break
+		}
+		if strings.ContainsAny(value, "/\\") || strings.HasSuffix(strings.ToLower(value), ".yaml") || strings.HasSuffix(strings.ToLower(value), ".yml") {
+			data, err := os.ReadFile(value)
+			if err != nil {
+				return fmt.Errorf("read network config file %q: %w", value, err)
+			}
+			if err := yaml.Unmarshal(data, &config); err != nil {
+				return fmt.Errorf("parse network config file %q: %w", value, err)
+			}
+			break
+		}
+		config.ContactNameSuffix = value
+	default:
+		return fmt.Errorf("expected network config as mapping or string, got %s", node.ShortTag())
+	}
+
+	*c = SimpleConfig(config)
+	return nil
 }
 
 func (c *MyConnector) contactNameSuffix() string {
