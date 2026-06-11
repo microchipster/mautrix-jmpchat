@@ -23,19 +23,16 @@ type SimpleConfig struct {
 	ContactNameSuffix string `yaml:"contact_name_suffix,omitempty"`
 }
 
-func (c *SimpleConfig) UnmarshalYAML(node *yaml.Node) error {
+func (c *SimpleConfig) UnmarshalYAML(unmarshal func(any) error) error {
 	type simpleConfigAlias SimpleConfig
 	config := simpleConfigAlias{ContactNameSuffix: defaultContactNameSuffix}
 
-	switch node.Kind {
-	case yaml.MappingNode:
-		if err := node.Decode(&config); err != nil {
-			return err
-		}
-	case yaml.ScalarNode:
-		value := strings.TrimSpace(node.Value)
+	var scalar string
+	if err := unmarshal(&scalar); err == nil {
+		value := strings.TrimSpace(scalar)
 		if value == "" {
-			break
+			*c = SimpleConfig(config)
+			return nil
 		}
 		if strings.ContainsAny(value, "/\\") || strings.HasSuffix(strings.ToLower(value), ".yaml") || strings.HasSuffix(strings.ToLower(value), ".yml") {
 			data, err := os.ReadFile(value)
@@ -45,13 +42,16 @@ func (c *SimpleConfig) UnmarshalYAML(node *yaml.Node) error {
 			if err := yaml.Unmarshal(data, &config); err != nil {
 				return fmt.Errorf("parse network config file %q: %w", value, err)
 			}
-			break
+		} else {
+			config.ContactNameSuffix = value
 		}
-		config.ContactNameSuffix = value
-	default:
-		return fmt.Errorf("expected network config as mapping or string, got %s", node.ShortTag())
+		*c = SimpleConfig(config)
+		return nil
 	}
 
+	if err := unmarshal(&config); err != nil {
+		return err
+	}
 	*c = SimpleConfig(config)
 	return nil
 }
