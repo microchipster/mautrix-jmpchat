@@ -38,8 +38,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	jid := UnescapeJID(string(msg.Portal.ID))
 
-	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
-	isMUC := meta != nil && meta.IsMUC
+	isMUC := portalUsesGroupChat(msg.Portal)
 
 	var msgType stanza.StanzaType = stanza.MessageTypeChat
 	if isMUC {
@@ -232,9 +231,8 @@ func (nc *MyNetworkClient) sendXMPPReactionSet(ctx context.Context, portal *brid
 		return fmt.Errorf("target message is missing")
 	}
 	jid := UnescapeJID(string(portal.ID))
-	meta, _ := portal.Metadata.(*PortalMetadata)
 	msgType := stanza.MessageTypeChat
-	if meta != nil && meta.IsMUC {
+	if portalUsesGroupChat(portal) {
 		msgType = stanza.MessageTypeGroupchat
 	}
 	xmppMsg := stanza.NewMessage(stanza.Attrs{
@@ -306,9 +304,8 @@ func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 
 // GetChatInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	meta, _ := portal.Metadata.(*PortalMetadata)
 	roomType := ptr.Ptr(database.RoomTypeDM)
-	if meta != nil && meta.IsMUC {
+	if portalUsesGroupChat(portal) {
 		roomType = ptr.Ptr(database.RoomTypeDefault)
 	}
 	name := portalDesiredName(ctx, nc.bridge, portal, nc.contactNameSuffix())

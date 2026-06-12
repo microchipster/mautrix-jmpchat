@@ -138,8 +138,7 @@ func (nc *MyNetworkClient) runAutomaticMUCCatchup(ctx context.Context) {
 		if err != nil || portal == nil {
 			continue
 		}
-		meta, _ := portal.Metadata.(*PortalMetadata)
-		if meta == nil || !meta.IsMUC {
+		if !portalUsesGroupChat(portal) {
 			continue
 		}
 		roomJID := UnescapeJID(string(userPortal.Portal.ID))

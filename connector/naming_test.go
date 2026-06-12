@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,6 +83,50 @@ func TestPortalLooksAutoNamed(t *testing.T) {
 	}
 	if !portalLooksAutoNamed(portal, "jmp") {
 		t.Fatal("expected DM portal to be treated as auto-named")
+	}
+}
+
+func TestCheogramGroupFallbackWithoutMetadata(t *testing.T) {
+	t.Parallel()
+
+	roomJID := "+15551230001,+15551230002@cheogram.com"
+	portal := &bridgev2.Portal{
+		Portal: &database.Portal{
+			PortalKey:    networkid.PortalKey{ID: MakePortalID(roomJID)},
+			Name:         roomJID,
+			RoomType:     database.RoomTypeDM,
+			NameIsCustom: false,
+		},
+	}
+
+	if !portalUsesGroupChat(portal) {
+		t.Fatal("expected cheogram comma-separated room to be treated as a group chat")
+	}
+
+	contacts := portalContacts(portal)
+	wantContacts := []string{"+15551230001@cheogram.com", "+15551230002@cheogram.com"}
+	if len(contacts) != len(wantContacts) {
+		t.Fatalf("portalContacts() = %v, want %v", contacts, wantContacts)
+	}
+	for i, want := range wantContacts {
+		if contacts[i] != want {
+			t.Fatalf("portalContacts()[%d] = %q, want %q", i, contacts[i], want)
+		}
+	}
+
+	if !portalLooksAutoNamed(portal, "jmp") {
+		t.Fatal("expected cheogram group room without metadata to be treated as auto-named")
+	}
+
+	if !portalMatchesContact(portal, "+15551230002@cheogram.com") {
+		t.Fatal("expected cheogram group room to match one of its contacts")
+	}
+	if portalMatchesContact(portal, "+15550102400@cheogram.com") {
+		t.Fatal("did not expect cheogram group room to match an unrelated contact")
+	}
+
+	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp"); got != "55 (jmp)" {
+		t.Fatalf("groupRoomNameFromJID() = %q, want %q", got, "55 (jmp)")
 	}
 }
 

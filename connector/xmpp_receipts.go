@@ -84,8 +84,7 @@ func (nc *MyNetworkClient) HandleMatrixReadReceipt(ctx context.Context, msg *bri
 		return nil
 	}
 
-	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
-	if meta != nil && meta.IsMUC {
+	if portalUsesGroupChat(msg.Portal) {
 		return nil
 	}
 

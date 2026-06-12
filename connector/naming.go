@@ -212,6 +212,17 @@ func groupRoomNameFromJID(ctx context.Context, bridge *bridgev2.Bridge, roomJID,
 	return groupRoomNameFromParticipants(ctx, bridge, contacts, "", suffix)
 }
 
+func portalUsesGroupChat(portal *bridgev2.Portal) bool {
+	if portal == nil {
+		return false
+	}
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	if meta != nil && meta.IsMUC {
+		return true
+	}
+	return len(splitCheogramGroupContacts(UnescapeJID(string(portal.ID)))) > 0
+}
+
 func dmRoomName(ctx context.Context, bridge *bridgev2.Bridge, jid, explicit, suffix string) string {
 	name := strings.TrimSpace(explicit)
 	if name == "" {
@@ -224,8 +235,7 @@ func portalContacts(portal *bridgev2.Portal) []string {
 	if portal == nil {
 		return nil
 	}
-	meta, _ := portal.Metadata.(*PortalMetadata)
-	if meta == nil || !meta.IsMUC {
+	if !portalUsesGroupChat(portal) {
 		return nil
 	}
 	return splitCheogramGroupContacts(UnescapeJID(string(portal.ID)))
@@ -239,16 +249,12 @@ func portalMatchesContact(portal *bridgev2.Portal, jid string) bool {
 	if jid == "" {
 		return false
 	}
-	meta, _ := portal.Metadata.(*PortalMetadata)
-	if portal.RoomType == database.RoomTypeDM || (meta != nil && !meta.IsMUC) {
+	if !portalUsesGroupChat(portal) {
 		other := strings.TrimSpace(string(portal.OtherUserID))
 		if other == "" {
 			other = strings.TrimSpace(UnescapeJID(string(portal.ID)))
 		}
 		return strings.EqualFold(bareJID(other), jid)
-	}
-	if meta == nil {
-		return false
 	}
 	for _, contact := range portalContacts(portal) {
 		if strings.EqualFold(bareJID(contact), jid) {
@@ -262,11 +268,10 @@ func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
 	if portal == nil || portal.NameIsCustom {
 		return false
 	}
-	if portal.RoomType == database.RoomTypeDM {
-		return true
-	}
-	meta, _ := portal.Metadata.(*PortalMetadata)
-	if meta == nil || !meta.IsMUC {
+	if !portalUsesGroupChat(portal) {
+		if portal.RoomType == database.RoomTypeDM {
+			return true
+		}
 		return false
 	}
 	name := stripContactNameSuffix(strings.TrimSpace(portal.Name), suffix)
@@ -292,18 +297,15 @@ func portalDesiredName(ctx context.Context, bridge *bridgev2.Bridge, portal *bri
 			return name
 		}
 	}
-	meta, _ := portal.Metadata.(*PortalMetadata)
-	if portal.RoomType == database.RoomTypeDM || (meta != nil && !meta.IsMUC) {
+	if !portalUsesGroupChat(portal) {
 		jid := strings.TrimSpace(string(portal.OtherUserID))
 		if jid == "" {
 			jid = strings.TrimSpace(UnescapeJID(string(portal.ID)))
 		}
 		return dmRoomName(ctx, bridge, jid, "", suffix)
 	}
-	if meta != nil && meta.IsMUC {
-		if name := groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix); name != "" {
-			return name
-		}
+	if name := groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix); name != "" {
+		return name
 	}
 	if name := strings.TrimSpace(portal.Name); name != "" {
 		return name

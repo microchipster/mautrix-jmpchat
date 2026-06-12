@@ -415,8 +415,7 @@ var CommandListContacted = &commands.FullHandler{
 				}
 				continue
 			}
-			meta, _ := portal.Metadata.(*PortalMetadata)
-			if portal.RoomType == database.RoomTypeDM || (meta != nil && !meta.IsMUC) {
+			if !portalUsesGroupChat(portal) {
 				jid := string(portal.OtherUserID)
 				if jid == "" {
 					jid = string(portal.ID)
@@ -424,7 +423,7 @@ var CommandListContacted = &commands.FullHandler{
 				addContactedJIDs(contacted, UnescapeJID(jid))
 				continue
 			}
-			for _, contact := range splitCheogramGroupContacts(UnescapeJID(string(portal.ID))) {
+			for _, contact := range portalContacts(portal) {
 				addContactedJIDs(contacted, contact)
 			}
 		}
