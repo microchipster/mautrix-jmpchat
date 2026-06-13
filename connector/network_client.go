@@ -396,11 +396,15 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 	go func(start time.Time, tracked bool) {
 		defer nc.finishTrackedFullSyncBackfill(tracked)
 		if err := nc.backfillAccountDMs(context.Background(), start); err != nil {
-			nc.log.Err(err).Time("start", start).Msg("Failed to request account DM MAM history")
-			if tracked {
-				nc.reportSyncError(fmt.Sprintf("DM backfill failed: %v", err))
+			if isServiceUnavailableMAMError(err) {
+				nc.log.Info().Time("start", start).Msg("Skipping account DM MAM history; server returned service-unavailable")
 			} else {
-				nc.log.Debug().Err(err).Time("start", start).Msg("Automatic DM backfill failed")
+				nc.log.Err(err).Time("start", start).Msg("Failed to request account DM MAM history")
+				if tracked {
+					nc.reportSyncError(fmt.Sprintf("DM backfill failed: %v", err))
+				} else {
+					nc.log.Debug().Err(err).Time("start", start).Msg("Automatic DM backfill failed")
+				}
 			}
 		}
 	}(start, tracked)
@@ -614,12 +618,16 @@ func (nc *MyNetworkClient) maybeStartPendingMUCBackfill(roomJID string) {
 	go func(roomJID string, start time.Time) {
 		defer nc.finishTrackedFullSyncBackfill(tracked)
 		if err := nc.backfillMUC(context.Background(), roomJID, start); err != nil {
-			nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
-			msg := fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err)
-			if nc.fullSyncRequested {
-				nc.reportSyncError(msg)
+			if isServiceUnavailableMAMError(err) {
+				nc.log.Info().Str("room_jid", roomJID).Msg("Skipping MUC MAM history; server returned service-unavailable")
 			} else {
-				nc.recordSyncError(msg)
+				nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
+				msg := fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err)
+				if nc.fullSyncRequested {
+					nc.reportSyncError(msg)
+				} else {
+					nc.recordSyncError(msg)
+				}
 			}
 		}
 	}(roomJID, start)
@@ -1030,7 +1038,7 @@ func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
 		})
 		infoIq.Payload = &stanza.DiscoInfo{}
 		if err := nc.sendXMPP(infoIq); err != nil {
-			nc.log.Err(err).Str("to", candidate).Msg("Failed to probe disco info")
+			nc.log.Debug().Err(err).Str("to", candidate).Msg("Skipping disco info probe")
 		} else if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().Str("to", candidate).Msg("Probing disco info")
 		}
@@ -1041,7 +1049,7 @@ func (nc *MyNetworkClient) probeMUCServices(serverDomain string) {
 		})
 		itemsIq.Payload = &stanza.DiscoItems{}
 		if err := nc.sendXMPP(itemsIq); err != nil {
-			nc.log.Err(err).Str("to", candidate).Msg("Failed to probe disco items")
+			nc.log.Debug().Err(err).Str("to", candidate).Msg("Skipping disco items probe")
 		} else if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().Str("to", candidate).Msg("Probing disco items")
 		}
