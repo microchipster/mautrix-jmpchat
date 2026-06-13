@@ -10,6 +10,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
+	matrixbridge "maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -54,6 +55,9 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandListLogins)
 		proc.AddHandler(CommandSetContactName)
 		proc.AddHandler(CommandAutoRename)
+		proc.AddHandler(matrixbridge.CommandDiscardMegolmSession)
+		proc.AddHandler(CommandMatrixEncryptionResync)
+		proc.AddHandler(CommandMatrixEncryptionReset)
 		proc.AddHandler(CommandJoinRoom)
 		proc.AddHandler(CommandListDiscoveredRooms)
 		proc.AddHandler(CommandGatewayActions)
@@ -61,7 +65,7 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandGatewaySubmit)
 		proc.AddHandler(CommandDeleteAllPortals)
 		proc.AddHandler(CommandLogout)
-		c.log.Info().Msg("Registered sync command")
+		c.log.Info().Msg("Registered custom commands")
 	} else {
 		c.log.Warn().Msg("Command processor not available for custom commands")
 	}
@@ -256,6 +260,10 @@ func managementRoomHelpText() string {
 		"- logout [login_id]\n" +
 		"- logout [login_id] purge\n" +
 		"- delete-all-portals yes\n" +
+		"Matrix encryption recovery:\n" +
+		"  - discard-session (in the affected room): clear one room's stuck Megolm session so Matrix can request fresh keys for that room; use this when only one room shows decrypt errors\n" +
+		"  - resync-matrix-encryption: refresh Matrix encryption state after a decrypt error, device mismatch, or missing keys; keeps rooms and history\n" +
+		"  - reset-matrix-encryption yes: rebuild Matrix crypto state if resync still fails, for stale device/signing-key problems; keeps rooms and history\n" +
 		"- ping\n" +
 		"- sync [full|30d] (default 30d)\n" +
 		"- sync-status\n" +
