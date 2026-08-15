@@ -162,6 +162,20 @@ func (c *MyConnector) GetBridgeInfoVersion() (int, int) {
 // Start implements bridgev2.NetworkConnector.
 func (c *MyConnector) Start(ctx context.Context) error {
 	c.log.Info().Msg("MyConnector Start called")
+	if c.bridge == nil {
+		c.log.Error().Msg("MyConnector started without bridge instance")
+		return nil
+	}
+
+	userIDs, err := c.bridge.DB.UserLogin.GetAllUserIDsWithLogins(ctx)
+	if err != nil {
+		c.log.Error().Err(err).Msg("Failed to inspect stored JMP.chat logins at startup")
+		return nil
+	}
+	c.log.Warn().Int("login_count", len(userIDs)).Msg("JMP.chat startup login inventory")
+	if len(userIDs) == 0 {
+		c.log.Warn().Msg("No stored JMP.chat logins found; no XMPP connection will be started")
+	}
 	return nil
 }
 
@@ -195,12 +209,6 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Msg("Created and stored MyNetworkClient")
 
 	go c.ensureSpaceRoomAndPopulate(login)
-	client.connectMu.Lock()
-	if !client.connectStarted {
-		client.connectStarted = true
-		go client.Connect(context.Background())
-	}
-	client.connectMu.Unlock()
 
 	return nil
 }

@@ -149,6 +149,7 @@ const defaultMAMLookback = 30 * 24 * time.Hour
 const (
 	xmppReconnectInitialBackoff = 5 * time.Second
 	xmppReconnectMaxBackoff     = 2 * time.Minute
+	xmppHealthCheckInterval     = time.Minute
 )
 
 func xmppReconnectBackoff(attempt int) time.Duration {
@@ -166,6 +167,43 @@ func xmppReconnectBackoff(attempt int) time.Duration {
 		}
 	}
 	return backoff
+}
+
+func (nc *MyNetworkClient) tryStartConnect() (attempt int, started bool) {
+	nc.connectMu.Lock()
+	defer nc.connectMu.Unlock()
+	if nc.connectStarted {
+		attempt = nc.reconnectAttempt
+		if attempt == 0 {
+			attempt = 1
+		}
+		return attempt, false
+	}
+	nc.connectStarted = true
+	if nc.stopReconnect == nil {
+		nc.stopReconnect = make(chan struct{})
+	}
+	attempt = nc.reconnectAttempt
+	if attempt == 0 {
+		attempt = 1
+	}
+	return attempt, true
+}
+
+func (nc *MyNetworkClient) releaseConnect() {
+	nc.connectMu.Lock()
+	nc.connectStarted = false
+	nc.connectMu.Unlock()
+}
+
+func (nc *MyNetworkClient) connectionJID() string {
+	if nc.login == nil {
+		return ""
+	}
+	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
+		return meta.RemoteUserID
+	}
+	return ""
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -1196,13 +1234,22 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 
 // Connect is called to establish the connection to XMPP.
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
-	nc.log.Info().Msg("MyNetworkClient Connect called")
-	nc.sendBridgeState(status.StateConnecting, "Connecting to XMPP server", 0)
-	nc.connectMu.Lock()
-	if nc.stopReconnect == nil {
-		nc.stopReconnect = make(chan struct{})
+	attempt, started := nc.tryStartConnect()
+	jid := nc.connectionJID()
+	if !started {
+		nc.log.Info().
+			Str("jid", jid).
+			Int("attempt", attempt).
+			Dur("retry_in", 0).
+			Msg("Skipping overlapping XMPP connection attempt")
+		return
 	}
-	nc.connectMu.Unlock()
+	nc.log.Info().
+		Str("jid", jid).
+		Int("attempt", attempt).
+		Dur("retry_in", 0).
+		Msg("Starting XMPP connection attempt")
+	nc.sendBridgeState(status.StateConnecting, "Connecting to XMPP server", 0)
 	if nc.mucRooms == nil {
 		nc.mucRooms = map[string]bool{}
 	}
@@ -1244,12 +1291,21 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	if nc.callSessions == nil {
 		nc.callSessions = map[string]*xmppCallSessionState{}
 	}
+	nc.connectMu.Lock()
 	nc.connected = false
 	nc.connectedCh = make(chan struct{})
+	nc.connectMu.Unlock()
 
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if !ok || meta == nil {
-		nc.log.Error().Msg("LoginMetadata is missing or invalid")
+		err := fmt.Errorf("LoginMetadata is missing or invalid")
+		nc.releaseConnect()
+		nc.log.Error().
+			Err(err).
+			Str("jid", jid).
+			Int("attempt", attempt).
+			Dur("retry_in", 0).
+			Msg("XMPP connection attempt failed")
 		return
 	}
 
@@ -1284,15 +1340,23 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.xmppRouter.HandleFunc("iq", nc.handleXMPPIq)
 
 	client, err := xmpp.NewClient(&config, nc.xmppRouter, func(err error) {
-		nc.log.Err(err).Msg("XMPP Error")
+		nc.log.Err(err).Str("jid", config.Jid).Int("attempt", attempt).Msg("XMPP error")
 	})
 	if err != nil {
-		nc.log.Err(err).Msg("Failed to create XMPP client")
+		nc.releaseConnect()
+		nc.log.Error().
+			Err(err).
+			Str("jid", config.Jid).
+			Int("attempt", attempt).
+			Dur("retry_in", 0).
+			Msg("XMPP connection attempt failed while creating client")
 		nc.sendBridgeState(status.StateUnknownError, fmt.Sprintf("Failed to create XMPP client: %v", err), 60)
 		return
 	}
 
+	nc.connectMu.Lock()
 	nc.xmppClient = client
+	nc.connectMu.Unlock()
 	client.SetHandler(func(event xmpp.Event) error {
 		if event.State.GetState() == xmpp.StateDisconnected {
 			nc.log.Warn().Msg("XMPP client reported disconnected state")
@@ -1300,19 +1364,32 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		}
 		return nil
 	})
-	nc.bridge.Log.Info().
+	nc.log.Info().
 		Str("jid", config.Jid).
+		Int("attempt", attempt).
+		Dur("retry_in", 0).
 		Bool("insecure", config.Insecure).
 		Bool("stream_logger", config.StreamLogger != nil).
-		Msg("Connecting to XMPP...")
+		Msg("XMPP connection attempt in progress")
 
 	client.PostConnectHook = func() error {
 		nc.postConnectMu.Lock()
 		defer nc.postConnectMu.Unlock()
-		nc.log.Info().Msg("XMPP connected, running post connect hook")
+		nc.connectMu.Lock()
+		connectAttempt := nc.reconnectAttempt
+		if connectAttempt == 0 {
+			connectAttempt = 1
+		}
+		nc.connectMu.Unlock()
+		nc.log.Info().
+			Str("jid", config.Jid).
+			Int("attempt", connectAttempt).
+			Dur("retry_in", 0).
+			Msg("XMPP connection succeeded, running post connect hook")
 		if client.Session == nil || client.Session.BindJid == "" {
 			return fmt.Errorf("XMPP session is not ready in post connect hook")
 		}
+		nc.connectMu.Lock()
 		if !nc.connected {
 			nc.connected = true
 			if nc.connectedCh != nil {
@@ -1320,7 +1397,6 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 				nc.connectedCh = nil
 			}
 		}
-		nc.connectMu.Lock()
 		nc.reconnectAttempt = 0
 		nc.connectMu.Unlock()
 		nc.sendBridgeState(status.StateConnected, "Connected to XMPP server", 0)
@@ -1405,10 +1481,21 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	client.PostResumeHook = func() error {
 		nc.postConnectMu.Lock()
 		defer nc.postConnectMu.Unlock()
-		nc.log.Info().Msg("XMPP stream resumed")
+		nc.connectMu.Lock()
+		connectAttempt := nc.reconnectAttempt
+		if connectAttempt == 0 {
+			connectAttempt = 1
+		}
+		nc.connectMu.Unlock()
+		nc.log.Info().
+			Str("jid", config.Jid).
+			Int("attempt", connectAttempt).
+			Dur("retry_in", 0).
+			Msg("XMPP stream resumed successfully")
 		if client.Session == nil || client.Session.BindJid == "" {
 			return fmt.Errorf("XMPP session is not ready after resume")
 		}
+		nc.connectMu.Lock()
 		if !nc.connected {
 			nc.connected = true
 			if nc.connectedCh != nil {
@@ -1416,9 +1503,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 				nc.connectedCh = nil
 			}
 		}
-		nc.connectMu.Lock()
 		nc.reconnectAttempt = 0
-		nc.connectStarted = false
 		nc.connectMu.Unlock()
 		nc.sendBridgeState(status.StateConnected, "Reconnected to XMPP server", 0)
 		nc.sessionEstablishedAt = time.Now().UTC()
@@ -1429,10 +1514,16 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 	err = client.Connect()
 	if err != nil {
-		nc.log.Err(err).Msg("Failed to establish XMPP connection")
+		nc.log.Error().
+			Err(err).
+			Str("jid", config.Jid).
+			Int("attempt", attempt).
+			Dur("retry_in", 0).
+			Msg("XMPP connection attempt failed")
 		nc.handleDisconnect(client, err)
 		return
 	}
+	nc.startRuntimeHealth(client)
 }
 
 func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, message string, ttl int) {
@@ -1451,49 +1542,61 @@ func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, m
 }
 
 func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
-	client := nc.xmppClient
+	client, connected, _ := nc.connectionSnapshot()
 	if client == nil {
 		return fmt.Errorf("XMPP client not connected")
 	}
 	if client.Session == nil {
 		return fmt.Errorf("XMPP session is not established")
 	}
-	if !nc.connected {
+	if !connected {
 		return fmt.Errorf("XMPP client is disconnecting")
 	}
 	return client.Send(packet)
 }
 
 func (nc *MyNetworkClient) isXMPPConnected() bool {
-	client := nc.xmppClient
-	return nc.connected && client != nil && client.Session != nil
+	client, connected, _ := nc.connectionSnapshot()
+	return connected && client != nil && client.Session != nil
+}
+
+func (nc *MyNetworkClient) connectionSnapshot() (client *xmpp.Client, connected bool, reconnectAttempt int) {
+	nc.connectMu.Lock()
+	client = nc.xmppClient
+	connected = nc.connected
+	reconnectAttempt = nc.reconnectAttempt
+	nc.connectMu.Unlock()
+	return client, connected, reconnectAttempt
 }
 
 func (nc *MyNetworkClient) ConnectionStatus() loginConnectionStatus {
-	client := nc.xmppClient
+	client, connected, reconnectAttempt := nc.connectionSnapshot()
 	status := loginConnectionStatus{
-		Connected:        nc.connected && client != nil && client.Session != nil,
-		ReconnectAttempt: nc.reconnectAttempt,
+		Connected:        connected && client != nil && client.Session != nil,
+		ReconnectAttempt: reconnectAttempt,
 	}
 	if client != nil && client.Session != nil {
 		status.SessionEstablished = true
 		status.BindJID = client.Session.BindJid
 	}
-	if !nc.sessionEstablishedAt.IsZero() {
-		status.Uptime = time.Since(nc.sessionEstablishedAt).Truncate(time.Second)
+	nc.postConnectMu.Lock()
+	sessionEstablishedAt := nc.sessionEstablishedAt
+	nc.postConnectMu.Unlock()
+	if !sessionEstablishedAt.IsZero() {
+		status.Uptime = time.Since(sessionEstablishedAt).Truncate(time.Second)
 	}
 	return status
 }
 
 func (nc *MyNetworkClient) PingXMPP(ctx context.Context) (time.Duration, error) {
-	client := nc.xmppClient
+	client, connected, _ := nc.connectionSnapshot()
 	if client == nil {
 		return 0, fmt.Errorf("XMPP client not connected")
 	}
 	if client.Session == nil {
 		return 0, fmt.Errorf("XMPP session is not established")
 	}
-	if !nc.connected {
+	if !connected {
 		return 0, fmt.Errorf("XMPP client is disconnecting")
 	}
 
@@ -1546,6 +1649,80 @@ func (nc *MyNetworkClient) PingXMPP(ctx context.Context) (time.Duration, error) 
 	}
 }
 
+func (nc *MyNetworkClient) RuntimeHealth(ctx context.Context) error {
+	jid := nc.connectionJID()
+	connectionStatus := nc.ConnectionStatus()
+	if !connectionStatus.Connected {
+		err := fmt.Errorf("XMPP connection is not established")
+		nc.log.Warn().
+			Err(err).
+			Str("jid", jid).
+			Int("attempt", connectionStatus.ReconnectAttempt).
+			Dur("retry_in", 0).
+			Msg("XMPP runtime health check failed")
+		return err
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rtt, err := nc.PingXMPP(checkCtx)
+	if err != nil {
+		nc.log.Warn().
+			Err(err).
+			Str("jid", jid).
+			Int("attempt", connectionStatus.ReconnectAttempt).
+			Dur("retry_in", 0).
+			Msg("XMPP runtime health check failed")
+		return fmt.Errorf("XMPP ping failed: %w", err)
+	}
+	nc.log.Debug().
+		Str("jid", jid).
+		Int("attempt", connectionStatus.ReconnectAttempt).
+		Dur("retry_in", 0).
+		Dur("rtt", rtt).
+		Msg("XMPP runtime health check succeeded")
+	return nil
+}
+
+func (nc *MyNetworkClient) startRuntimeHealth(client *xmpp.Client) {
+	go func() {
+		check := func() bool {
+			nc.connectMu.Lock()
+			current := nc.xmppClient == client && nc.connected
+			nc.connectMu.Unlock()
+			if !current {
+				return false
+			}
+
+			if err := nc.RuntimeHealth(context.Background()); err != nil {
+				nc.connectMu.Lock()
+				current = nc.xmppClient == client && nc.connected
+				nc.connectMu.Unlock()
+				if current {
+					nc.log.Error().Err(err).Msg("XMPP health check failed, forcing reconnect")
+					_ = client.Disconnect()
+				}
+				return false
+			}
+			return true
+		}
+
+		if !check() {
+			return
+		}
+		ticker := time.NewTicker(xmppHealthCheckInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if !check() {
+				return
+			}
+		}
+	}()
+}
+
 func serverDomainFromJID(jid string) string {
 	jid = strings.TrimSpace(jid)
 	if jid == "" {
@@ -1579,6 +1756,10 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr erro
 	attempt := nc.reconnectAttempt
 	nc.connectMu.Unlock()
 
+	nc.postConnectMu.Lock()
+	nc.sessionEstablishedAt = time.Time{}
+	nc.postConnectMu.Unlock()
+
 	select {
 	case <-stopReconnect:
 		nc.log.Info().Msg("XMPP reconnect loop stopped")
@@ -1588,14 +1769,26 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr erro
 
 	backoff := xmppReconnectBackoff(attempt)
 	nc.sendBridgeState(status.StateTransientDisconnect, fmt.Sprintf("Disconnected from XMPP server, retrying in %s", backoff.Round(time.Second)), int((backoff*2)/time.Second))
+	jid := nc.connectionJID()
 	resumeMode := "fresh reconnect"
 	if canResume {
 		resumeMode = "stream resume"
 	}
 	if connectErr != nil {
-		nc.log.Warn().Err(connectErr).Int("attempt", attempt).Dur("retry_in", backoff).Msg("XMPP connection lost, scheduling reconnect")
+		nc.log.Warn().
+			Err(connectErr).
+			Str("jid", jid).
+			Int("attempt", attempt).
+			Dur("retry_in", backoff).
+			Str("mode", resumeMode).
+			Msg("XMPP connection lost, scheduling reconnect")
 	} else {
-		nc.log.Warn().Int("attempt", attempt).Dur("retry_in", backoff).Str("mode", resumeMode).Msg("XMPP connection ended, scheduling reconnect")
+		nc.log.Warn().
+			Str("jid", jid).
+			Int("attempt", attempt).
+			Dur("retry_in", backoff).
+			Str("mode", resumeMode).
+			Msg("XMPP connection ended, scheduling reconnect")
 	}
 
 	timer := time.NewTimer(backoff)
@@ -1619,14 +1812,24 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr erro
 		nc.connectMu.Unlock()
 		return
 	}
-	nc.connectStarted = true
-	nc.connectMu.Unlock()
 
 	if canResume {
-		nc.log.Info().Msg("Resuming XMPP stream")
+		nc.connectStarted = true
+		nc.connectMu.Unlock()
+		nc.log.Info().
+			Str("jid", jid).
+			Int("attempt", attempt).
+			Dur("retry_in", 0).
+			Str("mode", "stream resume").
+			Msg("Launching XMPP reconnect")
 		go func(resumeClient *xmpp.Client) {
 			if err := resumeClient.Resume(); err != nil {
-				nc.log.Warn().Err(err).Msg("XMPP stream resume failed, falling back to fresh reconnect")
+				nc.log.Warn().
+					Err(err).
+					Str("jid", jid).
+					Int("attempt", attempt).
+					Dur("retry_in", 0).
+					Msg("XMPP stream resume failed, falling back to fresh reconnect")
 				nc.connectMu.Lock()
 				if nc.xmppClient == resumeClient {
 					nc.xmppClient = nil
@@ -1634,17 +1837,25 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr erro
 				nc.connectStarted = false
 				nc.connectMu.Unlock()
 				nc.handleDisconnect(nil, err)
+				return
 			}
+			nc.startRuntimeHealth(resumeClient)
 		}(client)
 		return
 	}
+	nc.connectMu.Unlock()
 
 	nc.connectMu.Lock()
 	if nc.xmppClient == client {
 		nc.xmppClient = nil
 	}
 	nc.connectMu.Unlock()
-	nc.log.Info().Msg("Reconnecting XMPP client")
+	nc.log.Info().
+		Str("jid", jid).
+		Int("attempt", attempt).
+		Dur("retry_in", 0).
+		Str("mode", "fresh reconnect").
+		Msg("Launching XMPP reconnect")
 	go nc.Connect(context.Background())
 }
 
@@ -2791,14 +3002,18 @@ func (nc *MyNetworkClient) finishTrackedFullSyncBackfill(tracked bool) {
 }
 
 func (nc *MyNetworkClient) WaitForConnected(ctx context.Context) bool {
+	nc.connectMu.Lock()
 	if nc.connected {
+		nc.connectMu.Unlock()
 		return true
 	}
-	if nc.connectedCh == nil {
+	connectedCh := nc.connectedCh
+	nc.connectMu.Unlock()
+	if connectedCh == nil {
 		return false
 	}
 	select {
-	case <-nc.connectedCh:
+	case <-connectedCh:
 		return true
 	case <-ctx.Done():
 		return false
@@ -2970,10 +3185,14 @@ func (nc *MyNetworkClient) Disconnect() {
 	}
 	nc.connectStarted = false
 	nc.reconnectAttempt = 0
-	nc.connectMu.Unlock()
 	nc.connected = false
-	if nc.xmppClient != nil {
-		nc.xmppClient.Disconnect()
+	client := nc.xmppClient
+	nc.connectMu.Unlock()
+	nc.postConnectMu.Lock()
+	nc.sessionEstablishedAt = time.Time{}
+	nc.postConnectMu.Unlock()
+	if client != nil {
+		client.Disconnect()
 	}
 	if nc.xmppLogFile != nil {
 		if err := nc.xmppLogFile.Close(); err != nil {
