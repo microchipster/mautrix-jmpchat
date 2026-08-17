@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 	"gosrc.io/xmpp"
+	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -36,7 +37,7 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeUserInput,
 		StepID:       LoginStepIDUsernamePassword,
-		Instructions: "Enter your XMPP JID (e.g., user@cheogram.com) and password.",
+		Instructions: "Enter your bare XMPP JID (e.g., user@cheogram.com) and password.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{
 				{
@@ -56,11 +57,14 @@ func (sl *SimpleLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 
 // SubmitUserInput implements bridgev2.LoginProcessUserInput.
 func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
-	username := input["username"]
+	username, err := normalizeLoginJID(input["username"])
+	if err != nil {
+		return nil, err
+	}
 	password := input["password"]
 
-	if username == "" {
-		return nil, fmt.Errorf("username cannot be empty")
+	if password == "" {
+		return nil, fmt.Errorf("password cannot be empty")
 	}
 
 	sl.Log.Info().Str("username", username).Msg("Received login credentials, testing XMPP connection")
@@ -138,6 +142,25 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 			UserLogin:   ul,
 		},
 	}, nil
+}
+
+func normalizeLoginJID(input string) (string, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", fmt.Errorf("username cannot be empty")
+	}
+
+	jid, err := stanza.NewJid(input)
+	if err != nil {
+		return "", fmt.Errorf("invalid XMPP JID: %w", err)
+	}
+	if jid.Node == "" {
+		return "", fmt.Errorf("XMPP login requires a bare user JID")
+	}
+	if jid.Resource != "" {
+		return "", fmt.Errorf("XMPP login requires a bare JID without resource")
+	}
+	return jid.Bare(), nil
 }
 
 // Cancel implements bridgev2.LoginProcessUserInput.

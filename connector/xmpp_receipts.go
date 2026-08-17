@@ -71,6 +71,33 @@ func (nc *MyNetworkClient) handleIncomingXMPPReceipt(msg stanza.Message, timesta
 	return true
 }
 
+func (nc *MyNetworkClient) respondToIncomingXMPPReceipt(msg stanza.Message, isFromMe, fromMAM bool) {
+	response, ok := buildIncomingXMPPReceiptResponse(msg, isFromMe, fromMAM)
+	if !ok {
+		return
+	}
+	if err := nc.sendXMPP(response); err != nil {
+		nc.log.Err(err).Str("to", msg.From).Str("id", msg.Id).Msg("Failed to acknowledge XMPP receipt request")
+	}
+}
+
+func buildIncomingXMPPReceiptResponse(msg stanza.Message, isFromMe, fromMAM bool) (stanza.Message, bool) {
+	if fromMAM || isFromMe || msg.Id == "" || msg.From == "" {
+		return stanza.Message{}, false
+	}
+	var request XMPPReceipt
+	if !msg.Get(&request) {
+		return stanza.Message{}, false
+	}
+	response := stanza.NewMessage(stanza.Attrs{
+		To:   msg.From,
+		Type: msg.Type,
+		Id:   uuid.NewString(),
+	})
+	response.Extensions = append(response.Extensions, &XMPPReceiptReceived{ID: msg.Id})
+	return response, true
+}
+
 var _ bridgev2.ReadReceiptHandlingNetworkAPI = (*MyNetworkClient)(nil)
 
 func (nc *MyNetworkClient) HandleMatrixReadReceipt(ctx context.Context, msg *bridgev2.MatrixReadReceipt) error {

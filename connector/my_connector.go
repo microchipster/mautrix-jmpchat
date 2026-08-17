@@ -130,7 +130,7 @@ func (c *MyConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		ID:          LoginFlowIDUsernamePassword,
 		Name:        "Username & Password",
-		Description: "Log in using a username and password (no actual validation).",
+		Description: "Log in using a bare XMPP JID and password; credentials are validated by connecting to the XMPP server.",
 	}}
 }
 

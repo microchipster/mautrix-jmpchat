@@ -71,6 +71,14 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 	if nc.bookmarkedRooms != nil {
 		nc.bookmarkedRooms[roomJID] = true
 	}
+	if err := nc.publishBookmark2(BookmarkConference{
+		JID:      roomJID,
+		Name:     name,
+		Autojoin: "true",
+		Nick:     nc.defaultMUCNick(),
+	}); err != nil {
+		nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to publish group chat bookmark")
+	}
 	return nil
 }
 

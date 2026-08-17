@@ -2,6 +2,7 @@ package connector
 
 import (
 	"encoding/xml"
+	"fmt"
 	"strings"
 
 	"gosrc.io/xmpp/stanza"
@@ -57,6 +58,40 @@ type BookmarkConference2 struct {
 	Autojoin string   `xml:"autojoin,attr,omitempty"`
 	Nick     string   `xml:"nick,omitempty"`
 	Password string   `xml:"password,omitempty"`
+}
+
+func (nc *MyNetworkClient) publishBookmark2(conf BookmarkConference) error {
+	service := nc.ownBareJID()
+	if service == "" {
+		return fmt.Errorf("own bare JID missing")
+	}
+	conf.JID = strings.TrimSpace(conf.JID)
+	if conf.JID == "" {
+		return fmt.Errorf("bookmark JID missing")
+	}
+	attrs := []xml.Attr{{Name: xml.Name{Local: "jid"}, Value: conf.JID}}
+	if conf.Name != "" {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "name"}, Value: conf.Name})
+	}
+	if conf.Autojoin != "" {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "autojoin"}, Value: conf.Autojoin})
+	}
+	if conf.Nick != "" {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "nick"}, Value: conf.Nick})
+	}
+	if conf.Password != "" {
+		attrs = append(attrs, xml.Attr{Name: xml.Name{Local: "password"}, Value: conf.Password})
+	}
+	iq, err := stanza.NewPublishItemRq(service, NSBookmarks2, conf.JID, stanza.Item{
+		Any: &stanza.Node{
+			XMLName: xml.Name{Space: NSBookmarks2, Local: "conference"},
+			Attrs:   attrs,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	return nc.sendXMPP(iq)
 }
 
 func (bc BookmarkConference) AutojoinEnabled() bool {

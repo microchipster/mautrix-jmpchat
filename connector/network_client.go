@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"sort"
 	"strings"
@@ -86,12 +85,11 @@ type MyNetworkClient struct {
 	login     *bridgev2.UserLogin
 	connector *MyConnector
 
-	xmppClient  *xmpp.Client
-	xmppRouter  *xmpp.Router
-	xmppLogFile *os.File
-
+	xmppClient                   *xmpp.Client
+	xmppRouter                   *xmpp.Router
 	httpUploadServiceJID         string
 	mucRooms                     map[string]bool
+	mucJoined                    map[string]bool
 	mucOccupants                 map[string]map[string]string
 	mucNick                      map[string]string
 	mucPasswords                 map[string]string
@@ -620,6 +618,9 @@ func (nc *MyNetworkClient) maybeStartPendingMUCBackfill(roomJID string) {
 		return
 	}
 	if nc.mucRooms == nil || !nc.mucRooms[roomJID] {
+		return
+	}
+	if nc.mucJoined == nil || !nc.mucJoined[roomJID] {
 		return
 	}
 	start, ok := nc.popMUCBackfill(roomJID)
@@ -1250,33 +1251,24 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Dur("retry_in", 0).
 		Msg("Starting XMPP connection attempt")
 	nc.sendBridgeState(status.StateConnecting, "Connecting to XMPP server", 0)
-	if nc.mucRooms == nil {
-		nc.mucRooms = map[string]bool{}
-	}
-	if nc.mucOccupants == nil {
-		nc.mucOccupants = map[string]map[string]string{}
-	}
-	if nc.mucNick == nil {
-		nc.mucNick = map[string]string{}
-	}
+	// These maps describe current XMPP session state. Rebuild them on every
+	// connection so stale joins and bookmark deduplication cannot suppress
+	// reconciliation after reconnect.
+	nc.mucRooms = map[string]bool{}
+	nc.mucJoined = map[string]bool{}
+	nc.mucOccupants = map[string]map[string]string{}
+	nc.mucNick = map[string]string{}
+	nc.mucPasswords = map[string]string{}
 	if nc.mucPendingCreate == nil {
 		nc.mucPendingCreate = map[string]pendingMUCCreation{}
 	}
-	if nc.mucBackfillPending == nil {
-		nc.mucBackfillPending = map[string]time.Time{}
-	}
+	nc.mucBackfillPending = map[string]time.Time{}
 	if nc.mucServices == nil {
 		nc.mucServices = map[string]bool{}
 	}
-	if nc.mucMAMDiscoRequested == nil {
-		nc.mucMAMDiscoRequested = map[string]bool{}
-	}
-	if nc.mucServiceDiscoRequested == nil {
-		nc.mucServiceDiscoRequested = map[string]bool{}
-	}
-	if nc.mucHistoryRequests == nil {
-		nc.mucHistoryRequests = map[string]stanza.History{}
-	}
+	nc.mucMAMDiscoRequested = map[string]bool{}
+	nc.mucServiceDiscoRequested = map[string]bool{}
+	nc.mucHistoryRequests = map[string]stanza.History{}
 	if nc.mamMUCUnsupportedNotified == nil {
 		nc.mamMUCUnsupportedNotified = map[string]bool{}
 	}
@@ -1285,9 +1277,9 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.rosterItems = map[string]bool{}
 		nc.rosterMu.Unlock()
 	}
-	if nc.bookmarkedRooms == nil {
-		nc.bookmarkedRooms = map[string]bool{}
-	}
+	// Rebuild bookmark deduplication state from this connection's server
+	// responses. Keeping it across reconnects would hide newly added bookmarks.
+	nc.bookmarkedRooms = map[string]bool{}
 	if nc.callSessions == nil {
 		nc.callSessions = map[string]*xmppCallSessionState{}
 	}
@@ -1316,22 +1308,6 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Insecure:               false,
 		StreamManagementEnable: true,
 		StreamManagementResume: true,
-	}
-
-	if nc.log.GetLevel() <= zerolog.DebugLevel {
-		if err := os.MkdirAll("logs", 0o755); err != nil {
-			nc.log.Err(err).Msg("Failed to create logs directory for XMPP traffic")
-		} else {
-			logFile, err := os.OpenFile("logs/xmpp-traffic.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-			if err != nil {
-				nc.log.Err(err).Msg("Failed to open XMPP traffic log file")
-			} else {
-				config.StreamLogger = logFile
-				nc.xmppLogFile = logFile
-				nc.log.Warn().Msg("XMPP traffic logging enabled (logs/xmpp-traffic.log)")
-			}
-		}
-
 	}
 
 	nc.xmppRouter = xmpp.NewRouter()
@@ -1369,7 +1345,6 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Int("attempt", attempt).
 		Dur("retry_in", 0).
 		Bool("insecure", config.Insecure).
-		Bool("stream_logger", config.StreamLogger != nil).
 		Msg("XMPP connection attempt in progress")
 
 	client.PostConnectHook = func() error {
@@ -1900,6 +1875,10 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 				return nil
 			}())
 			if pres.Type != stanza.PresenceTypeUnavailable && isSelfPresence {
+				if nc.mucJoined == nil {
+					nc.mucJoined = map[string]bool{}
+				}
+				nc.mucJoined[bareFrom] = true
 				nc.maybeStartPendingMUCBackfill(bareFrom)
 				if pending, ok := nc.popPendingMUCCreation(bareFrom); ok {
 					go func(roomJID string, pending pendingMUCCreation) {
@@ -1914,6 +1893,8 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 						}
 					}(bareFrom, pending)
 				}
+			} else if pres.Type == stanza.PresenceTypeUnavailable && isSelfPresence && nc.mucJoined != nil {
+				delete(nc.mucJoined, bareFrom)
 			}
 			if nc.mucOccupants == nil {
 				nc.mucOccupants = map[string]map[string]string{}
@@ -2354,14 +2335,14 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	var carbonSent XMPCarbonSent
 	if msg.Get(&carbonSent) && carbonSent.Forwarded != nil {
 		if forwarded, ok := carbonSent.Forwarded.Stanza.(stanza.Message); ok {
-			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", true, false)
+			nc.handleIncomingXMPPMessage(forwarded, xmppMessageTimestamp(forwarded, time.Now()), "", true, false)
 			return
 		}
 	}
 	var carbonReceived XMPCarbonReceived
 	if msg.Get(&carbonReceived) && carbonReceived.Forwarded != nil {
 		if forwarded, ok := carbonReceived.Forwarded.Stanza.(stanza.Message); ok {
-			nc.handleIncomingXMPPMessage(forwarded, time.Now(), "", false, false)
+			nc.handleIncomingXMPPMessage(forwarded, xmppMessageTimestamp(forwarded, time.Now()), "", false, false)
 			return
 		}
 	}
@@ -2457,6 +2438,29 @@ func isValidMAMForwardedJID(jid string) bool {
 	return err == nil
 }
 
+func xmppMessageTimestamp(msg stanza.Message, fallback time.Time) time.Time {
+	stamp := ""
+	var delay XMPPDelay
+	if msg.Get(&delay) {
+		stamp = delay.Stamp
+	} else {
+		var delayOld XMPPDelayOld
+		if msg.Get(&delayOld) {
+			stamp = delayOld.InnerXML
+		}
+	}
+	stamp = strings.TrimSpace(stamp)
+	if stamp == "" {
+		return fallback
+	}
+	for _, layout := range []string{time.RFC3339Nano, "20060102T15:04:05"} {
+		if parsed, err := time.Parse(layout, stamp); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
 func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timestamp time.Time, idOverride string, isFromMe bool, fromMAM bool) {
 	// XMPP JIDs look like user@domain.com/resource
 	fromJidStr := msg.From
@@ -2471,6 +2475,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		return
 	}
 	logJIDNormalization(nc.log, "incoming_from", bareFromJid)
+	nc.respondToIncomingXMPPReceipt(msg, isFromMe, fromMAM)
 
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
 	// Always treat multi-recipient numbers on Cheogram as MUCs even if typed as chat
@@ -3193,12 +3198,6 @@ func (nc *MyNetworkClient) Disconnect() {
 	nc.postConnectMu.Unlock()
 	if client != nil {
 		client.Disconnect()
-	}
-	if nc.xmppLogFile != nil {
-		if err := nc.xmppLogFile.Close(); err != nil {
-			nc.log.Err(err).Msg("Failed to close XMPP traffic log file")
-		}
-		nc.xmppLogFile = nil
 	}
 }
 
