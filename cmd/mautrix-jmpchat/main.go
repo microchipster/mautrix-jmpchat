@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
+	"strings"
+
+	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
+	"maunium.net/go/mautrix/event"
 
 	"jmpchat/connector"
 )
@@ -22,7 +27,63 @@ func main() {
 		URL:         "",
 		Connector:   connector,
 	}
+	m.PostInit = func() {
+		installDirectMessageCommandHandler(&m)
+	}
 
 	m.InitVersion(Tag, Commit, BuildTime)
 	m.Run()
+}
+
+func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
+	if main.Matrix == nil || main.Matrix.EventProcessor == nil || main.Bridge == nil {
+		return
+	}
+
+	// The bridge queue runs after this handler. AsyncHandlers would race the
+	// body rewrite, so keep per-event handler ordering when using async AS
+	// transactions.
+	if main.Matrix.EventProcessor.ExecMode == appservice.AsyncHandlers {
+		main.Matrix.EventProcessor.ExecMode = appservice.AsyncLoop
+	}
+
+	main.Matrix.EventProcessor.PrependHandler(event.EventMessage, func(ctx context.Context, evt *event.Event) {
+		if evt.Sender == "" || evt.RoomID == "" {
+			return
+		}
+
+		message := evt.Content.AsMessage()
+		if message == nil || !message.MsgType.IsText() || strings.TrimSpace(message.Body) == "" {
+			return
+		}
+		prefix := main.Bridge.Config.CommandPrefix
+		if prefix == "" || strings.HasPrefix(message.Body, prefix) {
+			return
+		}
+
+		user, err := main.Bridge.GetUserByMXID(ctx, evt.Sender)
+		if err != nil || user == nil {
+			return
+		}
+		portal, err := main.Bridge.GetPortalByMXID(ctx, evt.RoomID)
+		if err != nil || portal != nil {
+			return
+		}
+		members, err := main.Matrix.GetMembers(ctx, evt.RoomID)
+		if err != nil || len(members) != 2 {
+			return
+		}
+		if !isJoinedOrInvited(members[evt.Sender]) || !isJoinedOrInvited(members[main.Bridge.Bot.GetMXID()]) {
+			return
+		}
+
+		// A private two-member room with bridge bot is management room by
+		// definition. Prefixing lets normal bridgev2 command routing handle
+		// permissions, replies, and command errors.
+		message.Body = prefix + " " + message.Body
+	})
+}
+
+func isJoinedOrInvited(member *event.MemberEventContent) bool {
+	return member != nil && member.Membership.IsInviteOrJoin()
 }
