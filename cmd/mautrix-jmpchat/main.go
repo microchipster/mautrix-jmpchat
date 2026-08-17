@@ -47,8 +47,10 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 		main.Matrix.EventProcessor.ExecMode = appservice.AsyncLoop
 	}
 
+	gate := newRoomEncryptionGate()
+
 	main.Matrix.EventProcessor.PrependHandler(event.EventMessage, func(ctx context.Context, evt *event.Event) {
-		if evt.Sender == "" || evt.RoomID == "" {
+		if evt.Sender == "" || evt.RoomID == "" || evt.Sender == main.Bridge.Bot.GetMXID() {
 			return
 		}
 
@@ -56,6 +58,24 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 		if message == nil || !message.MsgType.IsText() || strings.TrimSpace(message.Body) == "" {
 			return
 		}
+
+		// The Matrix leg to the bot must be encrypted in every room. Verify or
+		// establish encryption before any command routing or bridging happens;
+		// a failure to prove encryption drops the message (fail closed).
+		establishedNow, err := gate.ensureBotRoomEncrypted(ctx, main, evt.RoomID)
+		if err != nil {
+			main.Matrix.Log.Error().Err(err).Str("room_id", string(evt.RoomID)).Msg("Blocked message because room encryption could not be verified")
+			return
+		}
+		if establishedNow {
+			main.Matrix.Log.Info().Str("room_id", string(evt.RoomID)).Msg("Enabled encryption in previously unencrypted room")
+			_, _ = main.Bridge.Bot.SendMessage(ctx, evt.RoomID, event.EventMessage, &event.Content{Parsed: &event.MessageEventContent{
+				MsgType: event.MsgNotice,
+				Body:    "This room is now encrypted with the bridge. Please send your message again.",
+			}}, nil)
+			return
+		}
+
 		prefix := main.Bridge.Config.CommandPrefix
 		if prefix == "" || strings.HasPrefix(message.Body, prefix) {
 			return
