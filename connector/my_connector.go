@@ -180,9 +180,8 @@ func (c *MyConnector) Start(ctx context.Context) error {
 }
 
 // Stop implements bridgev2.NetworkConnector.
-func (c *MyConnector) Stop(ctx context.Context) error {
+func (c *MyConnector) Stop() {
 	c.log.Info().Msg("MyConnector Stop called")
-	return nil
 }
 
 // LoadUserLogin implements bridgev2.NetworkConnector.
@@ -207,8 +206,6 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 		Str("remote_name", login.RemoteName).
 		Interface("client_type", client).
 		Msg("Created and stored MyNetworkClient")
-
-	go c.ensureSpaceRoomAndPopulate(login)
 
 	return nil
 }

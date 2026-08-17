@@ -132,6 +132,9 @@ func (sl *SimpleLogin) SubmitUserInput(ctx context.Context, input map[string]str
 	}
 
 	sl.Log.Info().Str("login_id", string(ul.ID)).Msg("Successfully 'logged in' and created user login")
+	// NewLogin persists the row only after LoadUserLogin returns. Do follow-up
+	// space work afterwards so it cannot update a login row before it exists.
+	go sl.Main.ensureSpaceRoomAndPopulate(ul)
 
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeComplete,

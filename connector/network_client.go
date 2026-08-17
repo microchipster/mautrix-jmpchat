@@ -126,6 +126,7 @@ type MyNetworkClient struct {
 	callSessions                 map[string]*xmppCallSessionState
 	connected                    bool
 	connectedCh                  chan struct{}
+	connectionChanged            chan struct{}
 	syncMu                       sync.Mutex
 	syncRunning                  bool
 	syncStatus                   string
@@ -137,6 +138,8 @@ type MyNetworkClient struct {
 	connectStarted               bool
 	stopReconnect                chan struct{}
 	reconnectAttempt             int
+	connectionGeneration         uint64
+	disconnectHandledFor         *xmpp.Client
 	postConnectMu                sync.Mutex
 	bridgeStateMu                sync.Mutex
 	lastBridgeState              status.BridgeStateEvent
@@ -167,7 +170,7 @@ func xmppReconnectBackoff(attempt int) time.Duration {
 	return backoff
 }
 
-func (nc *MyNetworkClient) tryStartConnect() (attempt int, started bool) {
+func (nc *MyNetworkClient) tryStartConnect() (attempt int, generation uint64, started bool) {
 	nc.connectMu.Lock()
 	defer nc.connectMu.Unlock()
 	if nc.connectStarted {
@@ -175,9 +178,10 @@ func (nc *MyNetworkClient) tryStartConnect() (attempt int, started bool) {
 		if attempt == 0 {
 			attempt = 1
 		}
-		return attempt, false
+		return attempt, nc.connectionGeneration, false
 	}
 	nc.connectStarted = true
+	nc.connectionGeneration++
 	if nc.stopReconnect == nil {
 		nc.stopReconnect = make(chan struct{})
 	}
@@ -185,13 +189,24 @@ func (nc *MyNetworkClient) tryStartConnect() (attempt int, started bool) {
 	if attempt == 0 {
 		attempt = 1
 	}
-	return attempt, true
+	return attempt, nc.connectionGeneration, true
 }
 
-func (nc *MyNetworkClient) releaseConnect() {
+func (nc *MyNetworkClient) releaseConnect(generation uint64) {
 	nc.connectMu.Lock()
-	nc.connectStarted = false
+	if nc.connectionGeneration == generation {
+		nc.connectStarted = false
+	}
 	nc.connectMu.Unlock()
+}
+
+// signalConnectionChangeLocked wakes waiters so they re-check the current
+// connection state instead of waiting on a channel from a previous session.
+func (nc *MyNetworkClient) signalConnectionChangeLocked() {
+	if nc.connectionChanged != nil {
+		close(nc.connectionChanged)
+	}
+	nc.connectionChanged = make(chan struct{})
 }
 
 func (nc *MyNetworkClient) connectionJID() string {
@@ -202,6 +217,10 @@ func (nc *MyNetworkClient) connectionJID() string {
 		return meta.RemoteUserID
 	}
 	return ""
+}
+
+func (nc *MyNetworkClient) isCurrentConnectionLocked(client *xmpp.Client, generation uint64) bool {
+	return nc.xmppClient == client && nc.connectionGeneration == generation && nc.stopReconnect != nil
 }
 
 func (nc *MyNetworkClient) defaultMUCNick() string {
@@ -662,7 +681,8 @@ func (nc *MyNetworkClient) maybeStartPendingMUCBackfill(roomJID string) {
 			} else {
 				nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to backfill MUC MAM history")
 				msg := fmt.Sprintf("MUC backfill failed for %s: %v", roomJID, err)
-				if nc.fullSyncRequested {
+				fullSyncRequested, _, _ := nc.fullSyncSnapshot()
+				if fullSyncRequested {
 					nc.reportSyncError(msg)
 				} else {
 					nc.recordSyncError(msg)
@@ -822,9 +842,10 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		}
 		if shouldJoin {
 			start := time.Time{}
-			if nc.fullSyncRequested {
-				if nc.fullSyncUseStart {
-					start = nc.fullSyncStart
+			fullSyncRequested, fullSyncUseStart, fullSyncStart := nc.fullSyncSnapshot()
+			if fullSyncRequested {
+				if fullSyncUseStart {
+					start = fullSyncStart
 				}
 			} else {
 				start = nc.historySyncStartForPortal(context.Background(), networkid.PortalKey{ID: portalID})
@@ -833,6 +854,15 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 			nc.joinMUC(roomJID, nick, conf.Password)
 		}
 	}
+}
+
+func (nc *MyNetworkClient) markFullSyncBookmarksDone() {
+	nc.syncMu.Lock()
+	if nc.fullSyncRequested {
+		nc.fullSyncBookmarksPending = false
+	}
+	nc.syncMu.Unlock()
+	nc.maybeClearFullSync()
 }
 
 func (nc *MyNetworkClient) popMUCHistoryRequest(roomJID string) (stanza.History, bool) {
@@ -1185,11 +1215,14 @@ func (nc *MyNetworkClient) ensureMAMSupportForMUC(roomJID string) bool {
 		return true
 	}
 	service := jidDomain(roomJID)
+	nc.syncMu.Lock()
+	fullSyncRequested := nc.fullSyncRequested
+	nc.syncMu.Unlock()
 	nc.mamSupportMu.Lock()
 	if nc.mamMUCUnsupportedNotified == nil {
 		nc.mamMUCUnsupportedNotified = map[string]bool{}
 	}
-	if !nc.fullSyncRequested {
+	if !fullSyncRequested {
 		if nc.mamMUCUnsupportedPendingSync == nil {
 			nc.mamMUCUnsupportedPendingSync = map[string]bool{}
 		}
@@ -1235,7 +1268,7 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 
 // Connect is called to establish the connection to XMPP.
 func (nc *MyNetworkClient) Connect(ctx context.Context) {
-	attempt, started := nc.tryStartConnect()
+	attempt, generation, started := nc.tryStartConnect()
 	jid := nc.connectionJID()
 	if !started {
 		nc.log.Info().
@@ -1251,6 +1284,16 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Dur("retry_in", 0).
 		Msg("Starting XMPP connection attempt")
 	nc.sendBridgeState(status.StateConnecting, "Connecting to XMPP server", 0)
+	nc.connectMu.Lock()
+	if nc.connectionGeneration != generation || nc.stopReconnect == nil {
+		nc.connectMu.Unlock()
+		nc.releaseConnect(generation)
+		return
+	}
+	nc.connected = false
+	nc.connectedCh = make(chan struct{})
+	nc.signalConnectionChangeLocked()
+	nc.connectMu.Unlock()
 	// These maps describe current XMPP session state. Rebuild them on every
 	// connection so stale joins and bookmark deduplication cannot suppress
 	// reconciliation after reconnect.
@@ -1283,15 +1326,10 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	if nc.callSessions == nil {
 		nc.callSessions = map[string]*xmppCallSessionState{}
 	}
-	nc.connectMu.Lock()
-	nc.connected = false
-	nc.connectedCh = make(chan struct{})
-	nc.connectMu.Unlock()
-
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if !ok || meta == nil {
 		err := fmt.Errorf("LoginMetadata is missing or invalid")
-		nc.releaseConnect()
+		nc.releaseConnect(generation)
 		nc.log.Error().
 			Err(err).
 			Str("jid", jid).
@@ -1319,7 +1357,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.log.Err(err).Str("jid", config.Jid).Int("attempt", attempt).Msg("XMPP error")
 	})
 	if err != nil {
-		nc.releaseConnect()
+		nc.releaseConnect(generation)
 		nc.log.Error().
 			Err(err).
 			Str("jid", config.Jid).
@@ -1331,12 +1369,18 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 
 	nc.connectMu.Lock()
+	if nc.connectionGeneration != generation || nc.stopReconnect == nil {
+		nc.connectMu.Unlock()
+		nc.releaseConnect(generation)
+		return
+	}
 	nc.xmppClient = client
+	nc.disconnectHandledFor = nil
 	nc.connectMu.Unlock()
 	client.SetHandler(func(event xmpp.Event) error {
 		if event.State.GetState() == xmpp.StateDisconnected {
 			nc.log.Warn().Msg("XMPP client reported disconnected state")
-			nc.handleDisconnect(client, nil)
+			nc.handleDisconnect(client, generation, nil)
 		}
 		return nil
 	})
@@ -1351,6 +1395,10 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.postConnectMu.Lock()
 		defer nc.postConnectMu.Unlock()
 		nc.connectMu.Lock()
+		if !nc.isCurrentConnectionLocked(client, generation) {
+			nc.connectMu.Unlock()
+			return fmt.Errorf("XMPP connection was superseded before post-connect setup")
+		}
 		connectAttempt := nc.reconnectAttempt
 		if connectAttempt == 0 {
 			connectAttempt = 1
@@ -1365,17 +1413,23 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			return fmt.Errorf("XMPP session is not ready in post connect hook")
 		}
 		nc.connectMu.Lock()
+		if !nc.isCurrentConnectionLocked(client, generation) {
+			nc.connectMu.Unlock()
+			return fmt.Errorf("XMPP connection was superseded during post-connect setup")
+		}
 		if !nc.connected {
 			nc.connected = true
 			if nc.connectedCh != nil {
 				close(nc.connectedCh)
 				nc.connectedCh = nil
 			}
+			nc.signalConnectionChangeLocked()
 		}
 		nc.reconnectAttempt = 0
+		nc.disconnectHandledFor = nil
 		nc.connectMu.Unlock()
-		nc.sendBridgeState(status.StateConnected, "Connected to XMPP server", 0)
 		nc.sessionEstablishedAt = time.Now().UTC()
+		nc.sendBridgeState(status.StateConnected, "Connected to XMPP server", 0)
 
 		// 1. Request Roster
 		iq, _ := stanza.NewIQ(stanza.Attrs{
@@ -1448,6 +1502,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			nc.log.Debug().Msg("Sent bookmarks request")
 		}
 		nc.triggerAutomaticDMCatchup()
+		nc.triggerAutomaticMUCCatchup()
 
 		// Initial Presence is sent automatically by the library
 
@@ -1457,6 +1512,10 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.postConnectMu.Lock()
 		defer nc.postConnectMu.Unlock()
 		nc.connectMu.Lock()
+		if !nc.isCurrentConnectionLocked(client, generation) {
+			nc.connectMu.Unlock()
+			return fmt.Errorf("XMPP connection was superseded before post-resume setup")
+		}
 		connectAttempt := nc.reconnectAttempt
 		if connectAttempt == 0 {
 			connectAttempt = 1
@@ -1471,17 +1530,23 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 			return fmt.Errorf("XMPP session is not ready after resume")
 		}
 		nc.connectMu.Lock()
+		if !nc.isCurrentConnectionLocked(client, generation) {
+			nc.connectMu.Unlock()
+			return fmt.Errorf("XMPP connection was superseded during post-resume setup")
+		}
 		if !nc.connected {
 			nc.connected = true
 			if nc.connectedCh != nil {
 				close(nc.connectedCh)
 				nc.connectedCh = nil
 			}
+			nc.signalConnectionChangeLocked()
 		}
 		nc.reconnectAttempt = 0
+		nc.disconnectHandledFor = nil
 		nc.connectMu.Unlock()
-		nc.sendBridgeState(status.StateConnected, "Reconnected to XMPP server", 0)
 		nc.sessionEstablishedAt = time.Now().UTC()
+		nc.sendBridgeState(status.StateConnected, "Reconnected to XMPP server", 0)
 		nc.triggerAutomaticDMCatchup()
 		nc.triggerAutomaticMUCCatchup()
 		return nil
@@ -1489,13 +1554,23 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 
 	err = client.Connect()
 	if err != nil {
+		if isXMPPAuthenticationError(err) {
+			nc.releaseConnect(generation)
+			nc.log.Error().
+				Err(err).
+				Str("jid", config.Jid).
+				Int("attempt", attempt).
+				Msg("XMPP authentication failed; reconnect will wait for new credentials")
+			nc.sendBridgeState(status.StateBadCredentials, "XMPP authentication failed", 0)
+			return
+		}
 		nc.log.Error().
 			Err(err).
 			Str("jid", config.Jid).
 			Int("attempt", attempt).
 			Dur("retry_in", 0).
 			Msg("XMPP connection attempt failed")
-		nc.handleDisconnect(client, err)
+		nc.handleDisconnect(client, generation, err)
 		return
 	}
 	nc.startRuntimeHealth(client)
@@ -1711,14 +1786,40 @@ func serverDomainFromJID(jid string) string {
 	return jid
 }
 
-func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr error) {
+func isXMPPAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"auth failure",
+		"authentication failure",
+		"no matching authentication",
+		"not-authorized",
+		"not authorized",
+		"invalid credentials",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, generation uint64, connectErr error) {
 	nc.connectMu.Lock()
-	if client != nil && nc.xmppClient != client {
+	if generation != nc.connectionGeneration || nc.stopReconnect == nil {
 		nc.connectMu.Unlock()
 		return
 	}
-	if nc.stopReconnect == nil {
-		nc.connectStarted = false
+	if client != nil {
+		if nc.xmppClient != client || nc.disconnectHandledFor == client {
+			nc.connectMu.Unlock()
+			return
+		}
+		nc.disconnectHandledFor = client
+	}
+	if client == nil && nc.xmppClient != nil {
 		nc.connectMu.Unlock()
 		return
 	}
@@ -1726,6 +1827,7 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr erro
 	canResume := client != nil && xmpp.IsStreamResumable(client) && client.Session != nil && client.Session.SMState.Id != ""
 	nc.connected = false
 	nc.connectedCh = make(chan struct{})
+	nc.signalConnectionChangeLocked()
 	nc.connectStarted = false
 	nc.reconnectAttempt++
 	attempt := nc.reconnectAttempt
@@ -1811,7 +1913,7 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, connectErr erro
 				}
 				nc.connectStarted = false
 				nc.connectMu.Unlock()
-				nc.handleDisconnect(nil, err)
+				nc.handleDisconnect(nil, generation, err)
 				return
 			}
 			nc.startRuntimeHealth(resumeClient)
@@ -2042,30 +2144,25 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 			nc.log.Debug().Msg("Received roster result without items")
 		case *BookmarkStorage:
 			nc.log.Info().Int("items", len(payload.Conferences)).Str("from", string(iq.From)).Msg("Received bookmarks")
+			nc.markFullSyncBookmarksDone()
 			if !nc.isXMPPConnected() {
 				nc.log.Debug().Msg("Skipping bookmark follow-up while XMPP is disconnected")
 				return
 			}
 			nc.handleBookmarkConferences(payload.Conferences, "storage")
-			if nc.fullSyncBookmarksPending {
-				nc.fullSyncBookmarksPending = false
-				nc.maybeClearFullSync()
-			}
 		case *PrivateBookmarkQuery:
 			if payload.Storage == nil {
 				nc.log.Info().Msg("Received empty bookmark storage")
+				nc.markFullSyncBookmarksDone()
 				return
 			}
 			nc.log.Info().Int("items", len(payload.Storage.Conferences)).Str("from", string(iq.From)).Msg("Received bookmarks")
+			nc.markFullSyncBookmarksDone()
 			if !nc.isXMPPConnected() {
 				nc.log.Debug().Msg("Skipping private bookmark follow-up while XMPP is disconnected")
 				return
 			}
 			nc.handleBookmarkConferences(payload.Storage.Conferences, "private")
-			if nc.fullSyncBookmarksPending {
-				nc.fullSyncBookmarksPending = false
-				nc.maybeClearFullSync()
-			}
 		case *stanza.PubSubGeneric:
 			if payload.Items == nil || payload.Items.Node != NSBookmarks2 {
 				return
@@ -2081,6 +2178,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 			}
 			if len(payload.Items.List) == 0 {
 				nc.log.Info().Msg("Received empty bookmarks2 list")
+				nc.markFullSyncBookmarksDone()
 				return
 			}
 			confs := make([]BookmarkConference, 0, len(payload.Items.List))
@@ -2135,6 +2233,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 			}
 			nc.log.Info().Int("items", len(confs)).Msg("Received bookmarks2 list")
+			nc.markFullSyncBookmarksDone()
 			if !nc.isXMPPConnected() {
 				nc.log.Debug().Msg("Skipping bookmarks2 follow-up while XMPP is disconnected")
 				return
@@ -2984,6 +3083,25 @@ func (nc *MyNetworkClient) maybeClearFullSync() {
 	nc.fullSyncRequested = false
 }
 
+func (nc *MyNetworkClient) clearFullSyncState() {
+	nc.syncMu.Lock()
+	nc.fullSyncRequested = false
+	nc.fullSyncRosterPending = false
+	nc.fullSyncBookmarksPending = false
+	nc.fullSyncAccountDiscoPending = false
+	nc.fullSyncBackfillsPending = 0
+	nc.fullSyncUseStart = false
+	nc.fullSyncStart = time.Time{}
+	nc.dmBackfillPending = nil
+	nc.syncMu.Unlock()
+}
+
+func (nc *MyNetworkClient) fullSyncSnapshot() (requested, useStart bool, start time.Time) {
+	nc.syncMu.Lock()
+	defer nc.syncMu.Unlock()
+	return nc.fullSyncRequested, nc.fullSyncUseStart, nc.fullSyncStart
+}
+
 func (nc *MyNetworkClient) trackFullSyncBackfill() bool {
 	nc.syncMu.Lock()
 	defer nc.syncMu.Unlock()
@@ -3007,21 +3125,24 @@ func (nc *MyNetworkClient) finishTrackedFullSyncBackfill(tracked bool) {
 }
 
 func (nc *MyNetworkClient) WaitForConnected(ctx context.Context) bool {
-	nc.connectMu.Lock()
-	if nc.connected {
+	for {
+		nc.connectMu.Lock()
+		if nc.connected {
+			nc.connectMu.Unlock()
+			return true
+		}
+		changed := nc.connectionChanged
 		nc.connectMu.Unlock()
-		return true
-	}
-	connectedCh := nc.connectedCh
-	nc.connectMu.Unlock()
-	if connectedCh == nil {
-		return false
-	}
-	select {
-	case <-connectedCh:
-		return true
-	case <-ctx.Done():
-		return false
+		if changed == nil {
+			return false
+		}
+		select {
+		case <-changed:
+			// A connection attempt, disconnect, or reconnect changed state.
+			// Reload the current channel instead of trusting a stale session.
+		case <-ctx.Done():
+			return false
+		}
 	}
 }
 
@@ -3104,6 +3225,7 @@ func (nc *MyNetworkClient) finishSync() {
 
 func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string)) {
 	defer nc.finishSync()
+	defer nc.clearFullSyncState()
 	update := func(msg string) {
 		nc.setSyncStatus(msg)
 		if notify != nil {
@@ -3127,10 +3249,12 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 	cancel()
 
 	update("Requesting roster and bookmarks")
+	nc.syncMu.Lock()
 	nc.fullSyncRequested = true
 	nc.fullSyncRosterPending = true
 	nc.fullSyncBookmarksPending = true
 	nc.fullSyncAccountDiscoPending = nc.ownBareJID() != ""
+	nc.syncMu.Unlock()
 	nc.requestOwnDiscoInfo()
 	if err := nc.requestRoster(); err != nil {
 		nc.setSyncError(err)
@@ -3154,7 +3278,10 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 	update("Backfill in progress (MAM)")
 	deadline := time.Now().Add(30 * time.Minute)
 	for time.Now().Before(deadline) {
-		if !nc.fullSyncRequested {
+		nc.syncMu.Lock()
+		fullSyncRequested := nc.fullSyncRequested
+		nc.syncMu.Unlock()
+		if !fullSyncRequested {
 			update("Sync complete")
 			nc.notifyManagement(nc.syncSummaryText("complete"))
 			go nc.connector.ensureSpaceRoomAndPopulate(nc.login)
@@ -3174,7 +3301,9 @@ func (nc *MyNetworkClient) runFullSync(ctx context.Context, notify func(string))
 		}
 	}
 
+	nc.syncMu.Lock()
 	nc.fullSyncRequested = false
+	nc.syncMu.Unlock()
 	update("Sync timed out (backfill may still be running)")
 	nc.notifyManagement(nc.syncSummaryText("timed out"))
 	go nc.connector.ensureSpaceRoomAndPopulate(nc.login)
@@ -3191,6 +3320,9 @@ func (nc *MyNetworkClient) Disconnect() {
 	nc.connectStarted = false
 	nc.reconnectAttempt = 0
 	nc.connected = false
+	nc.connectionGeneration++
+	nc.disconnectHandledFor = nil
+	nc.signalConnectionChangeLocked()
 	client := nc.xmppClient
 	nc.connectMu.Unlock()
 	nc.postConnectMu.Lock()

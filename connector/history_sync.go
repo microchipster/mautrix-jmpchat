@@ -73,7 +73,9 @@ func (nc *MyNetworkClient) historySyncStartForPortal(ctx context.Context, portal
 			return meta.LastSyncedAt.UTC().Add(-historySyncOverlap)
 		}
 	}
+	nc.postConnectMu.Lock()
 	maxTS := nc.sessionEstablishedAt
+	nc.postConnectMu.Unlock()
 	if maxTS.IsZero() {
 		maxTS = time.Now().UTC()
 	}
@@ -85,7 +87,9 @@ func (nc *MyNetworkClient) historySyncStartForPortal(ctx context.Context, portal
 }
 
 func (nc *MyNetworkClient) defaultAutomaticCatchupStart() time.Time {
+	nc.postConnectMu.Lock()
 	end := nc.sessionEstablishedAt
+	nc.postConnectMu.Unlock()
 	if end.IsZero() {
 		end = time.Now().UTC()
 	}

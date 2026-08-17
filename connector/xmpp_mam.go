@@ -213,8 +213,11 @@ func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, wit
 	if !start.IsZero() {
 		fields = append(fields, XDataField{Var: "start", Values: []string{formatMAMTimestamp(start)}})
 	}
-	if includeMAMEndBound(toJID, withJID) && !nc.sessionEstablishedAt.IsZero() {
-		fields = append(fields, XDataField{Var: "end", Values: []string{formatMAMTimestamp(nc.sessionEstablishedAt)}})
+	nc.postConnectMu.Lock()
+	sessionEstablishedAt := nc.sessionEstablishedAt
+	nc.postConnectMu.Unlock()
+	if includeMAMEndBound(toJID, withJID) && !sessionEstablishedAt.IsZero() {
+		fields = append(fields, XDataField{Var: "end", Values: []string{formatMAMTimestamp(sessionEstablishedAt)}})
 	}
 
 	set := &stanza.ResultSet{Max: &max}
