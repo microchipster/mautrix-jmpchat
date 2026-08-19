@@ -85,6 +85,9 @@ type MyNetworkClient struct {
 	login     *bridgev2.UserLogin
 	connector *MyConnector
 
+	manualNameMu sync.Mutex
+	manualNames  map[string]bool
+
 	xmppClient                   *xmpp.Client
 	xmppRouter                   *xmpp.Router
 	httpUploadServiceJID         string

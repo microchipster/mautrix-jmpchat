@@ -12,6 +12,7 @@ import (
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -291,15 +292,71 @@ func htmlToPlainText(input string) string {
 
 // GetUserInfo is not implemented for this simple connector.
 func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	name := UnescapeJID(string(ghost.ID))
-	if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil && meta.CustomName != "" {
-		name = meta.CustomName
-	} else if parts := strings.Split(name, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
-		name = parts[len(parts)-1]
+	if ghost.ID == "" {
+		return &bridgev2.UserInfo{}, nil
+	}
+	desired, customName := nc.desiredGhostName(ghost)
+	if nc.isManualName(ghost.ID) {
+		return &bridgev2.UserInfo{}, nil
+	}
+	if customName == "" && desired != ghost.Name && shouldSkipGhostNameUpdate(ghost.Name, desired, nc.liveGhostDisplayName(ctx, ghost)) {
+		nc.markManualName(ghost.ID)
+		return &bridgev2.UserInfo{}, nil
 	}
 	return &bridgev2.UserInfo{
-		Name: &name,
+		Name: &desired,
 	}, nil
+}
+
+// desiredGhostName returns the name the bridge wants to show for a ghost,
+// plus the custom name explicitly set via set-contact-name (empty when unset).
+func (nc *MyNetworkClient) desiredGhostName(ghost *bridgev2.Ghost) (desired, customName string) {
+	desired = UnescapeJID(string(ghost.ID))
+	if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil && meta.CustomName != "" {
+		customName = meta.CustomName
+		desired = customName
+	} else if parts := strings.Split(desired, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
+		desired = parts[len(parts)-1]
+	}
+	return
+}
+
+// liveGhostDisplayName reads the display name currently set on the ghost's
+// Matrix profile. It returns "" on any error or when no name is set.
+func (nc *MyNetworkClient) liveGhostDisplayName(ctx context.Context, ghost *bridgev2.Ghost) string {
+	mc, ok := ghost.Bridge.Matrix.(*matrix.Connector)
+	if !ok || mc == nil || mc.AS == nil {
+		return ""
+	}
+	profile, err := mc.AS.BotClient().GetProfile(ctx, ghost.Intent.GetMXID())
+	if err != nil {
+		return ""
+	}
+	return profile.DisplayName
+}
+
+func (nc *MyNetworkClient) markManualName(ghostID networkid.UserID) {
+	nc.manualNameMu.Lock()
+	defer nc.manualNameMu.Unlock()
+	if nc.manualNames == nil {
+		nc.manualNames = make(map[string]bool)
+	}
+	nc.manualNames[string(ghostID)] = true
+}
+
+func (nc *MyNetworkClient) isManualName(ghostID networkid.UserID) bool {
+	nc.manualNameMu.Lock()
+	defer nc.manualNameMu.Unlock()
+	return nc.manualNames[string(ghostID)]
+}
+
+// shouldSkipGhostNameUpdate reports whether the bridge must not write a name for a
+// ghost because a live Matrix profile name already exists that was not set by the bridge.
+func shouldSkipGhostNameUpdate(ghostName, desired, live string) bool {
+	if desired == ghostName {
+		return false
+	}
+	return live != "" && live != ghostName
 }
 
 // GetChatInfo is not implemented for this simple connector.

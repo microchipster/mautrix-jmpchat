@@ -810,6 +810,10 @@ var CommandSetContactName = &commands.FullHandler{
 		meta.CustomName = name
 		ghost.Metadata = meta
 		ghost.UpdateInfo(ce.Ctx, &bridgev2.UserInfo{Name: &name})
+		if err := ce.Bridge.DB.Ghost.Update(ce.Ctx, ghost.Ghost); err != nil {
+			ce.Reply("Failed to save display name for %s: %v", jid, err)
+			return
+		}
 		login := ce.User.GetDefaultLogin()
 		if login != nil {
 			suffix := defaultContactNameSuffix
