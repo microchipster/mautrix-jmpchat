@@ -1653,20 +1653,13 @@ func (nc *MyNetworkClient) PingXMPP(ctx context.Context) (time.Duration, error) 
 		return 0, fmt.Errorf("XMPP client is disconnecting")
 	}
 
-	target := serverDomainFromJID(client.Session.BindJid)
-	if target == "" {
-		target = serverDomainFromJID(nc.ownBareJID())
-	}
-	if target == "" {
-		return 0, fmt.Errorf("could not determine XMPP server domain")
-	}
-
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// Per XEP-0199 §3.1 and Cheogram PingManager parity, a server ping MUST NOT
+	// include a 'to' attribute if the client wishes to ping its own stream server.
 	iq, err := stanza.NewIQ(stanza.Attrs{
 		Type: stanza.IQTypeGet,
-		To:   target,
 		Id:   fmt.Sprintf("ping_%d", time.Now().UnixNano()),
 	})
 	if err != nil {
@@ -1686,17 +1679,13 @@ func (nc *MyNetworkClient) PingXMPP(ctx context.Context) (time.Duration, error) 
 		if !ok {
 			return elapsed, fmt.Errorf("XMPP ping result channel closed")
 		}
-		if resp.Type == stanza.IQTypeError {
-			detail := formatIQError(resp.Error)
-			if detail == "" {
-				detail = "unknown error"
-			}
-			return elapsed, fmt.Errorf("XMPP ping returned error: %s", detail)
+		// In XMPP (XEP-0199) and Cheogram parity, if the server responds with either
+		// IQTypeResult (pong) or IQTypeError (e.g. service-unavailable, feature-not-implemented),
+		// the stream connection to the server is confirmed alive and responsive.
+		if resp.Type == stanza.IQTypeResult || resp.Type == stanza.IQTypeError {
+			return elapsed, nil
 		}
-		if resp.Type != stanza.IQTypeResult {
-			return elapsed, fmt.Errorf("unexpected XMPP ping response type: %s", resp.Type)
-		}
-		return elapsed, nil
+		return elapsed, fmt.Errorf("unexpected XMPP ping response type: %s", resp.Type)
 	case <-ctx.Done():
 		return time.Since(startedAt), ctx.Err()
 	}
@@ -1742,6 +1731,7 @@ func (nc *MyNetworkClient) RuntimeHealth(ctx context.Context) error {
 
 func (nc *MyNetworkClient) startRuntimeHealth(client *xmpp.Client) {
 	go func() {
+		consecutiveFailures := 0
 		check := func() bool {
 			nc.connectMu.Lock()
 			current := nc.xmppClient == client && nc.connected
@@ -1751,21 +1741,30 @@ func (nc *MyNetworkClient) startRuntimeHealth(client *xmpp.Client) {
 			}
 
 			if err := nc.RuntimeHealth(context.Background()); err != nil {
-				nc.connectMu.Lock()
-				current = nc.xmppClient == client && nc.connected
-				nc.connectMu.Unlock()
-				if current {
-					nc.log.Error().Err(err).Msg("XMPP health check failed, forcing reconnect")
-					_ = client.Disconnect()
+				consecutiveFailures++
+				nc.log.Warn().
+					Err(err).
+					Int("consecutive_failures", consecutiveFailures).
+					Msg("XMPP runtime health check failed")
+				if consecutiveFailures >= 2 {
+					nc.connectMu.Lock()
+					current = nc.xmppClient == client && nc.connected
+					nc.connectMu.Unlock()
+					if current {
+						nc.log.Error().
+							Err(err).
+							Int("consecutive_failures", consecutiveFailures).
+							Msg("XMPP health check failed repeatedly, forcing reconnect")
+						_ = client.Disconnect()
+					}
+					return false
 				}
-				return false
+				return true
 			}
+			consecutiveFailures = 0
 			return true
 		}
 
-		if !check() {
-			return
-		}
 		ticker := time.NewTicker(xmppHealthCheckInterval)
 		defer ticker.Stop()
 		for range ticker.C {

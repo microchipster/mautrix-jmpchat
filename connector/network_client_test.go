@@ -95,3 +95,16 @@ func TestIsXMPPAuthenticationError(t *testing.T) {
 		})
 	}
 }
+
+func TestPingXMPPNotConnected(t *testing.T) {
+	client := &MyNetworkClient{}
+	_, err := client.PingXMPP(context.Background())
+	if err == nil {
+		t.Fatal("expected error from PingXMPP on unconnected client, got nil")
+	}
+
+	err = client.RuntimeHealth(context.Background())
+	if err == nil {
+		t.Fatal("expected error from RuntimeHealth on unconnected client, got nil")
+	}
+}
