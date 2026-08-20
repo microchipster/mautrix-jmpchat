@@ -159,3 +159,106 @@ func TestNormalizeJID(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePruneRoomsArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		args          []string
+		wantConfirm   bool
+		wantEmptyOnly bool
+		wantDays      int
+		wantErr       bool
+	}{
+		{args: []string{}, wantConfirm: false, wantEmptyOnly: false, wantDays: 30, wantErr: false},
+		{args: []string{"dry-run"}, wantConfirm: false, wantEmptyOnly: false, wantDays: 30, wantErr: false},
+		{args: []string{"--dry-run"}, wantConfirm: false, wantEmptyOnly: false, wantDays: 30, wantErr: false},
+		{args: []string{"dry-run", "60"}, wantConfirm: false, wantEmptyOnly: false, wantDays: 60, wantErr: false},
+		{args: []string{"14"}, wantConfirm: false, wantEmptyOnly: false, wantDays: 14, wantErr: false},
+		{args: []string{"confirm"}, wantConfirm: true, wantEmptyOnly: false, wantDays: 30, wantErr: false},
+		{args: []string{"yes"}, wantConfirm: true, wantEmptyOnly: false, wantDays: 30, wantErr: false},
+		{args: []string{"--yes"}, wantConfirm: true, wantEmptyOnly: false, wantDays: 30, wantErr: false},
+		{args: []string{"confirm", "7"}, wantConfirm: true, wantEmptyOnly: false, wantDays: 7, wantErr: false},
+		{args: []string{"yes", "90"}, wantConfirm: true, wantEmptyOnly: false, wantDays: 90, wantErr: false},
+		{args: []string{"empty"}, wantConfirm: false, wantEmptyOnly: true, wantDays: 30, wantErr: false},
+		{args: []string{"--empty"}, wantConfirm: false, wantEmptyOnly: true, wantDays: 30, wantErr: false},
+		{args: []string{"empty-only"}, wantConfirm: false, wantEmptyOnly: true, wantDays: 30, wantErr: false},
+		{args: []string{"empty", "confirm"}, wantConfirm: true, wantEmptyOnly: true, wantDays: 30, wantErr: false},
+		{args: []string{"confirm", "empty"}, wantConfirm: true, wantEmptyOnly: true, wantDays: 30, wantErr: false},
+		{args: []string{"0"}, wantConfirm: false, wantEmptyOnly: true, wantDays: 0, wantErr: false},
+		{args: []string{"confirm", "0"}, wantConfirm: true, wantEmptyOnly: true, wantDays: 0, wantErr: false},
+		{args: []string{"-5"}, wantErr: true},
+		{args: []string{"invalid_arg"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		confirm, emptyOnly, days, err := parsePruneRoomsArgs(tt.args)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parsePruneRoomsArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr {
+			if confirm != tt.wantConfirm {
+				t.Errorf("parsePruneRoomsArgs(%v) confirm = %v, want %v", tt.args, confirm, tt.wantConfirm)
+			}
+			if emptyOnly != tt.wantEmptyOnly {
+				t.Errorf("parsePruneRoomsArgs(%v) emptyOnly = %v, want %v", tt.args, emptyOnly, tt.wantEmptyOnly)
+			}
+			if days != tt.wantDays {
+				t.Errorf("parsePruneRoomsArgs(%v) days = %v, want %v", tt.args, days, tt.wantDays)
+			}
+		}
+	}
+}
+
+func TestParsePruneDuplicatesArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		args        []string
+		wantConfirm bool
+		wantErr     bool
+	}{
+		{args: []string{}, wantConfirm: false, wantErr: false},
+		{args: []string{"dry-run"}, wantConfirm: false, wantErr: false},
+		{args: []string{"--dry-run"}, wantConfirm: false, wantErr: false},
+		{args: []string{"confirm"}, wantConfirm: true, wantErr: false},
+		{args: []string{"yes"}, wantConfirm: true, wantErr: false},
+		{args: []string{"--yes"}, wantConfirm: true, wantErr: false},
+		{args: []string{"invalid"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		confirm, err := parsePruneDuplicatesArgs(tt.args)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parsePruneDuplicatesArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && confirm != tt.wantConfirm {
+			t.Errorf("parsePruneDuplicatesArgs(%v) confirm = %v, want %v", tt.args, confirm, tt.wantConfirm)
+		}
+	}
+}
+
+func TestFormatLastActivity(t *testing.T) {
+	t.Parallel()
+
+	if got := formatLastActivity(time.Time{}); got != "Never" {
+		t.Errorf("formatLastActivity(zero) = %q, want %q", got, "Never")
+	}
+
+	now := time.Now()
+	if got := formatLastActivity(now); !strings.HasPrefix(got, "Today") {
+		t.Errorf("formatLastActivity(now) = %q, want prefix 'Today'", got)
+	}
+
+	yesterday := now.Add(-25 * time.Hour)
+	if got := formatLastActivity(yesterday); !strings.HasPrefix(got, "Yesterday") {
+		t.Errorf("formatLastActivity(yesterday) = %q, want prefix 'Yesterday'", got)
+	}
+
+	old := now.Add(-40 * 24 * time.Hour)
+	if got := formatLastActivity(old); !strings.Contains(got, "40 days ago") {
+		t.Errorf("formatLastActivity(40d ago) = %q, want '40 days ago'", got)
+	}
+}

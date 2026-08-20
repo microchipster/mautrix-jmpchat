@@ -1464,6 +1464,404 @@ func validateGatewayAssignments(pending PendingGatewayForm, values map[string]st
 	return nil
 }
 
+func deleteSinglePortal(ce *commands.Event, portal *bridgev2.Portal) error {
+	if portal == nil {
+		return nil
+	}
+	userPortals, err := ce.Bridge.DB.UserPortal.GetAllInPortal(ce.Ctx, portal.PortalKey)
+	if err == nil {
+		for _, up := range userPortals {
+			_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
+		}
+	}
+	err = portal.Delete(ce.Ctx)
+	if err != nil {
+		return fmt.Errorf("failed to delete portal: %w", err)
+	}
+	if portal.MXID != "" {
+		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, portal.MXID, false)
+	}
+	return nil
+}
+
+type roomPruneStats struct {
+	portal       *bridgev2.Portal
+	targetJID    string
+	name         string
+	messageCount int
+	lastTS       time.Time
+	preview      string
+}
+
+func getRoomPruneStats(ce *commands.Event, portal *bridgev2.Portal) *roomPruneStats {
+	stats := &roomPruneStats{
+		portal:    portal,
+		targetJID: UnescapeJID(string(portal.ID)),
+		name:      portal.Name,
+	}
+	if stats.name == "" {
+		stats.name = stats.targetJID
+	}
+	_ = ce.Bridge.DB.Message.GetDB().QueryRow(ce.Ctx,
+		"SELECT COUNT(*) FROM message WHERE bridge_id=$1 AND room_id=$2 AND room_receiver=$3 AND mxid NOT LIKE '~fake:%'",
+		portal.BridgeID, portal.ID, portal.Receiver).Scan(&stats.messageCount)
+
+	lastMsg, err := ce.Bridge.DB.Message.GetLastNonFakePartAtOrBeforeTime(ce.Ctx, portal.PortalKey, time.Now())
+	if err == nil && lastMsg != nil {
+		stats.lastTS = lastMsg.Timestamp
+		if portal.MXID != "" && lastMsg.MXID != "" {
+			evt, err := ce.Bridge.Bot.GetEvent(ce.Ctx, portal.MXID, lastMsg.MXID)
+			if err == nil && evt != nil && evt.Content.AsMessage() != nil {
+				stats.preview = strings.TrimSpace(evt.Content.AsMessage().Body)
+				if len(stats.preview) > 50 {
+					stats.preview = stats.preview[:47] + "..."
+				}
+			}
+		}
+	}
+	return stats
+}
+
+func formatLastActivity(ts time.Time) string {
+	if ts.IsZero() {
+		return "Never"
+	}
+	days := int(time.Since(ts).Hours() / 24)
+	if days == 0 {
+		return fmt.Sprintf("Today (%s)", ts.UTC().Format("2006-01-02 15:04 UTC"))
+	} else if days == 1 {
+		return fmt.Sprintf("Yesterday (%s)", ts.UTC().Format("2006-01-02 15:04 UTC"))
+	}
+	return fmt.Sprintf("%d days ago (%s)", days, ts.UTC().Format("2006-01-02 15:04 UTC"))
+}
+
+func parsePruneRoomsArgs(args []string) (confirm bool, emptyOnly bool, days int, err error) {
+	days = 30
+	for _, arg := range args {
+		arg = strings.TrimSpace(strings.ToLower(arg))
+		if arg == "" {
+			continue
+		}
+		if arg == "confirm" || arg == "yes" || arg == "--yes" {
+			confirm = true
+		} else if arg == "dry-run" || arg == "--dry-run" {
+			confirm = false
+		} else if arg == "empty" || arg == "--empty" || arg == "empty-only" || arg == "--empty-only" || arg == "-e" {
+			emptyOnly = true
+		} else if d, parseErr := strconv.Atoi(arg); parseErr == nil {
+			if d < 0 {
+				return false, false, 0, fmt.Errorf("days threshold must be greater than or equal to 0, got %d", d)
+			}
+			days = d
+			if days == 0 {
+				emptyOnly = true
+			}
+		} else {
+			return false, false, 0, fmt.Errorf("unknown argument %q (usage: prune-rooms [empty] [dry-run|confirm] [days])", arg)
+		}
+	}
+	return confirm, emptyOnly, days, nil
+}
+
+func parsePruneDuplicatesArgs(args []string) (confirm bool, err error) {
+	for _, arg := range args {
+		arg = strings.TrimSpace(strings.ToLower(arg))
+		if arg == "" {
+			continue
+		}
+		if arg == "confirm" || arg == "yes" || arg == "--yes" {
+			confirm = true
+		} else if arg == "dry-run" || arg == "--dry-run" {
+			confirm = false
+		} else {
+			return false, fmt.Errorf("unknown argument %q (usage: prune-duplicates [dry-run|confirm])", arg)
+		}
+	}
+	return confirm, nil
+}
+
+var CommandPruneRooms = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		confirm, emptyOnly, days, err := parsePruneRoomsArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+
+		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+		var staleStats []*roomPruneStats
+
+		for _, up := range userPortals {
+			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+			if err != nil || portal == nil {
+				continue
+			}
+			stats := getRoomPruneStats(ce, portal)
+			if emptyOnly {
+				if stats.messageCount == 0 {
+					staleStats = append(staleStats, stats)
+				}
+			} else {
+				if stats.messageCount == 0 || (!stats.lastTS.IsZero() && stats.lastTS.Before(cutoff)) {
+					staleStats = append(staleStats, stats)
+				}
+			}
+		}
+
+		if len(staleStats) == 0 {
+			if emptyOnly {
+				ce.Reply("No creation-only empty rooms found. All %d bridged room(s) have message activity.", len(userPortals))
+			} else {
+				ce.Reply("No stale rooms found (threshold: %d days). All %d bridged room(s) have recent activity.", days, len(userPortals))
+			}
+			return
+		}
+
+		if !confirm {
+			var sb strings.Builder
+			if emptyOnly {
+				sb.WriteString(fmt.Sprintf("Found %d creation-only room(s) with no message activity:\n", len(staleStats)))
+			} else {
+				sb.WriteString(fmt.Sprintf("Found %d stale room(s) (threshold: %d days):\n", len(staleStats), days))
+			}
+			for _, s := range staleStats {
+				preview := s.preview
+				if preview == "" {
+					if s.messageCount == 0 {
+						preview = "(creation only, no messages)"
+					} else {
+						preview = "(no preview)"
+					}
+				}
+				statusTag := "Inactive"
+				if s.messageCount == 0 {
+					statusTag = "Creation only"
+				}
+				sb.WriteString(fmt.Sprintf("- **%s** [%s] (Name: %q, Room: `%s`)\n", s.targetJID, statusTag, s.name, s.portal.MXID))
+				sb.WriteString(fmt.Sprintf("  - Messages: %d | Last active: %s | Last message: %q\n", s.messageCount, formatLastActivity(s.lastTS), preview))
+			}
+			if emptyOnly {
+				sb.WriteString("\nTo permanently delete these empty creation-only rooms, run:\n`prune-rooms empty confirm`")
+			} else {
+				sb.WriteString(fmt.Sprintf("\nTo permanently delete these stale rooms, run:\n`prune-rooms confirm %d`\n(Or run `prune-rooms empty confirm` to only delete rooms with 0 messages)", days))
+			}
+			ce.Reply("%s", sb.String())
+			return
+		}
+
+		var deletedCount int
+		var errs []string
+		for _, s := range staleStats {
+			if err := deleteSinglePortal(ce, s.portal); err != nil {
+				errs = append(errs, fmt.Sprintf("%s (%s): %v", s.name, s.portal.MXID, err))
+			} else {
+				deletedCount++
+			}
+		}
+
+		targetDesc := fmt.Sprintf("stale room(s) (older than %d days)", days)
+		if emptyOnly {
+			targetDesc = "creation-only room(s) with no message activity"
+		}
+
+		if len(errs) > 0 {
+			ce.Reply("Pruned %d %s, with %d error(s):\n- %s",
+				deletedCount, targetDesc, len(errs), strings.Join(errs, "\n- "))
+		} else {
+			ce.Reply("Successfully pruned %d %s.", deletedCount, targetDesc)
+		}
+	},
+	Name: "prune-rooms",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "List or delete stale bridged rooms or empty creation-only rooms (usage: prune-rooms [empty] [dry-run|confirm] [days])",
+		Args:        "[empty] [dry-run|confirm] [days]",
+	},
+	RequiresLogin: true,
+}
+
+var CommandPruneDuplicates = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		confirm, err := parsePruneDuplicatesArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+
+		grouped := make(map[string][]*roomPruneStats)
+		for _, up := range userPortals {
+			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+			if err != nil || portal == nil {
+				continue
+			}
+			stats := getRoomPruneStats(ce, portal)
+			key := strings.ToLower(stats.targetJID)
+			grouped[key] = append(grouped[key], stats)
+		}
+
+		type duplicateGroup struct {
+			targetJID  string
+			primary    *roomPruneStats
+			duplicates []*roomPruneStats
+		}
+		var dupGroups []duplicateGroup
+		var totalDuplicates int
+
+		for jid, statsList := range grouped {
+			if len(statsList) <= 1 {
+				continue
+			}
+			sort.Slice(statsList, func(i, j int) bool {
+				if statsList[i].messageCount != statsList[j].messageCount {
+					return statsList[i].messageCount > statsList[j].messageCount
+				}
+				if !statsList[i].lastTS.Equal(statsList[j].lastTS) {
+					return statsList[i].lastTS.After(statsList[j].lastTS)
+				}
+				return string(statsList[i].portal.MXID) < string(statsList[j].portal.MXID)
+			})
+
+			primary := statsList[0]
+			duplicates := statsList[1:]
+			totalDuplicates += len(duplicates)
+			dupGroups = append(dupGroups, duplicateGroup{
+				targetJID:  jid,
+				primary:    primary,
+				duplicates: duplicates,
+			})
+		}
+
+		if totalDuplicates == 0 {
+			ce.Reply("No duplicate rooms found. Each bridged contact has a single room.")
+			return
+		}
+
+		sort.Slice(dupGroups, func(i, j int) bool {
+			return dupGroups[i].targetJID < dupGroups[j].targetJID
+		})
+
+		if !confirm {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Found %d duplicate room(s) across %d contact(s):\n", totalDuplicates, len(dupGroups)))
+			for _, g := range dupGroups {
+				sb.WriteString(fmt.Sprintf("- Contact: **%s**\n", g.targetJID))
+				sb.WriteString(fmt.Sprintf("  - **KEEP** (Active): `%s` (Name: %q, %d msgs, Last active: %s)\n",
+					g.primary.portal.MXID, g.primary.name, g.primary.messageCount, formatLastActivity(g.primary.lastTS)))
+				for _, d := range g.duplicates {
+					sb.WriteString(fmt.Sprintf("  - **DELETE** (Duplicate): `%s` (Name: %q, %d msgs, Last active: %s)\n",
+						d.portal.MXID, d.name, d.messageCount, formatLastActivity(d.lastTS)))
+				}
+			}
+			sb.WriteString("\nTo permanently delete these duplicate rooms and keep the active ones, run:\n`prune-duplicates confirm`")
+			ce.Reply("%s", sb.String())
+			return
+		}
+
+		var deletedCount int
+		var errs []string
+		for _, g := range dupGroups {
+			for _, d := range g.duplicates {
+				if err := deleteSinglePortal(ce, d.portal); err != nil {
+					errs = append(errs, fmt.Sprintf("%s (%s): %v", d.name, d.portal.MXID, err))
+				} else {
+					deletedCount++
+				}
+			}
+		}
+
+		if len(errs) > 0 {
+			ce.Reply("Pruned %d duplicate room(s) across %d contact(s), with %d error(s):\n- %s",
+				deletedCount, len(dupGroups), len(errs), strings.Join(errs, "\n- "))
+		} else {
+			ce.Reply("Successfully pruned %d duplicate room(s) across %d contact(s). Kept the most active room for each contact.",
+				deletedCount, len(dupGroups))
+		}
+	},
+	Name: "prune-duplicates",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Find and delete duplicate rooms for the same contact, keeping the active room (usage: prune-duplicates [dry-run|confirm])",
+		Args:        "[dry-run|confirm]",
+	},
+	RequiresLogin: true,
+}
+
+var CommandDeleteRoom = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		if len(ce.Args) == 0 {
+			ce.Reply("Usage: delete-room <room_id | jid | phone_number>")
+			return
+		}
+		target := strings.TrimSpace(ce.Args[0])
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		var portal *bridgev2.Portal
+		var err error
+		if strings.HasPrefix(target, "!") {
+			portal, err = ce.Bridge.GetPortalByMXID(ce.Ctx, id.RoomID(target))
+		} else {
+			targetJID := normalizeJID(target)
+			portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
+			portal, err = ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
+			if portal == nil {
+				rawKey := networkid.PortalKey{ID: MakePortalID(target)}
+				portal, _ = ce.Bridge.GetExistingPortalByKey(ce.Ctx, rawKey)
+			}
+		}
+
+		if err != nil || portal == nil {
+			ce.Reply("Portal room not found for %q. Provide a valid Matrix room ID (!...) or contact phone/JID.", target)
+			return
+		}
+
+		portalName := portal.Name
+		if portalName == "" {
+			portalName = UnescapeJID(string(portal.ID))
+		}
+		portalMXID := portal.MXID
+		targetJID := UnescapeJID(string(portal.ID))
+
+		if err := deleteSinglePortal(ce, portal); err != nil {
+			ce.Reply("Failed to delete room %s (%s): %v", portalName, portalMXID, err)
+			return
+		}
+		ce.Reply("Successfully deleted room %q (Target: %s, MXID: %s).", portalName, targetJID, portalMXID)
+	},
+	Name: "delete-room",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Permanently delete a single bridged room by Matrix room ID or JID/phone",
+		Args:        "<room_id | jid>",
+	},
+	RequiresLogin: true,
+}
+
 func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {
 	userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
 	if err != nil {
