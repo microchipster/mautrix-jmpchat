@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"maunium.net/go/mautrix/appservice"
@@ -65,6 +66,10 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 		establishedNow, err := gate.ensureBotRoomEncrypted(ctx, main, evt.RoomID)
 		if err != nil {
 			main.Matrix.Log.Error().Err(err).Str("room_id", string(evt.RoomID)).Msg("Blocked message because room encryption could not be verified")
+			_, _ = main.Bridge.Bot.SendMessage(ctx, evt.RoomID, event.EventMessage, &event.Content{Parsed: &event.MessageEventContent{
+				MsgType: event.MsgNotice,
+				Body:    fmt.Sprintf("Cannot process message: room encryption could not be verified (%v).", err),
+			}}, nil)
 			return
 		}
 		if establishedNow {

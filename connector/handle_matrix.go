@@ -47,8 +47,19 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		Msg("HandleMatrixMessage called for outbound message")
 
 	if !nc.isXMPPConnected() {
-		log.Warn().Msg("Cannot send Matrix message: XMPP client not connected")
-		return nil, fmt.Errorf("XMPP client not connected")
+		log.Info().Msg("XMPP client not currently connected; waiting for connection before sending message...")
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if !nc.WaitForConnected(waitCtx) {
+			errMsg := fmt.Sprintf("Failed to send message to %s: XMPP client is not connected", jid)
+			log.Warn().Msg(errMsg)
+			nc.notifyManagement(errMsg)
+			if msg.Portal != nil && msg.Portal.MXID != "" && nc.bridge != nil && nc.bridge.Bot != nil {
+				sendNotice(nc.bridge.Bot, msg.Portal.MXID, errMsg)
+			}
+			return nil, bridgev2.WrapErrorInStatus(fmt.Errorf("%s", errMsg)).WithSendNotice(true)
+		}
+		log.Info().Msg("XMPP connection established, proceeding with message dispatch")
 	}
 
 	isMUC := portalUsesGroupChat(msg.Portal)
@@ -125,11 +136,16 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	err := nc.sendXMPP(m)
 	if err != nil {
+		errMsg := fmt.Sprintf("Failed to send XMPP message to %s: %v", jid, err)
 		log.Err(err).
 			Str("to", jid).
 			Str("stanza_id", m.Id).
 			Msg("Failed to send XMPP message to stream")
-		return nil, fmt.Errorf("failed to send XMPP message: %w", err)
+		nc.notifyManagement(errMsg)
+		if msg.Portal != nil && msg.Portal.MXID != "" && nc.bridge != nil && nc.bridge.Bot != nil {
+			sendNotice(nc.bridge.Bot, msg.Portal.MXID, errMsg)
+		}
+		return nil, bridgev2.WrapErrorInStatus(fmt.Errorf("failed to send XMPP message: %w", err)).WithSendNotice(true)
 	}
 
 	if !isMUC {

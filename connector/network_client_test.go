@@ -10,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -170,5 +174,46 @@ func TestScanPendingSendTimeouts(t *testing.T) {
 	}
 	if !stillFresh {
 		t.Fatal("fresh outbound send was incorrectly removed by timeout scan")
+	}
+}
+
+func TestNotifyManagementSafeWhenUnconfigured(t *testing.T) {
+	nc := &MyNetworkClient{}
+	// Should not panic or crash when login or management room is missing
+	nc.notifyManagement("test message")
+
+	nc.login = &bridgev2.UserLogin{User: &bridgev2.User{}}
+	nc.notifyManagement("test message with empty room")
+}
+
+func TestHandleMatrixMessageFailsWhenUnconnected(t *testing.T) {
+	nc := &MyNetworkClient{}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	portal := &bridgev2.Portal{
+		Portal: &database.Portal{
+			PortalKey: networkid.PortalKey{
+				ID: networkid.PortalID("+15551234567@cheogram.com"),
+			},
+		},
+	}
+	msg := &bridgev2.MatrixMessage{
+		MatrixEventBase: bridgev2.MatrixEventBase[*event.MessageEventContent]{
+			Portal: portal,
+			Event: &event.Event{
+				ID:     "$test-event",
+				Sender: "@user:example.com",
+			},
+			Content: &event.MessageEventContent{
+				MsgType: event.MsgText,
+				Body:    "hello world",
+			},
+		},
+	}
+
+	_, err := nc.HandleMatrixMessage(ctx, msg)
+	if err == nil {
+		t.Fatal("expected error when handling Matrix message while disconnected")
 	}
 }

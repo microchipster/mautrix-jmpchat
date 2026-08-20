@@ -976,7 +976,7 @@ func (nc *MyNetworkClient) recordSyncError(msg string) {
 }
 
 func (nc *MyNetworkClient) notifyManagement(msg string) {
-	if nc.login == nil || nc.login.User == nil {
+	if nc.login == nil || nc.login.User == nil || nc.bridge == nil || nc.bridge.Bot == nil {
 		return
 	}
 	roomID := nc.login.User.ManagementRoom
@@ -1751,10 +1751,11 @@ func (nc *MyNetworkClient) scanPendingSendTimeouts() {
 			Str("matrix_event_id", p.matrixEventID).
 			Dur("timeout", timeout).
 			Msg("Sent XMPP message was never acknowledged; it may not have been delivered")
+		notice := fmt.Sprintf("I sent your message to %s, but no delivery confirmation arrived within %s. It may not have been delivered.", p.targetJID, timeout.Round(time.Second))
 		if p.portalRoomID != "" && nc.bridge != nil && nc.bridge.Bot != nil {
-			sendNotice(nc.bridge.Bot, p.portalRoomID,
-				fmt.Sprintf("I sent your message to %s, but no delivery confirmation arrived within %s. It may not have been delivered.", p.targetJID, timeout.Round(time.Second)))
+			sendNotice(nc.bridge.Bot, p.portalRoomID, notice)
 		}
+		nc.notifyManagement(notice)
 	}
 }
 

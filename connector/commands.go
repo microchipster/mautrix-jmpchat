@@ -1092,6 +1092,7 @@ func notifyWhenPortalReady(ce *commands.Event, login *bridgev2.UserLogin, jid, k
 		}
 		select {
 		case <-ctx.Done():
+			ce.Reply("Creating %s for %s timed out. If the room was not created, please try again or check logs.", kind, jid)
 			return
 		case <-ticker.C:
 		}
