@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -215,5 +216,35 @@ func TestHandleMatrixMessageFailsWhenUnconnected(t *testing.T) {
 	_, err := nc.HandleMatrixMessage(ctx, msg)
 	if err == nil {
 		t.Fatal("expected error when handling Matrix message while disconnected")
+	}
+}
+
+func TestResolveOutboundError(t *testing.T) {
+	nc := &MyNetworkClient{}
+	nc.trackOutboundSend("err-stanza-1", "+15550001111@cheogram.com", id.RoomID("!room:example.com"), "evt-err-1")
+
+	errPayload := stanza.Err{
+		Type:   stanza.ErrorTypeCancel,
+		Code:   503,
+		Reason: "service-unavailable",
+		Text:   "Destination carrier rejected SMS",
+	}
+
+	if !nc.resolveOutboundError("err-stanza-1", "+15550001111@cheogram.com", errPayload) {
+		t.Fatal("expected outbound error to resolve by stanza ID")
+	}
+
+	// Should be removed from pendingSends
+	nc.pendingSendsMu.Lock()
+	_, exists := nc.pendingSends["err-stanza-1"]
+	nc.pendingSendsMu.Unlock()
+	if exists {
+		t.Fatal("pending send should be removed after resolving error")
+	}
+
+	// Test fallback resolution by matching target JID when stanza ID differs or is missing
+	nc.trackOutboundSend("err-stanza-2", "+15550002222@cheogram.com", id.RoomID("!room:example.com"), "evt-err-2")
+	if !nc.resolveOutboundError("unknown-id", "+15550002222@cheogram.com", errPayload) {
+		t.Fatal("expected outbound error to resolve by target JID fallback")
 	}
 }

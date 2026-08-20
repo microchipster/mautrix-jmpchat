@@ -1725,6 +1725,58 @@ func (nc *MyNetworkClient) resolveOutboundAck(stanzaID, ackKind, fromJID string)
 	return true
 }
 
+func (nc *MyNetworkClient) resolveOutboundError(stanzaID, fromJID string, errMsg stanza.Err) bool {
+	nc.pendingSendsMu.Lock()
+	pending, ok := nc.pendingSends[stanzaID]
+	if !ok {
+		for id, p := range nc.pendingSends {
+			if p.matrixEventID == stanzaID || (fromJID != "" && (p.targetJID == fromJID || strings.HasPrefix(p.targetJID, fromJID))) {
+				pending = p
+				stanzaID = id
+				ok = true
+				break
+			}
+		}
+	}
+	if ok {
+		delete(nc.pendingSends, stanzaID)
+	}
+	nc.pendingSendsMu.Unlock()
+	if !ok || pending == nil {
+		return false
+	}
+
+	errDetail := errMsg.Reason
+	if errMsg.Text != "" {
+		if errDetail != "" {
+			errDetail += ": " + errMsg.Text
+		} else {
+			errDetail = errMsg.Text
+		}
+	}
+	if errDetail == "" {
+		errDetail = string(errMsg.Type)
+	}
+	if errDetail == "" {
+		errDetail = "XMPP delivery rejected by server"
+	}
+
+	nc.log.Error().
+		Str("stanza_id", stanzaID).
+		Str("from", fromJID).
+		Str("to", pending.targetJID).
+		Str("matrix_event_id", pending.matrixEventID).
+		Str("error_detail", errDetail).
+		Msg("XMPP message delivery failed with server/peer error")
+
+	notice := fmt.Sprintf("Failed to send message to %s: %s", pending.targetJID, errDetail)
+	if pending.portalRoomID != "" && nc.bridge != nil && nc.bridge.Bot != nil {
+		sendNotice(nc.bridge.Bot, pending.portalRoomID, notice)
+	}
+	nc.notifyManagement(notice)
+	return true
+}
+
 // scanPendingSendTimeouts removes tracked outbound messages that have not been
 // acknowledged within xmppPendingSendAckTimeout and notifies the user so a
 // silently dropped message is not mistaken for a successful send.
@@ -2755,13 +2807,50 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		return
 	}
 	logJIDNormalization(nc.log, "incoming_from", bareFromJid)
-	nc.respondToIncomingXMPPReceipt(msg, isFromMe, fromMAM)
+
+	if msg.Type == stanza.MessageTypeError || msg.Error.Reason != "" || msg.Error.Text != "" {
+		nc.log.Warn().
+			Str("from", msg.From).
+			Str("id", msg.Id).
+			Str("type", string(msg.Type)).
+			Str("error_type", string(msg.Error.Type)).
+			Int("error_code", msg.Error.Code).
+			Str("error_reason", msg.Error.Reason).
+			Str("error_text", msg.Error.Text).
+			Msg("Received XMPP message delivery error/bounce")
+		if nc.resolveOutboundError(msg.Id, bareFromJid, msg.Error) {
+			return
+		}
+		portalID := MakePortalID(bareFromJid)
+		errDetail := msg.Error.Reason
+		if msg.Error.Text != "" {
+			if errDetail != "" {
+				errDetail += ": " + msg.Error.Text
+			} else {
+				errDetail = msg.Error.Text
+			}
+		}
+		if errDetail == "" {
+			errDetail = "delivery failed"
+		}
+		notice := fmt.Sprintf("Message delivery to %s failed: %s", bareFromJid, errDetail)
+		if nc.bridge != nil {
+			if portal, err := nc.bridge.GetPortalByKey(context.Background(), networkid.PortalKey{ID: portalID}); err == nil && portal != nil && portal.MXID != "" && nc.bridge.Bot != nil {
+				sendNotice(nc.bridge.Bot, portal.MXID, notice)
+			}
+		}
+		nc.notifyManagement(notice)
+		return
+	}
 
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
 	// Always treat multi-recipient numbers on Cheogram as MUCs even if typed as chat
 	if strings.Contains(bareFromJid, ",") && strings.HasSuffix(bareFromJid, "@cheogram.com") {
 		isMUC = true
 	}
+
+	nc.respondToIncomingXMPPReceipt(msg, isFromMe, fromMAM)
+	_ = nc.handleIncomingXMPPReceipt(msg, timestamp, bareFromJid, isMUC, isFromMe)
 	var delayStamp string
 	var delay XMPPDelay
 	if msg.Get(&delay) {
