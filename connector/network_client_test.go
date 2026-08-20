@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"maunium.net/go/mautrix/id"
 )
 
 func TestMyNetworkClientTryStartConnect(t *testing.T) {
@@ -106,5 +108,67 @@ func TestPingXMPPNotConnected(t *testing.T) {
 	err = client.RuntimeHealth(context.Background())
 	if err == nil {
 		t.Fatal("expected error from RuntimeHealth on unconnected client, got nil")
+	}
+}
+
+func TestTrackAndResolveOutboundAck(t *testing.T) {
+	nc := &MyNetworkClient{}
+	nc.trackOutboundSend("stanza-1", "+15551234567@cheogram.com", id.RoomID("!room:example.com"), "evt-1")
+
+	if !nc.resolveOutboundAck("stanza-1", "delivery", "+15551234567@cheogram.com") {
+		t.Fatal("expected outbound ack to resolve by stanza ID")
+	}
+	if nc.resolveOutboundAck("stanza-1", "delivery", "+15551234567@cheogram.com") {
+		t.Fatal("expected resolution to be idempotent")
+	}
+	if nc.resolveOutboundAck("evt-1", "read", "+15551234567@cheogram.com") {
+		t.Fatal("expected no resolution after the tracked entry was already removed")
+	}
+}
+
+func TestResolveOutboundAckByMatrixEventID(t *testing.T) {
+	nc := &MyNetworkClient{}
+	nc.trackOutboundSend("stanza-2", "+15559876543@cheogram.com", id.RoomID("!room:example.com"), "evt-2")
+
+	if !nc.resolveOutboundAck("evt-2", "delivery", "+15559876543@cheogram.com") {
+		t.Fatal("expected outbound ack to resolve by Matrix event ID")
+	}
+	if nc.resolveOutboundAck("evt-2", "delivery", "+15559876543@cheogram.com") {
+		t.Fatal("expected resolution to be idempotent")
+	}
+}
+
+func TestScanPendingSendTimeouts(t *testing.T) {
+	oldTimeout := xmppPendingSendAckTimeout
+	xmppPendingSendAckTimeout = 5 * time.Minute
+	t.Cleanup(func() { xmppPendingSendAckTimeout = oldTimeout })
+
+	nc := &MyNetworkClient{}
+	nc.pendingSends = map[string]*pendingXMPPSend{
+		"stale-1": {
+			targetJID:     "+15551112222@cheogram.com",
+			portalRoomID:  id.RoomID("!room:example.com"),
+			matrixEventID: "evt-stale-1",
+			started:       time.Now().Add(-10 * time.Minute),
+		},
+		"fresh-1": {
+			targetJID:     "+15553334444@cheogram.com",
+			matrixEventID: "evt-fresh-1",
+			started:       time.Now(),
+		},
+	}
+
+	nc.scanPendingSendTimeouts()
+
+	nc.pendingSendsMu.Lock()
+	_, stillStale := nc.pendingSends["stale-1"]
+	_, stillFresh := nc.pendingSends["fresh-1"]
+	nc.pendingSendsMu.Unlock()
+
+	if stillStale {
+		t.Fatal("stale outbound send was not removed by timeout scan")
+	}
+	if !stillFresh {
+		t.Fatal("fresh outbound send was incorrectly removed by timeout scan")
 	}
 }

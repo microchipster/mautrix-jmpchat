@@ -132,3 +132,30 @@ func TestServerDomainFromJID(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeJID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "", want: ""},
+		{input: "   ", want: ""},
+		{input: "alice@example.com", want: "alice@example.com"},
+		{input: "  bob@example.com/phone  ", want: "bob@example.com/phone"},
+		{input: "+15551234567", want: "+15551234567@cheogram.com"},
+		{input: "15551234567", want: "+15551234567@cheogram.com"},
+		{input: "+1 (555) 123-4567", want: "+15551234567@cheogram.com"},
+		{input: "555-123-4567", want: "+5551234567@cheogram.com"},
+		{input: "555.123.4567", want: "+5551234567@cheogram.com"},
+		{input: "(555) 123 4567", want: "+5551234567@cheogram.com"},
+		{input: "invalid_no_digits!", want: ""},
+	}
+
+	for _, tt := range tests {
+		if got := normalizeJID(tt.input); got != tt.want {
+			t.Errorf("normalizeJID(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

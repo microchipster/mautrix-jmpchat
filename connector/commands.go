@@ -933,10 +933,16 @@ func normalizeJID(input string) string {
 	if strings.Contains(val, "@") {
 		return val
 	}
-	if !strings.HasPrefix(val, "+") {
-		val = "+" + val
+	var digits strings.Builder
+	for _, r := range val {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
 	}
-	return val + "@cheogram.com"
+	if digits.Len() == 0 {
+		return ""
+	}
+	return "+" + digits.String() + "@cheogram.com"
 }
 
 func splitCheogramGroupContacts(jid string) []string {

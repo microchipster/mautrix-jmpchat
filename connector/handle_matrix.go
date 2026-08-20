@@ -24,20 +24,32 @@ var htmlTagRegex = regexp.MustCompile(`<[^>]+>`)
 
 // HandleMatrixMessage handles incoming messages from Matrix for this user.
 func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+	jid := UnescapeJID(string(msg.Portal.ID))
+	if !strings.Contains(jid, "@") {
+		jid = normalizeJID(jid)
+	}
+
 	log := nc.log.With().
 		Str("portal_id", string(msg.Portal.ID)).
+		Str("target_jid", jid).
 		Str("sender_mxid", string(msg.Event.Sender)).
 		Str("event_id", string(msg.Event.ID)).
+		Str("msg_type", string(msg.Content.MsgType)).
 		Logger()
 	ctx = log.WithContext(ctx)
 
-	log.Info().Msg("HandleMatrixMessage called")
+	log.Info().
+		Str("portal_id", string(msg.Portal.ID)).
+		Str("target_jid", jid).
+		Str("sender_mxid", string(msg.Event.Sender)).
+		Str("event_id", string(msg.Event.ID)).
+		Str("msg_type", string(msg.Content.MsgType)).
+		Msg("HandleMatrixMessage called for outbound message")
 
 	if !nc.isXMPPConnected() {
+		log.Warn().Msg("Cannot send Matrix message: XMPP client not connected")
 		return nil, fmt.Errorf("XMPP client not connected")
 	}
-
-	jid := UnescapeJID(string(msg.Portal.ID))
 
 	isMUC := portalUsesGroupChat(msg.Portal)
 
@@ -57,6 +69,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	if msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile {
 		uploadedURL, desc, err := nc.uploadMatrixMediaToXMPP(ctx, msg)
 		if err != nil {
+			log.Err(err).Msg("Failed to upload Matrix media to XMPP HTTP upload")
 			return nil, err
 		}
 		oob := stanza.OOB{URL: uploadedURL}
@@ -85,6 +98,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			body = strings.TrimSpace(htmlToPlainText(msg.Content.FormattedBody))
 		}
 		if body == "" {
+			log.Warn().Msg("Message body is empty after Matrix content conversion")
 			return nil, fmt.Errorf("message body is empty after Matrix content conversion")
 		}
 	}
@@ -101,11 +115,32 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 	m.Extensions = append(m.Extensions, extensions...)
 
+	log.Info().
+		Str("to", jid).
+		Str("stanza_id", m.Id).
+		Str("stanza_type", string(msgType)).
+		Int("body_len", len(body)).
+		Int("extensions_count", len(m.Extensions)).
+		Msg("Dispatching XMPP message stanza to transport")
+
 	err := nc.sendXMPP(m)
 	if err != nil {
-		log.Err(err).Msg("Failed to send XMPP message")
+		log.Err(err).
+			Str("to", jid).
+			Str("stanza_id", m.Id).
+			Msg("Failed to send XMPP message to stream")
 		return nil, fmt.Errorf("failed to send XMPP message: %w", err)
 	}
+
+	if !isMUC {
+		nc.trackOutboundSend(m.Id, jid, msg.Portal.MXID, string(msg.Event.ID))
+	}
+
+	log.Info().
+		Str("to", jid).
+		Str("stanza_id", m.Id).
+		Str("event_id", string(msg.Event.ID)).
+		Msg("Successfully sent XMPP message to stream")
 
 	metaLogin, _ := nc.login.Metadata.(*LoginMetadata)
 	senderID := networkid.UserID(msg.Event.Sender)
@@ -359,7 +394,7 @@ func shouldSkipGhostNameUpdate(ghostName, desired, live string) bool {
 	return live != "" && live != ghostName
 }
 
-// GetChatInfo is not implemented for this simple connector.
+// GetChatInfo returns room metadata and member list for a portal.
 func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	roomType := ptr.Ptr(database.RoomTypeDM)
 	if portalUsesGroupChat(portal) {
@@ -367,10 +402,26 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 	}
 	name := portalDesiredName(ctx, nc.bridge, portal, nc.contactNameSuffix())
 
-	return &bridgev2.ChatInfo{
+	chatInfo := &bridgev2.ChatInfo{
 		Name: &name,
 		Type: roomType,
-	}, nil
+	}
+	if *roomType == database.RoomTypeDM {
+		targetJID := UnescapeJID(string(portal.ID))
+		remoteUserID := MakeUserID(targetJID)
+		chatInfo.Members = &bridgev2.ChatMemberList{
+			Members: []bridgev2.ChatMember{
+				{
+					EventSender: bridgev2.EventSender{
+						IsFromMe: false,
+						Sender:   remoteUserID,
+					},
+					Membership: event.MembershipJoin,
+				},
+			},
+		}
+	}
+	return chatInfo, nil
 }
 
 // GetCapabilities returns the supported features for chats handled by this client.

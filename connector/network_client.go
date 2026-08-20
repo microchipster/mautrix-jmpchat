@@ -88,6 +88,9 @@ type MyNetworkClient struct {
 	manualNameMu sync.Mutex
 	manualNames  map[string]bool
 
+	pendingSendsMu sync.Mutex
+	pendingSends   map[string]*pendingXMPPSend
+
 	xmppClient                   *xmpp.Client
 	xmppRouter                   *xmpp.Router
 	httpUploadServiceJID         string
@@ -155,6 +158,18 @@ const (
 	xmppReconnectMaxBackoff     = 2 * time.Minute
 	xmppHealthCheckInterval     = time.Minute
 )
+
+// xmppPendingSendAckTimeout is how long the bridge waits for a delivery
+// receipt or chat marker on an outbound XMPP message before notifying the
+// user that no acknowledgment was received.
+var xmppPendingSendAckTimeout = 5 * time.Minute
+
+type pendingXMPPSend struct {
+	targetJID     string
+	portalRoomID  id.RoomID
+	matrixEventID string
+	started       time.Time
+}
 
 func xmppReconnectBackoff(attempt int) time.Duration {
 	if attempt < 1 {
@@ -1251,8 +1266,9 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 	if jid == "" {
 		return fmt.Errorf("jid is empty")
 	}
-	name := jid
+	name := dmRoomName(ctx, nc.bridge, jid, "", nc.contactNameSuffix())
 	portalID := MakePortalID(jid)
+	remoteUserID := MakeUserID(jid)
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
@@ -1263,8 +1279,24 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 		ChatInfo: &bridgev2.ChatInfo{
 			Name: &name,
 			Type: ptr.Ptr(database.RoomTypeDM),
+			Members: &bridgev2.ChatMemberList{
+				Members: []bridgev2.ChatMember{
+					{
+						EventSender: bridgev2.EventSender{
+							IsFromMe: false,
+							Sender:   remoteUserID,
+						},
+						Membership: event.MembershipJoin,
+					},
+				},
+			},
 		},
 	}
+	nc.log.Info().
+		Str("target_jid", jid).
+		Str("portal_id", string(portalID)).
+		Str("room_name", name).
+		Msg("Queueing ChatResync to create DM portal")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 	return nil
 }
@@ -1597,15 +1629,24 @@ func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, m
 func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
 	client, connected, _ := nc.connectionSnapshot()
 	if client == nil {
+		nc.log.Warn().Msg("sendXMPP failed: XMPP client is nil")
 		return fmt.Errorf("XMPP client not connected")
 	}
 	if client.Session == nil {
+		nc.log.Warn().Msg("sendXMPP failed: XMPP session is nil")
 		return fmt.Errorf("XMPP session is not established")
 	}
 	if !connected {
+		nc.log.Warn().Msg("sendXMPP failed: XMPP client is disconnecting")
 		return fmt.Errorf("XMPP client is disconnecting")
 	}
-	return client.Send(packet)
+	err := client.Send(packet)
+	if err != nil {
+		nc.log.Error().Err(err).Msg("sendXMPP transport send error")
+		return err
+	}
+	nc.log.Debug().Msg("sendXMPP packet successfully written to transport")
+	return nil
 }
 
 func (nc *MyNetworkClient) isXMPPConnected() bool {
@@ -1620,6 +1661,101 @@ func (nc *MyNetworkClient) connectionSnapshot() (client *xmpp.Client, connected 
 	reconnectAttempt = nc.reconnectAttempt
 	nc.connectMu.Unlock()
 	return client, connected, reconnectAttempt
+}
+
+// trackOutboundSend records an outbound XMPP message stanza so that a later
+// XEP-0184 receipt or XEP-0333 chat marker can be matched back to the Matrix
+// message the user sent. This gives users explicit feedback when no
+// acknowledgment arrives.
+func (nc *MyNetworkClient) trackOutboundSend(stanzaID, targetJID string, portalRoomID id.RoomID, matrixEventID string) {
+	if stanzaID == "" || targetJID == "" {
+		return
+	}
+	nc.pendingSendsMu.Lock()
+	defer nc.pendingSendsMu.Unlock()
+	if nc.pendingSends == nil {
+		nc.pendingSends = make(map[string]*pendingXMPPSend)
+	}
+	nc.pendingSends[stanzaID] = &pendingXMPPSend{
+		targetJID:     targetJID,
+		portalRoomID:  portalRoomID,
+		matrixEventID: matrixEventID,
+		started:       time.Now(),
+	}
+	nc.log.Debug().
+		Str("stanza_id", stanzaID).
+		Str("to", targetJID).
+		Str("matrix_event_id", matrixEventID).
+		Msg("Tracking outbound XMPP message awaiting acknowledgment")
+}
+
+// resolveOutboundAck matches an incoming receipt or marker to a tracked
+// outbound message by stanza ID or Matrix event ID, then removes it from the
+// pending set. It reports whether a matching send was resolved.
+func (nc *MyNetworkClient) resolveOutboundAck(stanzaID, ackKind, fromJID string) bool {
+	if stanzaID == "" {
+		return false
+	}
+	nc.pendingSendsMu.Lock()
+	pending, ok := nc.pendingSends[stanzaID]
+	if !ok {
+		for id, p := range nc.pendingSends {
+			if p.matrixEventID == stanzaID {
+				pending = p
+				stanzaID = id
+				ok = true
+				break
+			}
+		}
+	}
+	if ok {
+		delete(nc.pendingSends, stanzaID)
+	}
+	nc.pendingSendsMu.Unlock()
+	if !ok || pending == nil {
+		return false
+	}
+	nc.log.Info().
+		Str("stanza_id", stanzaID).
+		Str("ack_kind", ackKind).
+		Str("from", fromJID).
+		Str("to", pending.targetJID).
+		Str("matrix_event_id", pending.matrixEventID).
+		Msg("Received XMPP acknowledgment for outbound message")
+	return true
+}
+
+// scanPendingSendTimeouts removes tracked outbound messages that have not been
+// acknowledged within xmppPendingSendAckTimeout and notifies the user so a
+// silently dropped message is not mistaken for a successful send.
+func (nc *MyNetworkClient) scanPendingSendTimeouts() {
+	timeout := xmppPendingSendAckTimeout
+	now := time.Now()
+
+	nc.pendingSendsMu.Lock()
+	ids := make([]string, 0, len(nc.pendingSends))
+	timedOut := make([]*pendingXMPPSend, 0, len(nc.pendingSends))
+	for id, p := range nc.pendingSends {
+		if now.Sub(p.started) > timeout {
+			ids = append(ids, id)
+			timedOut = append(timedOut, p)
+			delete(nc.pendingSends, id)
+		}
+	}
+	nc.pendingSendsMu.Unlock()
+
+	for i, p := range timedOut {
+		nc.log.Warn().
+			Str("stanza_id", ids[i]).
+			Str("to", p.targetJID).
+			Str("matrix_event_id", p.matrixEventID).
+			Dur("timeout", timeout).
+			Msg("Sent XMPP message was never acknowledged; it may not have been delivered")
+		if p.portalRoomID != "" && nc.bridge != nil && nc.bridge.Bot != nil {
+			sendNotice(nc.bridge.Bot, p.portalRoomID,
+				fmt.Sprintf("I sent your message to %s, but no delivery confirmation arrived within %s. It may not have been delivered.", p.targetJID, timeout.Round(time.Second)))
+		}
+	}
 }
 
 func (nc *MyNetworkClient) ConnectionStatus() loginConnectionStatus {
@@ -1768,6 +1904,7 @@ func (nc *MyNetworkClient) startRuntimeHealth(client *xmpp.Client) {
 		ticker := time.NewTicker(xmppHealthCheckInterval)
 		defer ticker.Stop()
 		for range ticker.C {
+			nc.scanPendingSendTimeouts()
 			if !check() {
 				return
 			}
@@ -2395,6 +2532,13 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		nc.log.Debug().Type("packet_type", p).Msg("Received non-message packet on message handler")
 		return
 	}
+	nc.log.Info().
+		Str("from", msg.From).
+		Str("to", msg.To).
+		Str("id", msg.Id).
+		Str("type", string(msg.Type)).
+		Int("body_len", len(stanza.StringValue(msg.Body))).
+		Msg("Received XMPP message from stream")
 	var mam MAMResult
 	if msg.Get(&mam) && mam.Forwarded != nil && mam.Forwarded.Message != nil {
 		timestamp := time.Now()
@@ -2433,19 +2577,53 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		return
 	}
 
+	nc.log.Info().
+		Str("from", msg.From).
+		Str("to", msg.To).
+		Str("id", msg.Id).
+		Str("type", string(msg.Type)).
+		Int("body_len", len(stanza.StringValue(msg.Body))).
+		Msg("Received XMPP message from stream")
+
 	var carbonSent XMPCarbonSent
-	if msg.Get(&carbonSent) && carbonSent.Forwarded != nil {
-		if forwarded, ok := carbonSent.Forwarded.Stanza.(stanza.Message); ok {
-			nc.handleIncomingXMPPMessage(forwarded, xmppMessageTimestamp(forwarded, time.Now()), "", true, false)
-			return
+	if msg.Get(&carbonSent) && carbonSent.Forwarded != nil && carbonSent.Forwarded.Message != nil {
+		forwarded := *carbonSent.Forwarded.Message
+		ts := xmppMessageTimestamp(forwarded, time.Now())
+		if carbonSent.Forwarded.Delay != nil && carbonSent.Forwarded.Delay.Stamp != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, carbonSent.Forwarded.Delay.Stamp); err == nil {
+				ts = parsed
+			} else if parsed, err := time.Parse("2006-01-02T15:04:05Z", carbonSent.Forwarded.Delay.Stamp); err == nil {
+				ts = parsed
+			}
 		}
+		nc.log.Info().
+			Str("from", forwarded.From).
+			Str("to", forwarded.To).
+			Str("id", forwarded.Id).
+			Time("ts", ts).
+			Msg("Received XMPP carbon sent message")
+		nc.handleIncomingXMPPMessage(forwarded, ts, "", true, false)
+		return
 	}
 	var carbonReceived XMPCarbonReceived
-	if msg.Get(&carbonReceived) && carbonReceived.Forwarded != nil {
-		if forwarded, ok := carbonReceived.Forwarded.Stanza.(stanza.Message); ok {
-			nc.handleIncomingXMPPMessage(forwarded, xmppMessageTimestamp(forwarded, time.Now()), "", false, false)
-			return
+	if msg.Get(&carbonReceived) && carbonReceived.Forwarded != nil && carbonReceived.Forwarded.Message != nil {
+		forwarded := *carbonReceived.Forwarded.Message
+		ts := xmppMessageTimestamp(forwarded, time.Now())
+		if carbonReceived.Forwarded.Delay != nil && carbonReceived.Forwarded.Delay.Stamp != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, carbonReceived.Forwarded.Delay.Stamp); err == nil {
+				ts = parsed
+			} else if parsed, err := time.Parse("2006-01-02T15:04:05Z", carbonReceived.Forwarded.Delay.Stamp); err == nil {
+				ts = parsed
+			}
 		}
+		nc.log.Info().
+			Str("from", forwarded.From).
+			Str("to", forwarded.To).
+			Str("id", forwarded.Id).
+			Time("ts", ts).
+			Msg("Received XMPP carbon received message")
+		nc.handleIncomingXMPPMessage(forwarded, ts, "", false, false)
+		return
 	}
 
 	// XMPP JIDs look like user@domain.com/resource
@@ -2716,6 +2894,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		nc.recordDMPortal(string(portalID))
 	}
 
+	chatName := dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())
+	if isMUC {
+		chatName = groupRoomNameFromJID(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())
+	}
+
 	// First send a ChatResync to create or update the portal with correct info
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
@@ -2725,11 +2908,15 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			Timestamp:    timestamp,
 		},
 		ChatInfo: &bridgev2.ChatInfo{
-			Name: ptr.Ptr(dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())),
+			Name: ptr.Ptr(chatName),
 			Type: roomType,
 		},
 	}
-	nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing chat resync for incoming message")
+	nc.log.Info().
+		Str("portal_id", string(portalID)).
+		Str("chat_name", chatName).
+		Str("room_type", string(*roomType)).
+		Msg("Queueing chat resync for incoming message")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
 	msgID := nc.extractMessageID(msg)
@@ -2890,12 +3077,16 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		evt.ID = networkid.MessageID(fmt.Sprintf("remote-%s-%d", portalID, time.Now().UnixNano()))
 	}
 
-	nc.log.Debug().
+	nc.log.Info().
 		Str("portal_id", string(portalID)).
 		Str("sender_id", senderID).
 		Str("sender_escaped", EscapeJID(senderID)).
 		Str("message_id", string(evt.ID)).
-		Msg("Queueing incoming XMPP message")
+		Bool("is_from_me", isFromMe).
+		Bool("from_mam", fromMAM).
+		Bool("is_muc", isMUC).
+		Int("body_len", len(stanza.StringValue(msg.Body))).
+		Msg("Queued incoming XMPP message to Matrix")
 	nc.bridge.QueueRemoteEvent(nc.login, evt)
 }
 

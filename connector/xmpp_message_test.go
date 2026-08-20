@@ -5,6 +5,7 @@
 package connector
 
 import (
+	"encoding/xml"
 	"testing"
 	"time"
 
@@ -47,5 +48,69 @@ func TestBuildIncomingXMPPReceiptResponse(t *testing.T) {
 	}
 	if _, ok := buildIncomingXMPPReceiptResponse(msg, true, false); ok {
 		t.Fatal("did not expect response to own carbon")
+	}
+}
+
+func TestCarbonForwardedUnmarshalingWithDelay(t *testing.T) {
+	xmlData := `<sent xmlns="urn:xmpp:carbons:2">
+		<forwarded xmlns="urn:xmpp:forward:0">
+			<delay xmlns="urn:xmpp:delay" stamp="2026-08-15T10:11:12.345Z"/>
+			<message xmlns="jabber:client" from="user@cheogram.com" to="+15551234567@cheogram.com" type="chat" id="carbon-1">
+				<body>Hello via Carbon Sent</body>
+			</message>
+		</forwarded>
+	</sent>`
+
+	var carbonSent XMPCarbonSent
+	if err := xml.Unmarshal([]byte(xmlData), &carbonSent); err != nil {
+		t.Fatalf("failed to unmarshal XMPCarbonSent: %v", err)
+	}
+
+	if carbonSent.Forwarded == nil {
+		t.Fatal("carbonSent.Forwarded is nil")
+	}
+	if carbonSent.Forwarded.Delay == nil || carbonSent.Forwarded.Delay.Stamp != "2026-08-15T10:11:12.345Z" {
+		t.Fatalf("delay stamp = %v, want 2026-08-15T10:11:12.345Z", carbonSent.Forwarded.Delay)
+	}
+	if carbonSent.Forwarded.Message == nil {
+		t.Fatal("carbonSent.Forwarded.Message is nil")
+	}
+	if carbonSent.Forwarded.Message.To != "+15551234567@cheogram.com" {
+		t.Fatalf("message to = %q, want +15551234567@cheogram.com", carbonSent.Forwarded.Message.To)
+	}
+	if carbonSent.Forwarded.Message.Body == nil || *carbonSent.Forwarded.Message.Body != "Hello via Carbon Sent" {
+		t.Fatalf("message body = %v, want 'Hello via Carbon Sent'", carbonSent.Forwarded.Message.Body)
+	}
+}
+
+func TestCarbonReceivedUnmarshalingWithDelay(t *testing.T) {
+	xmlData := `<received xmlns="urn:xmpp:carbons:2">
+		<forwarded xmlns="urn:xmpp:forward:0">
+			<delay xmlns="urn:xmpp:delay" stamp="2026-08-15T10:11:12.345Z"/>
+			<message xmlns="jabber:client" from="+15551234567@cheogram.com" to="user@cheogram.com/res" type="chat" id="carbon-2">
+				<body>Hello via Carbon Received</body>
+			</message>
+		</forwarded>
+	</received>`
+
+	var carbonReceived XMPCarbonReceived
+	if err := xml.Unmarshal([]byte(xmlData), &carbonReceived); err != nil {
+		t.Fatalf("failed to unmarshal XMPCarbonReceived: %v", err)
+	}
+
+	if carbonReceived.Forwarded == nil {
+		t.Fatal("carbonReceived.Forwarded is nil")
+	}
+	if carbonReceived.Forwarded.Delay == nil || carbonReceived.Forwarded.Delay.Stamp != "2026-08-15T10:11:12.345Z" {
+		t.Fatalf("delay stamp = %v, want 2026-08-15T10:11:12.345Z", carbonReceived.Forwarded.Delay)
+	}
+	if carbonReceived.Forwarded.Message == nil {
+		t.Fatal("carbonReceived.Forwarded.Message is nil")
+	}
+	if carbonReceived.Forwarded.Message.From != "+15551234567@cheogram.com" {
+		t.Fatalf("message from = %q, want +15551234567@cheogram.com", carbonReceived.Forwarded.Message.From)
+	}
+	if carbonReceived.Forwarded.Message.Body == nil || *carbonReceived.Forwarded.Message.Body != "Hello via Carbon Received" {
+		t.Fatalf("message body = %v, want 'Hello via Carbon Received'", carbonReceived.Forwarded.Message.Body)
 	}
 }

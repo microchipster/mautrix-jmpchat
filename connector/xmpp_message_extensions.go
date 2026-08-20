@@ -142,16 +142,22 @@ type XMPPEME struct {
 	InnerXML string   `xml:",innerxml"`
 }
 
+type CarbonForwarded struct {
+	XMLName xml.Name        `xml:"urn:xmpp:forward:0 forwarded"`
+	Delay   *XMPPDelay      `xml:"delay"`
+	Message *stanza.Message `xml:"message"`
+}
+
 type XMPCarbonSent struct {
 	stanza.MsgExtension
-	XMLName   xml.Name          `xml:"urn:xmpp:carbons:2 sent"`
-	Forwarded *stanza.Forwarded `xml:"forwarded"`
+	XMLName   xml.Name         `xml:"urn:xmpp:carbons:2 sent"`
+	Forwarded *CarbonForwarded `xml:"forwarded"`
 }
 
 type XMPCarbonReceived struct {
 	stanza.MsgExtension
-	XMLName   xml.Name          `xml:"urn:xmpp:carbons:2 received"`
-	Forwarded *stanza.Forwarded `xml:"forwarded"`
+	XMLName   xml.Name         `xml:"urn:xmpp:carbons:2 received"`
+	Forwarded *CarbonForwarded `xml:"forwarded"`
 }
 
 type XMPPReceipt struct {

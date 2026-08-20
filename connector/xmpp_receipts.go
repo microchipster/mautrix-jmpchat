@@ -46,6 +46,12 @@ func (nc *MyNetworkClient) handleIncomingXMPPReceipt(msg stanza.Message, timesta
 		return false
 	}
 
+	ackKind := "read"
+	if receiptType == bridgev2.RemoteEventDeliveryReceipt {
+		ackKind = "delivery"
+	}
+	nc.resolveOutboundAck(targetID, ackKind, msg.From)
+
 	senderID := bareFromJid
 	if isFromMe {
 		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
