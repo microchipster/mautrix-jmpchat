@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"go.mau.fi/util/ptr"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
@@ -1464,9 +1466,49 @@ func validateGatewayAssignments(pending PendingGatewayForm, values map[string]st
 	return nil
 }
 
+func removeRoomFromSpace(ctx context.Context, bot bridgev2.MatrixAPI, spaceRoom id.RoomID, childRoom id.RoomID) {
+	if bot == nil || spaceRoom == "" || childRoom == "" || spaceRoom == childRoom {
+		return
+	}
+	_, _ = bot.SendState(ctx, spaceRoom, event.StateSpaceChild, childRoom.String(), &event.Content{
+		Parsed: &event.SpaceChildEventContent{
+			Via: nil,
+		},
+	}, time.Now())
+}
+
+func addRoomToSpace(ctx context.Context, bridge *bridgev2.Bridge, spaceRoom id.RoomID, childRoom id.RoomID, canonical bool) error {
+	if bridge == nil || bridge.Bot == nil || spaceRoom == "" || childRoom == "" || spaceRoom == childRoom {
+		return nil
+	}
+	via := []string{bridge.Matrix.ServerName()}
+	_, err := bridge.Bot.SendState(ctx, spaceRoom, event.StateSpaceChild, childRoom.String(), &event.Content{
+		Parsed: &event.SpaceChildEventContent{
+			Via: via,
+		},
+	}, time.Now())
+	if err != nil {
+		return err
+	}
+	if canonical {
+		_, _ = bridge.Bot.SendState(ctx, childRoom, event.StateSpaceParent, spaceRoom.String(), &event.Content{
+			Parsed: &event.SpaceParentEventContent{
+				Via:       via,
+				Canonical: true,
+			},
+		}, time.Now())
+	}
+	return nil
+}
+
 func deleteSinglePortal(ce *commands.Event, portal *bridgev2.Portal) error {
 	if portal == nil {
 		return nil
+	}
+	oldMXID := portal.MXID
+	login := ce.User.GetDefaultLogin()
+	if login != nil && login.SpaceRoom != "" && oldMXID != "" {
+		removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldMXID)
 	}
 	userPortals, err := ce.Bridge.DB.UserPortal.GetAllInPortal(ce.Ctx, portal.PortalKey)
 	if err == nil {
@@ -1478,8 +1520,8 @@ func deleteSinglePortal(ce *commands.Event, portal *bridgev2.Portal) error {
 	if err != nil {
 		return fmt.Errorf("failed to delete portal: %w", err)
 	}
-	if portal.MXID != "" {
-		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, portal.MXID, false)
+	if oldMXID != "" {
+		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, oldMXID, false)
 	}
 	return nil
 }
@@ -1858,6 +1900,1015 @@ var CommandDeleteRoom = &commands.FullHandler{
 		Section:     commands.HelpSectionAdmin,
 		Description: "Permanently delete a single bridged room by Matrix room ID or JID/phone",
 		Args:        "<room_id | jid>",
+	},
+	RequiresLogin: true,
+}
+
+func parseRebindRoomArgs(args []string) (targetJID string, roomID id.RoomID, err error) {
+	if len(args) != 2 {
+		return "", "", fmt.Errorf("usage: rebind-room <target_jid_or_phone> <matrix_room_id>")
+	}
+	arg0 := strings.TrimSpace(args[0])
+	arg1 := strings.TrimSpace(args[1])
+
+	if strings.HasPrefix(arg0, "!") {
+		roomID = id.RoomID(arg0)
+		targetJID = normalizeJID(arg1)
+	} else if strings.HasPrefix(arg1, "!") {
+		roomID = id.RoomID(arg1)
+		targetJID = normalizeJID(arg0)
+	} else {
+		return "", "", fmt.Errorf("one of the arguments must be a Matrix room ID starting with '!' (got %q and %q)", arg0, arg1)
+	}
+
+	if targetJID == "" {
+		return "", "", fmt.Errorf("invalid contact JID or phone number")
+	}
+	return targetJID, roomID, nil
+}
+
+func parseReplaceRoomArgs(args []string) (target string, deleteOld bool, err error) {
+	if len(args) == 0 {
+		return "", false, fmt.Errorf("usage: replace-room <room_id | jid | phone_number> [delete-old]")
+	}
+	for _, arg := range args {
+		argTrim := strings.TrimSpace(arg)
+		lower := strings.ToLower(argTrim)
+		if lower == "delete-old" || lower == "--delete-old" || lower == "delete" {
+			deleteOld = true
+		} else if target == "" {
+			target = argTrim
+		} else {
+			return "", false, fmt.Errorf("unexpected argument %q (usage: replace-room <room_id | jid | phone_number> [delete-old])", arg)
+		}
+	}
+	if target == "" {
+		return "", false, fmt.Errorf("missing target room ID or contact JID/phone")
+	}
+	return target, deleteOld, nil
+}
+
+func parseReplaceAllArgs(args []string) (confirm bool, deleteOld bool, err error) {
+	for _, arg := range args {
+		lower := strings.ToLower(strings.TrimSpace(arg))
+		if lower == "" {
+			continue
+		}
+		switch lower {
+		case "confirm", "yes", "--yes":
+			confirm = true
+		case "dry-run", "--dry-run":
+			confirm = false
+		case "delete-old", "--delete-old", "delete":
+			deleteOld = true
+		case "keep-old", "--keep-old":
+			deleteOld = false
+		default:
+			return false, false, fmt.Errorf("unknown argument %q (usage: replace-all [delete-old] [dry-run|confirm])", arg)
+		}
+	}
+	return confirm, deleteOld, nil
+}
+
+func sortRoomPruneStatsDesc(statsList []*roomPruneStats) {
+	sort.Slice(statsList, func(i, j int) bool {
+		if statsList[i].messageCount != statsList[j].messageCount {
+			return statsList[i].messageCount > statsList[j].messageCount
+		}
+		if !statsList[i].lastTS.Equal(statsList[j].lastTS) {
+			return statsList[i].lastTS.After(statsList[j].lastTS)
+		}
+		return string(statsList[i].portal.MXID) < string(statsList[j].portal.MXID)
+	})
+}
+
+func rebindSinglePortal(ce *commands.Event, portal *bridgev2.Portal, targetRoomID id.RoomID, login *bridgev2.UserLogin, force bool) (oldBoundRoom id.RoomID, err error) {
+	if portal == nil {
+		return "", fmt.Errorf("portal is nil")
+	}
+	if targetRoomID == "" || !strings.HasPrefix(string(targetRoomID), "!") {
+		return "", fmt.Errorf("invalid Matrix room ID: %q", targetRoomID)
+	}
+
+	existing, err := ce.Bridge.GetPortalByMXID(ce.Ctx, targetRoomID)
+	if err == nil && existing != nil && existing.PortalKey != portal.PortalKey && !force {
+		return "", fmt.Errorf(
+			"room %s is already bridged to %s; refusing to rebind %s onto it (use `rebind-all confirm` to merge duplicates, or `delete-room %s` first)",
+			targetRoomID, UnescapeJID(string(existing.ID)), formatPortalName(portal), targetRoomID,
+		)
+	}
+
+	err = ce.Bridge.Bot.EnsureJoined(ce.Ctx, targetRoomID)
+	if err != nil {
+		return "", fmt.Errorf("bridge bot could not join room %s (please ensure the bridge bot is invited to the room): %w", targetRoomID, err)
+	}
+
+	targetJID := UnescapeJID(string(portal.ID))
+	ghostID := MakeUserID(targetJID)
+	ghost, err := ce.Bridge.GetGhostByID(ce.Ctx, ghostID)
+	if err == nil && ghost != nil {
+		_ = ghost.Intent.EnsureJoined(ce.Ctx, targetRoomID)
+	}
+
+	info, err := login.Client.GetChatInfo(ce.Ctx, portal)
+	if err != nil || info == nil {
+		name := dmRoomName(ce.Ctx, ce.Bridge, targetJID, "", "")
+		info = &bridgev2.ChatInfo{
+			Name: &name,
+			Type: ptr.Ptr(database.RoomTypeDM),
+		}
+	}
+
+	oldBoundRoom = portal.MXID
+	if oldBoundRoom != "" && oldBoundRoom != targetRoomID && login.SpaceRoom != "" {
+		removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldBoundRoom)
+	}
+	err = portal.UpdateMatrixRoomID(ce.Ctx, targetRoomID, bridgev2.UpdateMatrixRoomIDParams{
+		FailIfMXIDSet:      false,
+		OverwriteOldPortal: force,
+		TombstoneOldRoom:   false,
+		DeleteOldRoom:      false,
+		ChatInfo:           info,
+		ChatInfoSource:     login,
+	})
+	if err != nil {
+		return oldBoundRoom, fmt.Errorf("failed to update portal matrix room ID: %w", err)
+	}
+
+	login.MarkInPortal(ce.Ctx, portal)
+	queuePortalBackfill(ce, portal, login, info)
+	triggerCatchup(ce)
+
+	return oldBoundRoom, nil
+}
+
+func formatPortalName(portal *bridgev2.Portal) string {
+	if portal == nil {
+		return "(unknown)"
+	}
+	if portal.Name != "" {
+		return portal.Name
+	}
+	return UnescapeJID(string(portal.ID))
+}
+
+func queuePortalBackfill(ce *commands.Event, portal *bridgev2.Portal, login *bridgev2.UserLogin, info *bridgev2.ChatInfo) {
+	if ce == nil || ce.Bridge == nil || portal == nil || login == nil || info == nil {
+		return
+	}
+	if !info.CanBackfill || portal.RoomType == database.RoomTypeSpace {
+		return
+	}
+	err := ce.Bridge.DB.BackfillTask.Upsert(ce.Ctx, &database.BackfillTask{
+		PortalKey:         portal.PortalKey,
+		UserLoginID:       login.ID,
+		NextDispatchMinTS: time.Now().Add(bridgev2.BackfillMinBackoffAfterRoomCreate),
+	})
+	if err != nil {
+		ce.Log.Err(err).Str("portal_id", string(portal.ID)).Msg("Failed to queue backfill task after room operation")
+		return
+	}
+	ce.Bridge.WakeupBackfillQueue()
+}
+
+func triggerCatchup(ce *commands.Event) {
+	login := ce.User.GetDefaultLogin()
+	if login == nil {
+		return
+	}
+	client, ok := login.Client.(*MyNetworkClient)
+	if !ok || client == nil {
+		return
+	}
+	client.triggerAutomaticDMCatchup()
+	client.triggerAutomaticMUCCatchup()
+}
+
+func replaceSinglePortal(ce *commands.Event, portal *bridgev2.Portal, login *bridgev2.UserLogin, deleteOld bool) (id.RoomID, error) {
+	if portal == nil {
+		return "", fmt.Errorf("portal is nil")
+	}
+
+	targetJID := UnescapeJID(string(portal.ID))
+	info, err := login.Client.GetChatInfo(ce.Ctx, portal)
+	if err != nil || info == nil {
+		name := dmRoomName(ce.Ctx, ce.Bridge, targetJID, "", "")
+		info = &bridgev2.ChatInfo{
+			Name: &name,
+			Type: ptr.Ptr(database.RoomTypeDM),
+		}
+	}
+
+	roomName := portal.Name
+	if roomName == "" && info.Name != nil {
+		roomName = *info.Name
+	}
+	if roomName == "" {
+		roomName = targetJID
+	}
+
+	inviteList := []id.UserID{ce.User.MXID}
+	ghostID := MakeUserID(targetJID)
+	ghost, _ := ce.Bridge.GetGhostByID(ce.Ctx, ghostID)
+	if ghost != nil {
+		inviteList = append(inviteList, ghost.Intent.GetMXID())
+	}
+
+	req := &mautrix.ReqCreateRoom{
+		Visibility: "private",
+		Preset:     "private_chat",
+		IsDirect:   portal.RoomType == database.RoomTypeDM,
+		Name:       roomName,
+		Invite:     inviteList,
+		PowerLevelOverride: &event.PowerLevelsEventContent{
+			Events: map[string]int{
+				event.StateTombstone.Type:  100,
+				event.StateEncryption.Type: 100,
+			},
+			Users: map[id.UserID]int{
+				ce.Bridge.Bot.GetMXID(): 9001,
+				ce.User.MXID:            50,
+			},
+		},
+	}
+
+	newRoomID, err := ce.Bridge.Bot.CreateRoom(ce.Ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to create new Matrix room: %w", err)
+	}
+
+	oldMXID := portal.MXID
+
+	if ghost != nil {
+		_ = ghost.Intent.EnsureJoined(ce.Ctx, newRoomID)
+	}
+
+	err = portal.UpdateMatrixRoomID(ce.Ctx, newRoomID, bridgev2.UpdateMatrixRoomIDParams{
+		FailIfMXIDSet:      false,
+		OverwriteOldPortal: true,
+		TombstoneOldRoom:   !deleteOld,
+		DeleteOldRoom:      deleteOld,
+		ChatInfo:           info,
+		ChatInfoSource:     login,
+	})
+	if err != nil {
+		return newRoomID, fmt.Errorf("failed to bind portal to new room %s: %w", newRoomID, err)
+	}
+
+	if oldMXID != "" && oldMXID != newRoomID && !deleteOld {
+		sendNotice(ce.Bridge.Bot, oldMXID, fmt.Sprintf("⚠️ This conversation has been replaced with a fresh room: https://matrix.to/#/%s", newRoomID))
+	}
+	if oldMXID != "" && oldMXID != newRoomID && login.SpaceRoom != "" {
+		removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldMXID)
+	}
+
+	login.MarkInPortal(ce.Ctx, portal)
+	queuePortalBackfill(ce, portal, login, info)
+	triggerCatchup(ce)
+
+	return newRoomID, nil
+}
+
+var CommandRebindRoom = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		targetJID, targetRoomID, err := parseRebindRoomArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
+		portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, portalKey)
+		if err != nil || portal == nil {
+			ce.Reply("Could not find or create portal for %q: %v", targetJID, err)
+			return
+		}
+
+		oldBoundRoom, err := rebindSinglePortal(ce, portal, targetRoomID, login, false)
+		if err != nil {
+			ce.Reply("Failed to rebind room: %v", err)
+			return
+		}
+
+		var supersededNote string
+		if oldBoundRoom != "" && oldBoundRoom != targetRoomID {
+			supersededNote = fmt.Sprintf("\n- Superseded previous room: `%s`", oldBoundRoom)
+		}
+
+		ce.Reply("Successfully rebound contact **%s** to Matrix room `%s` (Name: %q).%s\n- Added to Space and queued history backfill.",
+			targetJID, targetRoomID, portal.Name, supersededNote)
+	},
+	Name: "rebind-room",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Rebind an existing Matrix room back to a contact and add it to your Space (usage: rebind-room <target_jid_or_phone> <matrix_room_id>)",
+		Args:        "<target_jid_or_phone> <matrix_room_id>",
+	},
+	RequiresLogin: true,
+}
+
+var CommandRebindAll = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		confirm, err := parsePruneDuplicatesArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+
+		type rebindPlan struct {
+			kind        string // "rebind" | "prune" | "manual"
+			reason      string
+			targetJID   string
+			portal      *bridgev2.Portal
+			currentRoom id.RoomID
+			targetRoom  id.RoomID
+			targetName  string
+			targetMsgs  int
+			targetLast  time.Time
+		}
+
+		var plans []rebindPlan
+
+		excludeRooms := map[id.RoomID]struct{}{
+			login.SpaceRoom:        {},
+			ce.User.ManagementRoom: {},
+		}
+
+		grouped := make(map[string][]*roomPruneStats)
+		for _, up := range userPortals {
+			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+			if err != nil || portal == nil {
+				continue
+			}
+			if portal.MXID != "" {
+				excludeRooms[portal.MXID] = struct{}{}
+			}
+			stats := getRoomPruneStats(ce, portal)
+			key := strings.ToLower(stats.targetJID)
+			grouped[key] = append(grouped[key], stats)
+		}
+
+		// Phase A: multiple portal rows pointing at the same contact.
+		// Empty duplicates can be pruned. Duplicates that carry message
+		// history cannot be merged safely (message rows live under the
+		// duplicate portal key), so they are listed for manual handling.
+		for jid, statsList := range grouped {
+			if len(statsList) <= 1 {
+				continue
+			}
+			sortRoomPruneStatsDesc(statsList)
+			keeper := statsList[0]
+			for _, s := range statsList[1:] {
+				if s.portal.MXID == "" {
+					continue
+				}
+				if s.portal.PortalKey == keeper.portal.PortalKey {
+					continue
+				}
+				if s.messageCount > 0 {
+					plans = append(plans, rebindPlan{
+						kind:        "manual",
+						reason:      "duplicate portal carries message history and cannot be merged automatically",
+						targetJID:   jid,
+						portal:      s.portal,
+						currentRoom: s.portal.MXID,
+						targetRoom:  s.portal.MXID,
+						targetName:  s.name,
+						targetMsgs:  s.messageCount,
+						targetLast:  s.lastTS,
+					})
+					continue
+				}
+				plans = append(plans, rebindPlan{
+					kind:        "prune",
+					reason:      "empty duplicate portal room",
+					targetJID:   jid,
+					portal:      s.portal,
+					currentRoom: s.portal.MXID,
+					targetRoom:  s.portal.MXID,
+					targetName:  s.name,
+					targetMsgs:  0,
+					targetLast:  s.lastTS,
+				})
+			}
+		}
+
+		// Phase B: discover orphaned rooms the bot is still joined to that
+		// contain exactly one contact ghost and no stranger members. These
+		// are historically bridged rooms that lost their portal binding
+		// (e.g. after a bridge reset created fresh rooms). We can rebind the
+		// contact's active portal back onto them without losing history.
+		mc, ok := ce.Bridge.Matrix.(*matrix.Connector)
+		if ok && mc != nil && mc.AS != nil {
+			botClient := mc.AS.BotClient()
+			joined, err := botClient.JoinedRooms(ce.Ctx)
+			if err != nil {
+				ce.Log.Warn().Err(err).Msg("Failed to enumerate joined rooms during rebind-all")
+			} else if joined != nil {
+				for _, roomID := range joined.JoinedRooms {
+					if _, seen := excludeRooms[roomID]; seen {
+						continue
+					}
+					members, err := mc.GetMembers(ce.Ctx, roomID)
+					if err != nil || len(members) < 2 {
+						continue
+					}
+					var ghosts []networkid.UserID
+					var humans []id.UserID
+					for mxid, member := range members {
+						if mxid == ce.Bridge.Bot.GetMXID() || !member.Membership.IsInviteOrJoin() {
+							continue
+						}
+						if ghost, ok := mc.ParseGhostMXID(mxid); ok {
+							ghosts = append(ghosts, ghost)
+						} else {
+							humans = append(humans, mxid)
+						}
+					}
+					if len(ghosts) != 1 || len(humans) > 1 {
+						continue
+					}
+					if len(humans) == 1 && humans[0] != ce.User.MXID {
+						continue
+					}
+					contactJID := string(ghosts[0])
+					portalKey := networkid.PortalKey{ID: MakePortalID(contactJID)}
+					portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
+					if err != nil || portal == nil || portal.MXID == "" || portal.MXID == roomID {
+						continue
+					}
+					plans = append(plans, rebindPlan{
+						kind:        "rebind",
+						reason:      "orphaned DM room still contains the contact ghost",
+						targetJID:   contactJID,
+						portal:      portal,
+						currentRoom: portal.MXID,
+						targetRoom:  roomID,
+						targetName:  formatPortalName(portal),
+						targetMsgs:  getRoomPruneStats(ce, portal).messageCount,
+						targetLast:  getRoomPruneStats(ce, portal).lastTS,
+					})
+					excludeRooms[roomID] = struct{}{}
+				}
+			}
+		}
+
+		if len(plans) == 0 {
+			ce.Reply("No duplicate or orphaned rooms found to rebind. All contacts have single active rooms.")
+			return
+		}
+
+		if !confirm {
+			var sb strings.Builder
+			var rebinds, prunes, manuals int
+			for _, p := range plans {
+				switch p.kind {
+				case "rebind":
+					rebinds++
+					sb.WriteString(fmt.Sprintf("- **Rebind**: `%s` (current: `%s`) → `%s` (Name: %q, %d msgs, last active %s; reason: %s)\n",
+						p.targetJID, p.currentRoom, p.targetRoom, p.targetName, p.targetMsgs, formatLastActivity(p.targetLast), p.reason))
+				case "prune":
+					prunes++
+					sb.WriteString(fmt.Sprintf("- **Prune**: `%s` (`%s`)\n", p.targetJID, p.targetRoom))
+				case "manual":
+					manuals++
+					sb.WriteString(fmt.Sprintf("- **Manual Review**: `%s` (`%s`) — %s\n", p.targetJID, p.targetRoom, p.reason))
+				}
+			}
+			sb.WriteString(fmt.Sprintf("\nFound %d rebind(s), %d prune(s), %d manual review(s).\nTo execute, run: `rebind-all confirm`",
+				rebinds, prunes, manuals))
+			ce.Reply("%s", sb.String())
+			return
+		}
+
+		var reboundCount, prunedCount int
+		var errs []string
+		var unboundNewRooms []id.RoomID
+
+		for _, p := range plans {
+			switch p.kind {
+			case "rebind":
+				oldRoom, err := rebindSinglePortal(ce, p.portal, p.targetRoom, login, true)
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("%s (%s): %v", p.targetJID, p.targetRoom, err))
+				} else {
+					reboundCount++
+					if oldRoom != "" && oldRoom != p.targetRoom {
+						unboundNewRooms = append(unboundNewRooms, oldRoom)
+					}
+				}
+			case "prune":
+				if p.portal != nil {
+					if err := deleteSinglePortal(ce, p.portal); err != nil {
+						errs = append(errs, fmt.Sprintf("prune %s (%s): %v", p.targetJID, p.targetRoom, err))
+					} else {
+						prunedCount++
+					}
+				}
+			}
+		}
+
+		var notes strings.Builder
+		if len(unboundNewRooms) > 0 {
+			notes.WriteString("\n\n**Note**: The following previously active room(s) are now unbound. You can delete them with `delete-room <room_id>` if not needed:\n")
+			for _, r := range unboundNewRooms {
+				notes.WriteString(fmt.Sprintf("- `%s`\n", r))
+			}
+		}
+
+		if len(errs) > 0 {
+			ce.Reply("Rebound %d contact(s) (pruned %d empty duplicate rooms), with %d error(s):\n- %s%s",
+				reboundCount, prunedCount, len(errs), strings.Join(errs, "\n- "), notes.String())
+		} else {
+			ce.Reply("Successfully rebound %d contact(s) back to their historical rooms and added them to your Space (pruned %d empty duplicate rooms).%s",
+				reboundCount, prunedCount, notes.String())
+		}
+	},
+	Name: "rebind-all",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Automatically rebind all contacts to their historical rooms with message history and clean up empty duplicate rooms (usage: rebind-all [dry-run|confirm])",
+		Args:        "[dry-run|confirm]",
+	},
+	RequiresLogin: true,
+}
+
+var CommandReplaceRoom = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		target, deleteOld, err := parseReplaceRoomArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		var portal *bridgev2.Portal
+		if strings.HasPrefix(target, "!") {
+			portal, err = ce.Bridge.GetPortalByMXID(ce.Ctx, id.RoomID(target))
+		} else {
+			targetJID := normalizeJID(target)
+			portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
+			portal, err = ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
+			if portal == nil {
+				rawKey := networkid.PortalKey{ID: MakePortalID(target)}
+				portal, _ = ce.Bridge.GetExistingPortalByKey(ce.Ctx, rawKey)
+			}
+		}
+
+		if err != nil || portal == nil {
+			ce.Reply("Portal room not found for %q. Provide a valid Matrix room ID (!...) or contact phone/JID.", target)
+			return
+		}
+
+		targetJID := UnescapeJID(string(portal.ID))
+		newRoomID, err := replaceSinglePortal(ce, portal, login, deleteOld)
+		if err != nil {
+			ce.Reply("Failed to replace room for contact %s: %v", targetJID, err)
+			return
+		}
+
+		ce.Reply("Successfully replaced room for contact **%s**.\n- New room: `%s` (Name: %q)\n- Added to Space and queued message history backfill.",
+			targetJID, newRoomID, portal.Name)
+	},
+	Name: "replace-room",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Replace an existing bridged room with a fresh Matrix room and replay message history (usage: replace-room <room_id | jid | phone> [delete-old])",
+		Args:        "<room_id | jid> [delete-old]",
+	},
+	RequiresLogin: true,
+}
+
+var CommandReplaceAll = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		confirm, deleteOld, err := parseReplaceAllArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err != nil {
+			ce.Reply("Failed to list portals: %v", err)
+			return
+		}
+
+		seen := make(map[networkid.PortalKey]bool)
+		var portalList []*bridgev2.Portal
+		for _, up := range userPortals {
+			if seen[up.Portal] {
+				continue
+			}
+			seen[up.Portal] = true
+			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+			if err != nil || portal == nil {
+				continue
+			}
+			portalList = append(portalList, portal)
+		}
+
+		if len(portalList) == 0 {
+			ce.Reply("No active portal rooms found to replace.")
+			return
+		}
+
+		if !confirm {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Ready to replace %d active portal room(s) with fresh Matrix rooms:\n\n", len(portalList)))
+			for _, portal := range portalList {
+				stats := getRoomPruneStats(ce, portal)
+				sb.WriteString(fmt.Sprintf("- Contact: **%s** | Current Room: `%s` | Msgs: %d (Name: %q)\n",
+					stats.targetJID, portal.MXID, stats.messageCount, stats.name))
+			}
+			action := "leave old rooms with redirect notices"
+			cmdExample := "replace-all confirm"
+			if deleteOld {
+				action = "delete old Matrix rooms"
+				cmdExample = "replace-all delete-old confirm"
+			}
+			sb.WriteString(fmt.Sprintf("\nAction on old rooms: **%s**\nTo execute, run:\n`%s`", action, cmdExample))
+			ce.Reply("%s", sb.String())
+			return
+		}
+
+		var replacedCount int
+		var errs []string
+		for _, portal := range portalList {
+			targetJID := UnescapeJID(string(portal.ID))
+			_, err := replaceSinglePortal(ce, portal, login, deleteOld)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", targetJID, err))
+			} else {
+				replacedCount++
+			}
+		}
+
+		if len(errs) > 0 {
+			ce.Reply("Replaced %d room(s) with %d error(s):\n- %s",
+				replacedCount, len(errs), strings.Join(errs, "\n- "))
+		} else {
+			ce.Reply("Successfully replaced %d portal room(s) with fresh Matrix rooms, added them to your Space, and queued message history backfill.",
+				replacedCount)
+		}
+	},
+	Name: "replace-all",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Bulk replace all active portal rooms with fresh Matrix rooms and replay message history (usage: replace-all [delete-old] [dry-run|confirm])",
+		Args:        "[delete-old] [dry-run|confirm]",
+	},
+	RequiresLogin: true,
+}
+
+func parseRebindSpaceArgs(args []string) (id.RoomID, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("usage: rebind-space <space_room_id>")
+	}
+	arg := strings.TrimSpace(args[0])
+	if !strings.HasPrefix(arg, "!") {
+		return "", fmt.Errorf("invalid space room ID %q (must start with '!')", arg)
+	}
+	return id.RoomID(arg), nil
+}
+
+func parseDeleteSpaceArgs(args []string) (spaceRoomID id.RoomID, force bool, err error) {
+	if len(args) == 0 {
+		return "", false, fmt.Errorf("usage: delete-space <space_room_id> [--force]")
+	}
+	for _, arg := range args {
+		argTrim := strings.TrimSpace(arg)
+		lower := strings.ToLower(argTrim)
+		if lower == "--force" || lower == "force" {
+			force = true
+		} else if strings.HasPrefix(argTrim, "!") {
+			spaceRoomID = id.RoomID(argTrim)
+		} else {
+			return "", false, fmt.Errorf("unexpected argument %q (usage: delete-space <space_room_id> [--force])", arg)
+		}
+	}
+	if spaceRoomID == "" {
+		return "", false, fmt.Errorf("missing space room ID (must start with '!')")
+	}
+	return spaceRoomID, force, nil
+}
+
+var CommandRebindSpace = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		targetSpaceRoom, err := parseRebindSpaceArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		err = ce.Bridge.Bot.EnsureJoined(ce.Ctx, targetSpaceRoom)
+		if err != nil {
+			ce.Reply("Bridge bot could not join space room `%s`: %v", targetSpaceRoom, err)
+			return
+		}
+
+		oldSpaceRoom := login.SpaceRoom
+		login.SpaceRoom = targetSpaceRoom
+		if err := login.Save(ce.Ctx); err != nil {
+			ce.Reply("Failed to save space room to database: %v", err)
+			return
+		}
+
+		if ce.User.ManagementRoom != "" {
+			_ = addRoomToSpace(ce.Ctx, ce.Bridge, targetSpaceRoom, ce.User.ManagementRoom, false)
+		}
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		var addedPortals int
+		if err == nil {
+			for _, up := range userPortals {
+				portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+				if err != nil || portal == nil || portal.MXID == "" {
+					continue
+				}
+				if err := login.AddPortalToSpace(ce.Ctx, portal, up.CopyWithoutValues()); err == nil {
+					addedPortals++
+				}
+			}
+		}
+
+		if oldSpaceRoom != "" && oldSpaceRoom != targetSpaceRoom {
+			sendNotice(ce.Bridge.Bot, oldSpaceRoom, fmt.Sprintf("⚠️ This Space has been replaced by https://matrix.to/#/%s. All bridged chats have been linked to the new Space.", targetSpaceRoom))
+		}
+
+		ce.Reply("Successfully rebound personal Space to `%s`.\n- Linked management room and %d active chat portal(s) to the Space.", targetSpaceRoom, addedPortals)
+	},
+	Name: "rebind-space",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Rebind your personal Space to an existing Space room and link all active chats to it (usage: rebind-space <space_room_id>)",
+		Args:        "<space_room_id>",
+	},
+	RequiresLogin: true,
+}
+
+var CommandResyncSpace = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		if login.SpaceRoom == "" {
+			ce.Reply("No personal space found for this login. Run `rebind-space <space_room_id>` or `sync` first.")
+			return
+		}
+
+		spaceRoom := login.SpaceRoom
+		if err := ce.Bridge.Bot.EnsureJoined(ce.Ctx, spaceRoom); err != nil {
+			ce.Reply("Bridge bot could not join personal space `%s`: %v", spaceRoom, err)
+			return
+		}
+
+		activeChildren := make(map[id.RoomID]bool)
+		if ce.User.ManagementRoom != "" {
+			activeChildren[ce.User.ManagementRoom] = true
+			_ = addRoomToSpace(ce.Ctx, ce.Bridge, spaceRoom, ce.User.ManagementRoom, false)
+		}
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		var linkedChats int
+		if err == nil {
+			for _, up := range userPortals {
+				portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+				if err != nil || portal == nil || portal.MXID == "" {
+					continue
+				}
+				activeChildren[portal.MXID] = true
+				if err := login.AddPortalToSpace(ce.Ctx, portal, up.CopyWithoutValues()); err == nil {
+					linkedChats++
+				}
+			}
+		}
+
+		var unlinkedStale int
+		mc, ok := ce.Bridge.Matrix.(*matrix.Connector)
+		if ok && mc != nil && mc.AS != nil {
+			state, err := mc.AS.BotClient().State(ce.Ctx, spaceRoom)
+			if err == nil && state != nil {
+				if childEvents, ok := state[event.StateSpaceChild]; ok {
+					for stateKey, evt := range childEvents {
+						childID := id.RoomID(stateKey)
+						if childID == "" {
+							continue
+						}
+						childContent := evt.Content.AsSpaceChild()
+						if childContent == nil || len(childContent.Via) == 0 {
+							continue
+						}
+						if !activeChildren[childID] {
+							removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, spaceRoom, childID)
+							unlinkedStale++
+						}
+					}
+				}
+			}
+		}
+
+		ce.Reply("Successfully resynced personal Space `%s`.\n- Linked %d active chat(s) and management room\n- Unlinked %d stale/dead room(s) from Space.",
+			spaceRoom, linkedChats, unlinkedStale)
+	},
+	Name: "resync-space",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Clean up unlinked/stale rooms from your personal Space and ensure all active chat portals are linked",
+	},
+	RequiresLogin: true,
+}
+
+var CommandPruneSpaces = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		confirm, err := parsePruneDuplicatesArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		activeSpace := login.SpaceRoom
+		mc, ok := ce.Bridge.Matrix.(*matrix.Connector)
+		if !ok || mc == nil || mc.AS == nil {
+			ce.Reply("Matrix connector unavailable")
+			return
+		}
+
+		joined, err := mc.AS.BotClient().JoinedRooms(ce.Ctx)
+		if err != nil || joined == nil {
+			ce.Reply("Failed to list joined rooms: %v", err)
+			return
+		}
+
+		type spaceInfo struct {
+			roomID      id.RoomID
+			name        string
+			memberCount int
+		}
+		var orphanedSpaces []spaceInfo
+
+		for _, roomID := range joined.JoinedRooms {
+			if roomID == activeSpace || roomID == ce.User.ManagementRoom {
+				continue
+			}
+			createEvt, err := mc.GetStateEvent(ce.Ctx, roomID, event.StateCreate, "")
+			if err != nil || createEvt == nil {
+				continue
+			}
+			createContent := createEvt.Content.AsCreate()
+			if createContent == nil || createContent.Type != event.RoomTypeSpace {
+				continue
+			}
+
+			members, err := mc.GetMembers(ce.Ctx, roomID)
+			if err != nil {
+				continue
+			}
+			var humanCount int
+			var isUserInRoom bool
+			for mxid, m := range members {
+				if !m.Membership.IsInviteOrJoin() || mxid == ce.Bridge.Bot.GetMXID() {
+					continue
+				}
+				if _, isGhost := mc.ParseGhostMXID(mxid); !isGhost {
+					humanCount++
+					if mxid == ce.User.MXID {
+						isUserInRoom = true
+					}
+				}
+			}
+			if humanCount > 1 || (humanCount == 1 && !isUserInRoom) {
+				continue
+			}
+
+			var name string
+			if nameEvt, err := mc.GetStateEvent(ce.Ctx, roomID, event.StateRoomName, ""); err == nil && nameEvt != nil {
+				name = nameEvt.Content.AsRoomName().Name
+			}
+			if name == "" {
+				name = "(unnamed Space)"
+			}
+
+			orphanedSpaces = append(orphanedSpaces, spaceInfo{
+				roomID:      roomID,
+				name:        name,
+				memberCount: len(members),
+			})
+		}
+
+		if len(orphanedSpaces) == 0 {
+			ce.Reply("No orphaned Space rooms found. Active Space is `%s`.", activeSpace)
+			return
+		}
+
+		if !confirm {
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Found %d orphaned Space room(s) (Active Space: `%s`):\n\n", len(orphanedSpaces), activeSpace))
+			for _, s := range orphanedSpaces {
+				sb.WriteString(fmt.Sprintf("- Space: `%s` | Name: %q | Members: %d\n", s.roomID, s.name, s.memberCount))
+			}
+			sb.WriteString("\nTo delete these orphaned Spaces and leave them, run:\n`prune-spaces confirm`")
+			ce.Reply("%s", sb.String())
+			return
+		}
+
+		var deletedCount int
+		var errs []string
+		for _, s := range orphanedSpaces {
+			if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, s.roomID, false); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", s.roomID, err))
+			} else {
+				deletedCount++
+			}
+		}
+
+		if len(errs) > 0 {
+			ce.Reply("Pruned %d orphaned Space(s) with %d error(s):\n- %s", deletedCount, len(errs), strings.Join(errs, "\n- "))
+		} else {
+			ce.Reply("Successfully deleted and left %d orphaned Space room(s).", deletedCount)
+		}
+	},
+	Name: "prune-spaces",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Find and delete old/orphaned Space rooms left behind by bridge resets (usage: prune-spaces [dry-run|confirm])",
+		Args:        "[dry-run|confirm]",
+	},
+	RequiresLogin: true,
+}
+
+var CommandDeleteSpace = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		spaceRoomID, force, err := parseDeleteSpaceArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+
+		if spaceRoomID == login.SpaceRoom && !force {
+			ce.Reply("`%s` is your currently active personal Space. Refusing to delete without `--force`.\nTo delete your active Space anyway, run `delete-space %s --force` or rebind to a new Space with `rebind-space <id>` first.", spaceRoomID, spaceRoomID)
+			return
+		}
+
+		if spaceRoomID == login.SpaceRoom && force {
+			login.SpaceRoom = ""
+			_ = login.Save(ce.Ctx)
+		}
+
+		err = ce.Bridge.Bot.DeleteRoom(ce.Ctx, spaceRoomID, false)
+		if err != nil {
+			ce.Reply("Failed to delete Space room `%s`: %v", spaceRoomID, err)
+			return
+		}
+
+		ce.Reply("Successfully deleted Space room `%s`.", spaceRoomID)
+	},
+	Name: "delete-space",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Delete a specific Space room (usage: delete-space <space_room_id> [--force])",
+		Args:        "<space_room_id> [--force]",
 	},
 	RequiresLogin: true,
 }

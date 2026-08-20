@@ -8,6 +8,8 @@ import (
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/id"
 )
 
 func TestSplitCheogramGroupContacts(t *testing.T) {
@@ -260,5 +262,343 @@ func TestFormatLastActivity(t *testing.T) {
 	old := now.Add(-40 * 24 * time.Hour)
 	if got := formatLastActivity(old); !strings.Contains(got, "40 days ago") {
 		t.Errorf("formatLastActivity(40d ago) = %q, want '40 days ago'", got)
+	}
+}
+
+func TestParseRebindRoomArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantJID    string
+		wantRoomID string
+		wantErr    bool
+	}{
+		{
+			name:       "jid first then room ID",
+			args:       []string{"+15551234567", "!oldroom:example.com"},
+			wantJID:    "+15551234567@cheogram.com",
+			wantRoomID: "!oldroom:example.com",
+		},
+		{
+			name:       "room ID first then phone",
+			args:       []string{"!oldroom:example.com", "+15551234567"},
+			wantJID:    "+15551234567@cheogram.com",
+			wantRoomID: "!oldroom:example.com",
+		},
+		{
+			name:       "full jid and room ID",
+			args:       []string{"contact@cheogram.com", "!oldroom:example.com"},
+			wantJID:    "contact@cheogram.com",
+			wantRoomID: "!oldroom:example.com",
+		},
+		{
+			name:    "missing arguments",
+			args:    []string{"!oldroom:example.com"},
+			wantErr: true,
+		},
+		{
+			name:    "too many arguments",
+			args:    []string{"!oldroom:example.com", "+15551234567", "extra"},
+			wantErr: true,
+		},
+		{
+			name:    "no room id starting with !",
+			args:    []string{"contact@cheogram.com", "+15551234567"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jid, roomID, err := parseRebindRoomArgs(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseRebindRoomArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if jid != tt.wantJID {
+					t.Errorf("jid = %q, want %q", jid, tt.wantJID)
+				}
+				if string(roomID) != tt.wantRoomID {
+					t.Errorf("roomID = %q, want %q", roomID, tt.wantRoomID)
+				}
+			}
+		})
+	}
+}
+
+func TestParseReplaceRoomArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		args          []string
+		wantTarget    string
+		wantDeleteOld bool
+		wantErr       bool
+	}{
+		{
+			name:          "target room ID only",
+			args:          []string{"!room:example.com"},
+			wantTarget:    "!room:example.com",
+			wantDeleteOld: false,
+		},
+		{
+			name:          "target phone with delete-old",
+			args:          []string{"+15551234567", "delete-old"},
+			wantTarget:    "+15551234567",
+			wantDeleteOld: true,
+		},
+		{
+			name:          "delete-old flag first",
+			args:          []string{"--delete-old", "user@cheogram.com"},
+			wantTarget:    "user@cheogram.com",
+			wantDeleteOld: true,
+		},
+		{
+			name:    "empty args",
+			args:    []string{},
+			wantErr: true,
+		},
+		{
+			name:    "too many non-flag args",
+			args:    []string{"!room1:example.com", "!room2:example.com"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target, deleteOld, err := parseReplaceRoomArgs(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseReplaceRoomArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if target != tt.wantTarget {
+					t.Errorf("target = %q, want %q", target, tt.wantTarget)
+				}
+				if deleteOld != tt.wantDeleteOld {
+					t.Errorf("deleteOld = %v, want %v", deleteOld, tt.wantDeleteOld)
+				}
+			}
+		})
+	}
+}
+
+func TestParseReplaceAllArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		args          []string
+		wantConfirm   bool
+		wantDeleteOld bool
+		wantErr       bool
+	}{
+		{
+			name:          "empty args defaults to dry-run keep-old",
+			args:          []string{},
+			wantConfirm:   false,
+			wantDeleteOld: false,
+		},
+		{
+			name:          "dry-run flag",
+			args:          []string{"dry-run"},
+			wantConfirm:   false,
+			wantDeleteOld: false,
+		},
+		{
+			name:          "confirm flag",
+			args:          []string{"confirm"},
+			wantConfirm:   true,
+			wantDeleteOld: false,
+		},
+		{
+			name:          "confirm with delete-old",
+			args:          []string{"delete-old", "confirm"},
+			wantConfirm:   true,
+			wantDeleteOld: true,
+		},
+		{
+			name:          "yes with --delete-old",
+			args:          []string{"--yes", "--delete-old"},
+			wantConfirm:   true,
+			wantDeleteOld: true,
+		},
+		{
+			name:    "invalid argument",
+			args:    []string{"unknown"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			confirm, deleteOld, err := parseReplaceAllArgs(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseReplaceAllArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if confirm != tt.wantConfirm {
+					t.Errorf("confirm = %v, want %v", confirm, tt.wantConfirm)
+				}
+				if deleteOld != tt.wantDeleteOld {
+					t.Errorf("deleteOld = %v, want %v", deleteOld, tt.wantDeleteOld)
+				}
+			}
+		})
+	}
+}
+
+func TestSortRoomPruneStatsDesc(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	p1 := &bridgev2.Portal{Portal: &database.Portal{MXID: "!room1:example.com"}}
+	p2 := &bridgev2.Portal{Portal: &database.Portal{MXID: "!room2:example.com"}}
+	p3 := &bridgev2.Portal{Portal: &database.Portal{MXID: "!room3:example.com"}}
+
+	stats := []*roomPruneStats{
+		{portal: p1, messageCount: 0, lastTS: now.Add(-10 * time.Hour)},
+		{portal: p2, messageCount: 50, lastTS: now.Add(-1 * time.Hour)},
+		{portal: p3, messageCount: 10, lastTS: now},
+	}
+
+	sortRoomPruneStatsDesc(stats)
+
+	if stats[0].portal.MXID != "!room2:example.com" {
+		t.Errorf("stats[0] MXID = %s, want !room2:example.com", stats[0].portal.MXID)
+	}
+	if stats[1].portal.MXID != "!room3:example.com" {
+		t.Errorf("stats[1] MXID = %s, want !room3:example.com", stats[1].portal.MXID)
+	}
+	if stats[2].portal.MXID != "!room1:example.com" {
+		t.Errorf("stats[2] MXID = %s, want !room1:example.com", stats[2].portal.MXID)
+	}
+}
+
+func TestFormatPortalName(t *testing.T) {
+	t.Parallel()
+
+	if name := formatPortalName(nil); name != "(unknown)" {
+		t.Errorf("formatPortalName(nil) = %q, want %q", name, "(unknown)")
+	}
+
+	pWithName := &bridgev2.Portal{Portal: &database.Portal{Name: "Alice"}}
+	if name := formatPortalName(pWithName); name != "Alice" {
+		t.Errorf("formatPortalName(named) = %q, want %q", name, "Alice")
+	}
+
+	pWithID := &bridgev2.Portal{Portal: &database.Portal{PortalKey: networkid.PortalKey{ID: "=2b15551234567@cheogram.com"}}}
+	if name := formatPortalName(pWithID); name != "+15551234567@cheogram.com" {
+		t.Errorf("formatPortalName(unescaped) = %q, want %q", name, "+15551234567@cheogram.com")
+	}
+}
+
+func TestParseRebindSpaceArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantRoomID id.RoomID
+		wantErr    bool
+	}{
+		{
+			name:       "valid space room ID",
+			args:       []string{"!space1:example.com"},
+			wantRoomID: "!space1:example.com",
+		},
+		{
+			name:    "empty args",
+			args:    []string{},
+			wantErr: true,
+		},
+		{
+			name:    "too many args",
+			args:    []string{"!space1:example.com", "extra"},
+			wantErr: true,
+		},
+		{
+			name:    "invalid room ID without !",
+			args:    []string{"space1:example.com"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roomID, err := parseRebindSpaceArgs(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseRebindSpaceArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			}
+			if !tt.wantErr && roomID != tt.wantRoomID {
+				t.Errorf("roomID = %s, want %s", roomID, tt.wantRoomID)
+			}
+		})
+	}
+}
+
+func TestParseDeleteSpaceArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantRoomID id.RoomID
+		wantForce  bool
+		wantErr    bool
+	}{
+		{
+			name:       "valid space room ID without force",
+			args:       []string{"!space1:example.com"},
+			wantRoomID: "!space1:example.com",
+			wantForce:  false,
+		},
+		{
+			name:       "valid space room ID with --force",
+			args:       []string{"!space1:example.com", "--force"},
+			wantRoomID: "!space1:example.com",
+			wantForce:  true,
+		},
+		{
+			name:       "valid space room ID with force keyword",
+			args:       []string{"force", "!space1:example.com"},
+			wantRoomID: "!space1:example.com",
+			wantForce:  true,
+		},
+		{
+			name:    "empty args",
+			args:    []string{},
+			wantErr: true,
+		},
+		{
+			name:    "missing room id",
+			args:    []string{"--force"},
+			wantErr: true,
+		},
+		{
+			name:    "unexpected extra argument",
+			args:    []string{"!space1:example.com", "unknown"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			roomID, force, err := parseDeleteSpaceArgs(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseDeleteSpaceArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
+			}
+			if !tt.wantErr {
+				if roomID != tt.wantRoomID {
+					t.Errorf("roomID = %s, want %s", roomID, tt.wantRoomID)
+				}
+				if force != tt.wantForce {
+					t.Errorf("force = %v, want %v", force, tt.wantForce)
+				}
+			}
+		})
 	}
 }

@@ -67,6 +67,14 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandPruneRooms)
 		proc.AddHandler(CommandPruneDuplicates)
 		proc.AddHandler(CommandDeleteRoom)
+		proc.AddHandler(CommandRebindRoom)
+		proc.AddHandler(CommandRebindAll)
+		proc.AddHandler(CommandReplaceRoom)
+		proc.AddHandler(CommandReplaceAll)
+		proc.AddHandler(CommandRebindSpace)
+		proc.AddHandler(CommandResyncSpace)
+		proc.AddHandler(CommandPruneSpaces)
+		proc.AddHandler(CommandDeleteSpace)
 		proc.AddHandler(CommandLogout)
 		c.log.Info().Msg("Registered custom commands")
 	} else {
@@ -271,6 +279,14 @@ func managementRoomHelpText() string {
 		"- prune-rooms [empty] [dry-run|confirm] [days] (default 30d, or 'empty' for creation-only rooms)\n" +
 		"- prune-duplicates [dry-run|confirm]\n" +
 		"- delete-room <room_id|jid>\n" +
+		"- rebind-room <target_jid_or_phone> <matrix_room_id>\n" +
+		"- rebind-all [dry-run|confirm]\n" +
+		"- replace-room <room_id|jid> [delete-old]\n" +
+		"- replace-all [delete-old] [dry-run|confirm]\n" +
+		"- rebind-space <space_room_id>\n" +
+		"- resync-space\n" +
+		"- prune-spaces [dry-run|confirm]\n" +
+		"- delete-space <space_room_id> [--force]\n" +
 		"Matrix encryption recovery:\n" +
 		"  - discard-session (in the affected room): clear one room's stuck Megolm session so Matrix can request fresh keys for that room; use this when only one room shows decrypt errors\n" +
 		"  - resync-matrix-encryption: refresh Matrix encryption state after a decrypt error, device mismatch, or missing keys; keeps rooms and history\n" +
