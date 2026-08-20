@@ -34,6 +34,24 @@ func TestExtractXMPPReceiptTarget(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name: "marker received",
+			msg: stanza.Message{Extensions: []stanza.MsgExtension{
+				&XMPPMarkerReceived{ID: "msg-3"},
+			}},
+			wantType:   bridgev2.RemoteEventDeliveryReceipt,
+			wantTarget: "msg-3",
+			wantOK:     true,
+		},
+		{
+			name: "marker acknowledged",
+			msg: stanza.Message{Extensions: []stanza.MsgExtension{
+				&XMPPMarkerAcknowledged{ID: "msg-4"},
+			}},
+			wantType:   bridgev2.RemoteEventReadReceipt,
+			wantTarget: "msg-4",
+			wantOK:     true,
+		},
+		{
 			name: "missing id",
 			msg: stanza.Message{Extensions: []stanza.MsgExtension{
 				&XMPPMarkerReceived{},

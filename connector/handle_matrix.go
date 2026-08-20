@@ -102,8 +102,8 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			return nil, fmt.Errorf("message body is empty after Matrix content conversion")
 		}
 	}
-	if msg.Event.ID != "" {
-		extensions = append(extensions, XMPPOriginID{ID: string(msg.Event.ID)})
+	if m.Id != "" {
+		extensions = append(extensions, XMPPOriginID{ID: m.Id})
 	}
 	if reply := buildOutgoingXMPPReply(msg.ReplyTo); reply != nil {
 		extensions = append(extensions, reply)
@@ -150,7 +150,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
-			ID:         networkid.MessageID(msg.Event.ID),
+			ID:         networkid.MessageID(m.Id),
 			SenderID:   senderID,
 			SenderMXID: msg.Event.Sender,
 			Timestamp:  time.UnixMilli(msg.Event.Timestamp),
