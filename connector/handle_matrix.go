@@ -419,8 +419,9 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 	name := portalDesiredName(ctx, nc.bridge, portal, nc.contactNameSuffix())
 
 	chatInfo := &bridgev2.ChatInfo{
-		Name: &name,
-		Type: roomType,
+		Name:        &name,
+		Type:        roomType,
+		CanBackfill: true,
 	}
 	if *roomType == database.RoomTypeDM {
 		targetJID := UnescapeJID(string(portal.ID))

@@ -1622,6 +1622,399 @@ func parsePruneDuplicatesArgs(args []string) (confirm bool, err error) {
 	return confirm, nil
 }
 
+func stripContactSuffixAny(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		lower := strings.ToLower(s)
+		stripped := false
+		for _, suffix := range []string{
+			" (jmp.chat)", " (jmpchat)", " (jmp)", " (cheogram)", " (jmp.chat sms)", " (sms)",
+			" [jmp.chat]", " [jmpchat]", " [jmp]", " [cheogram]", " [jmp.chat sms]", " [sms]",
+		} {
+			if strings.HasSuffix(lower, suffix) {
+				s = strings.TrimSpace(s[:len(s)-len(suffix)])
+				stripped = true
+				break
+			}
+		}
+		if !stripped {
+			break
+		}
+	}
+	if idx := strings.LastIndex(s, " ("); idx != -1 && strings.HasSuffix(s, ")") {
+		tag := s[idx+2 : len(s)-1]
+		if len(tag) <= 15 && !strings.ContainsAny(tag, "0123456789") {
+			s = strings.TrimSpace(s[:idx])
+		}
+	} else if idx := strings.LastIndex(s, " ["); idx != -1 && strings.HasSuffix(s, "]") {
+		tag := s[idx+2 : len(s)-1]
+		if len(tag) <= 15 && !strings.ContainsAny(tag, "0123456789") {
+			s = strings.TrimSpace(s[:idx])
+		}
+	}
+	return s
+}
+
+func extractPhoneDigits(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	digits := b.String()
+	if len(digits) == 11 && digits[0] == '1' {
+		return digits[1:]
+	}
+	if len(digits) == 10 {
+		return digits
+	}
+	if len(digits) >= 7 {
+		return digits
+	}
+	return ""
+}
+
+type candidateRoom struct {
+	roomID       id.RoomID
+	portal       *bridgev2.Portal
+	targetJID    string
+	name         string
+	messageCount int
+	lastTS       time.Time
+	preview      string
+	isOrphan     bool
+	matchKeys    map[string]bool
+}
+
+func computeRoomMatchKeys(ctx context.Context, bridge *bridgev2.Bridge, targetJID, ghostJID, roomName string) map[string]bool {
+	keys := make(map[string]bool)
+
+	addKey := func(prefix, val string) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return
+		}
+		keys[prefix+":"+strings.ToLower(val)] = true
+	}
+
+	for _, rawJID := range []string{targetJID, ghostJID} {
+		if rawJID == "" {
+			continue
+		}
+		bare := bareJID(UnescapeJID(rawJID))
+		addKey("jid", bare)
+		if digits := extractPhoneDigits(bare); digits != "" {
+			addKey("phone", digits)
+		}
+	}
+
+	if bridge != nil {
+		lookupJID := targetJID
+		if lookupJID == "" {
+			lookupJID = ghostJID
+		}
+		if lookupJID != "" {
+			ghost, err := bridge.GetExistingGhostByID(ctx, MakeUserID(lookupJID))
+			if err == nil && ghost != nil {
+				if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil {
+					if meta.CustomName != "" {
+						addKey("name", meta.CustomName)
+					}
+					if meta.RemoteName != "" {
+						addKey("name", meta.RemoteName)
+					}
+				}
+				if ghost.Name != "" {
+					addKey("name", stripContactSuffixAny(ghost.Name))
+				}
+			}
+		}
+	}
+
+	if roomName != "" {
+		clean := stripContactSuffixAny(roomName)
+		lower := strings.ToLower(clean)
+		if len(clean) >= 2 && lower != "jmpchat group" && lower != "(unnamed space)" && !strings.HasPrefix(lower, "unnamed") {
+			addKey("name", clean)
+		}
+		if digits := extractPhoneDigits(roomName); digits != "" {
+			addKey("phone", digits)
+		}
+	}
+
+	return keys
+}
+
+func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*candidateRoom, error) {
+	candidatesMap := make(map[id.RoomID]*candidateRoom)
+
+	excludeRooms := map[id.RoomID]struct{}{
+		ce.User.ManagementRoom: {},
+	}
+	if login != nil && login.SpaceRoom != "" {
+		excludeRooms[login.SpaceRoom] = struct{}{}
+	}
+
+	userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+	if err == nil {
+		for _, up := range userPortals {
+			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+			if err != nil || portal == nil || portal.MXID == "" {
+				continue
+			}
+			if _, ok := excludeRooms[portal.MXID]; ok {
+				continue
+			}
+			if portal.RoomType == database.RoomTypeSpace {
+				continue
+			}
+			stats := getRoomPruneStats(ce, portal)
+			targetJID := stats.targetJID
+			keys := computeRoomMatchKeys(ce.Ctx, ce.Bridge, targetJID, "", stats.name)
+			candidatesMap[portal.MXID] = &candidateRoom{
+				roomID:       portal.MXID,
+				portal:       portal,
+				targetJID:    targetJID,
+				name:         stats.name,
+				messageCount: stats.messageCount,
+				lastTS:       stats.lastTS,
+				preview:      stats.preview,
+				isOrphan:     false,
+				matchKeys:    keys,
+			}
+		}
+	}
+
+	mc, ok := ce.Bridge.Matrix.(*matrix.Connector)
+	if ok && mc != nil && mc.AS != nil {
+		botClient := mc.AS.BotClient()
+		joined, err := botClient.JoinedRooms(ce.Ctx)
+		if err == nil && joined != nil {
+			for _, roomID := range joined.JoinedRooms {
+				if _, seen := excludeRooms[roomID]; seen {
+					continue
+				}
+				if _, exists := candidatesMap[roomID]; exists {
+					continue
+				}
+
+				createEvt, _ := mc.GetStateEvent(ce.Ctx, roomID, event.StateCreate, "")
+				if createEvt != nil && createEvt.Content.AsCreate() != nil && createEvt.Content.AsCreate().Type == event.RoomTypeSpace {
+					continue
+				}
+
+				members, err := mc.GetMembers(ce.Ctx, roomID)
+				if err != nil || len(members) < 2 {
+					continue
+				}
+
+				var ghosts []networkid.UserID
+				var humans []id.UserID
+				for mxid, member := range members {
+					if mxid == ce.Bridge.Bot.GetMXID() || !member.Membership.IsInviteOrJoin() {
+						continue
+					}
+					if ghost, ok := mc.ParseGhostMXID(mxid); ok {
+						ghosts = append(ghosts, ghost)
+					} else {
+						humans = append(humans, mxid)
+					}
+				}
+				if len(humans) > 1 {
+					continue
+				}
+				if len(humans) == 1 && humans[0] != ce.User.MXID {
+					continue
+				}
+
+				var ghostJID string
+				if len(ghosts) == 1 {
+					ghostJID = string(ghosts[0])
+				}
+
+				roomName := ""
+				nameEvt, _ := mc.GetStateEvent(ce.Ctx, roomID, event.StateRoomName, "")
+				if nameEvt != nil && nameEvt.Content.AsRoomName() != nil {
+					roomName = strings.TrimSpace(nameEvt.Content.AsRoomName().Name)
+				}
+
+				portal, _ := ce.Bridge.GetPortalByMXID(ce.Ctx, roomID)
+				var targetJID string
+				var msgCount int
+				var lastTS time.Time
+				var preview string
+
+				if portal != nil {
+					stats := getRoomPruneStats(ce, portal)
+					targetJID = stats.targetJID
+					if roomName == "" {
+						roomName = stats.name
+					}
+					msgCount = stats.messageCount
+					lastTS = stats.lastTS
+					preview = stats.preview
+				} else if ghostJID != "" {
+					targetJID = ghostJID
+					if roomName == "" {
+						roomName = contactDisplayName(ce.Ctx, ce.Bridge, ghostJID)
+					}
+				}
+
+				if roomName == "" && targetJID != "" {
+					roomName = targetJID
+				}
+				if roomName == "" {
+					roomName = string(roomID)
+				}
+
+				keys := computeRoomMatchKeys(ce.Ctx, ce.Bridge, targetJID, ghostJID, roomName)
+				candidatesMap[roomID] = &candidateRoom{
+					roomID:       roomID,
+					portal:       portal,
+					targetJID:    targetJID,
+					name:         roomName,
+					messageCount: msgCount,
+					lastTS:       lastTS,
+					preview:      preview,
+					isOrphan:     portal == nil,
+					matchKeys:    keys,
+				}
+			}
+		}
+	}
+
+	var res []*candidateRoom
+	for _, c := range candidatesMap {
+		res = append(res, c)
+	}
+	return res, nil
+}
+
+type duplicateRoomCluster struct {
+	targetJID  string
+	name       string
+	rooms      []*candidateRoom
+	primary    *candidateRoom
+	duplicates []*candidateRoom
+}
+
+func sortCandidateRoomsDesc(rooms []*candidateRoom) {
+	sort.Slice(rooms, func(i, j int) bool {
+		if rooms[i].messageCount != rooms[j].messageCount {
+			return rooms[i].messageCount > rooms[j].messageCount
+		}
+		if !rooms[i].lastTS.Equal(rooms[j].lastTS) {
+			return rooms[i].lastTS.After(rooms[j].lastTS)
+		}
+		if (rooms[i].portal != nil) != (rooms[j].portal != nil) {
+			return rooms[i].portal != nil
+		}
+		return string(rooms[i].roomID) < string(rooms[j].roomID)
+	})
+}
+
+func clusterCandidateRooms(candidates []*candidateRoom) []*duplicateRoomCluster {
+	n := len(candidates)
+	if n == 0 {
+		return nil
+	}
+
+	parent := make([]int, n)
+	for i := range parent {
+		parent[i] = i
+	}
+	var find func(int) int
+	find = func(i int) int {
+		if parent[i] != i {
+			parent[i] = find(parent[i])
+		}
+		return parent[i]
+	}
+	union := func(i, j int) {
+		rootI := find(i)
+		rootJ := find(j)
+		if rootI != rootJ {
+			parent[rootI] = rootJ
+		}
+	}
+
+	keyToRooms := make(map[string][]int)
+	for i, c := range candidates {
+		for k := range c.matchKeys {
+			keyToRooms[k] = append(keyToRooms[k], i)
+		}
+	}
+
+	for _, roomIndices := range keyToRooms {
+		if len(roomIndices) <= 1 {
+			continue
+		}
+		for a := 0; a < len(roomIndices); a++ {
+			for b := a + 1; b < len(roomIndices); b++ {
+				i := roomIndices[a]
+				j := roomIndices[b]
+				r1 := candidates[i]
+				r2 := candidates[j]
+				j1 := bareJID(UnescapeJID(r1.targetJID))
+				j2 := bareJID(UnescapeJID(r2.targetJID))
+				if j1 != "" && j2 != "" && !strings.EqualFold(j1, j2) {
+					continue
+				}
+				union(i, j)
+			}
+		}
+	}
+
+	groups := make(map[int][]*candidateRoom)
+	for i, c := range candidates {
+		root := find(i)
+		groups[root] = append(groups[root], c)
+	}
+
+	var clusters []*duplicateRoomCluster
+	for _, roomList := range groups {
+		if len(roomList) == 0 {
+			continue
+		}
+		sortCandidateRoomsDesc(roomList)
+
+		primary := roomList[0]
+		var duplicates []*candidateRoom
+		if len(roomList) > 1 {
+			duplicates = roomList[1:]
+		}
+
+		bestJID := primary.targetJID
+		bestName := primary.name
+		for _, r := range roomList {
+			if bestJID == "" && r.targetJID != "" {
+				bestJID = r.targetJID
+			}
+			if (bestName == "" || bestName == string(bestJID)) && r.name != "" && r.name != string(r.targetJID) {
+				bestName = r.name
+			}
+		}
+		if bestName == "" {
+			bestName = bestJID
+		}
+
+		clusters = append(clusters, &duplicateRoomCluster{
+			targetJID:  bestJID,
+			name:       bestName,
+			rooms:      roomList,
+			primary:    primary,
+			duplicates: duplicates,
+		})
+	}
+
+	sort.Slice(clusters, func(i, j int) bool {
+		return clusters[i].name < clusters[j].name
+	})
+
+	return clusters
+}
+
 var CommandPruneRooms = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		confirm, emptyOnly, days, err := parsePruneRoomsArgs(ce.Args)
@@ -1635,37 +2028,32 @@ var CommandPruneRooms = &commands.FullHandler{
 			return
 		}
 
-		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		candidates, err := collectCandidateRooms(ce, login)
 		if err != nil {
-			ce.Reply("Failed to list portals: %v", err)
+			ce.Reply("Failed to list rooms: %v", err)
 			return
 		}
 
 		cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
-		var staleStats []*roomPruneStats
+		var staleCandidates []*candidateRoom
 
-		for _, up := range userPortals {
-			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
-			if err != nil || portal == nil {
-				continue
-			}
-			stats := getRoomPruneStats(ce, portal)
+		for _, c := range candidates {
 			if emptyOnly {
-				if stats.messageCount == 0 {
-					staleStats = append(staleStats, stats)
+				if c.messageCount == 0 {
+					staleCandidates = append(staleCandidates, c)
 				}
 			} else {
-				if stats.messageCount == 0 || (!stats.lastTS.IsZero() && stats.lastTS.Before(cutoff)) {
-					staleStats = append(staleStats, stats)
+				if c.messageCount == 0 || (!c.lastTS.IsZero() && c.lastTS.Before(cutoff)) {
+					staleCandidates = append(staleCandidates, c)
 				}
 			}
 		}
 
-		if len(staleStats) == 0 {
+		if len(staleCandidates) == 0 {
 			if emptyOnly {
-				ce.Reply("No creation-only empty rooms found. All %d bridged room(s) have message activity.", len(userPortals))
+				ce.Reply("No creation-only empty rooms found. All %d room(s) have message activity.", len(candidates))
 			} else {
-				ce.Reply("No stale rooms found (threshold: %d days). All %d bridged room(s) have recent activity.", days, len(userPortals))
+				ce.Reply("No stale rooms found (threshold: %d days). All %d room(s) have recent activity.", days, len(candidates))
 			}
 			return
 		}
@@ -1673,11 +2061,11 @@ var CommandPruneRooms = &commands.FullHandler{
 		if !confirm {
 			var sb strings.Builder
 			if emptyOnly {
-				sb.WriteString(fmt.Sprintf("Found %d creation-only room(s) with no message activity:\n", len(staleStats)))
+				sb.WriteString(fmt.Sprintf("Found %d creation-only room(s) with no message activity:\n", len(staleCandidates)))
 			} else {
-				sb.WriteString(fmt.Sprintf("Found %d stale room(s) (threshold: %d days):\n", len(staleStats), days))
+				sb.WriteString(fmt.Sprintf("Found %d stale room(s) (threshold: %d days):\n", len(staleCandidates), days))
 			}
-			for _, s := range staleStats {
+			for _, s := range staleCandidates {
 				preview := s.preview
 				if preview == "" {
 					if s.messageCount == 0 {
@@ -1690,7 +2078,10 @@ var CommandPruneRooms = &commands.FullHandler{
 				if s.messageCount == 0 {
 					statusTag = "Creation only"
 				}
-				sb.WriteString(fmt.Sprintf("- **%s** [%s] (Name: %q, Room: `%s`)\n", s.targetJID, statusTag, s.name, s.portal.MXID))
+				if s.isOrphan {
+					statusTag += ", Orphaned"
+				}
+				sb.WriteString(fmt.Sprintf("- **%s** [%s] (Name: %q, Room: `%s`)\n", s.targetJID, statusTag, s.name, s.roomID))
 				sb.WriteString(fmt.Sprintf("  - Messages: %d | Last active: %s | Last message: %q\n", s.messageCount, formatLastActivity(s.lastTS), preview))
 			}
 			if emptyOnly {
@@ -1704,11 +2095,22 @@ var CommandPruneRooms = &commands.FullHandler{
 
 		var deletedCount int
 		var errs []string
-		for _, s := range staleStats {
-			if err := deleteSinglePortal(ce, s.portal); err != nil {
-				errs = append(errs, fmt.Sprintf("%s (%s): %v", s.name, s.portal.MXID, err))
+		for _, s := range staleCandidates {
+			if login.SpaceRoom != "" {
+				removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, s.roomID)
+			}
+			if s.portal != nil {
+				if err := deleteSinglePortal(ce, s.portal); err != nil {
+					errs = append(errs, fmt.Sprintf("%s (%s): %v", s.name, s.roomID, err))
+				} else {
+					deletedCount++
+				}
 			} else {
-				deletedCount++
+				if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, s.roomID, false); err != nil {
+					errs = append(errs, fmt.Sprintf("%s (%s): %v", s.name, s.roomID, err))
+				} else {
+					deletedCount++
+				}
 			}
 		}
 
@@ -1746,108 +2148,171 @@ var CommandPruneDuplicates = &commands.FullHandler{
 			return
 		}
 
-		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		candidates, err := collectCandidateRooms(ce, login)
 		if err != nil {
-			ce.Reply("Failed to list portals: %v", err)
+			ce.Reply("Failed to list rooms: %v", err)
 			return
 		}
 
-		grouped := make(map[string][]*roomPruneStats)
-		for _, up := range userPortals {
-			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
-			if err != nil || portal == nil {
-				continue
-			}
-			stats := getRoomPruneStats(ce, portal)
-			key := strings.ToLower(stats.targetJID)
-			grouped[key] = append(grouped[key], stats)
-		}
-
-		type duplicateGroup struct {
-			targetJID  string
-			primary    *roomPruneStats
-			duplicates []*roomPruneStats
-		}
-		var dupGroups []duplicateGroup
+		clusters := clusterCandidateRooms(candidates)
+		var dupClusters []*duplicateRoomCluster
 		var totalDuplicates int
-
-		for jid, statsList := range grouped {
-			if len(statsList) <= 1 {
-				continue
+		for _, c := range clusters {
+			if len(c.duplicates) > 0 {
+				dupClusters = append(dupClusters, c)
+				totalDuplicates += len(c.duplicates)
 			}
-			sort.Slice(statsList, func(i, j int) bool {
-				if statsList[i].messageCount != statsList[j].messageCount {
-					return statsList[i].messageCount > statsList[j].messageCount
-				}
-				if !statsList[i].lastTS.Equal(statsList[j].lastTS) {
-					return statsList[i].lastTS.After(statsList[j].lastTS)
-				}
-				return string(statsList[i].portal.MXID) < string(statsList[j].portal.MXID)
-			})
-
-			primary := statsList[0]
-			duplicates := statsList[1:]
-			totalDuplicates += len(duplicates)
-			dupGroups = append(dupGroups, duplicateGroup{
-				targetJID:  jid,
-				primary:    primary,
-				duplicates: duplicates,
-			})
 		}
 
 		if totalDuplicates == 0 {
-			ce.Reply("No duplicate rooms found. Each bridged contact has a single room.")
+			ce.Reply("No duplicate rooms found. Each bridged contact has a single active room.")
 			return
 		}
 
-		sort.Slice(dupGroups, func(i, j int) bool {
-			return dupGroups[i].targetJID < dupGroups[j].targetJID
-		})
-
 		if !confirm {
 			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Found %d duplicate room(s) across %d contact(s):\n", totalDuplicates, len(dupGroups)))
-			for _, g := range dupGroups {
-				sb.WriteString(fmt.Sprintf("- Contact: **%s**\n", g.targetJID))
-				sb.WriteString(fmt.Sprintf("  - **KEEP** (Active): `%s` (Name: %q, %d msgs, Last active: %s)\n",
-					g.primary.portal.MXID, g.primary.name, g.primary.messageCount, formatLastActivity(g.primary.lastTS)))
-				for _, d := range g.duplicates {
-					sb.WriteString(fmt.Sprintf("  - **DELETE** (Duplicate): `%s` (Name: %q, %d msgs, Last active: %s)\n",
-						d.portal.MXID, d.name, d.messageCount, formatLastActivity(d.lastTS)))
+			sb.WriteString(fmt.Sprintf("Found %d duplicate room(s) across %d contact(s) (matching by phone number variants, contact name with suffix, and ghost JID):\n", totalDuplicates, len(dupClusters)))
+			for _, c := range dupClusters {
+				sb.WriteString(fmt.Sprintf("- Contact: **%s** (%s)\n", c.name, c.targetJID))
+				sb.WriteString(fmt.Sprintf("  - **KEEP** (Primary/Active): `%s` (Name: %q, %d msgs, Last active: %s)\n",
+					c.primary.roomID, c.primary.name, c.primary.messageCount, formatLastActivity(c.primary.lastTS)))
+				for _, d := range c.duplicates {
+					orphanTag := ""
+					if d.isOrphan {
+						orphanTag = " [Orphaned Room]"
+					}
+					sb.WriteString(fmt.Sprintf("  - **DELETE/CONSOLIDATE** (Duplicate%s): `%s` (Name: %q, %d msgs, Last active: %s)\n",
+						orphanTag, d.roomID, d.name, d.messageCount, formatLastActivity(d.lastTS)))
 				}
 			}
-			sb.WriteString("\nTo permanently delete these duplicate rooms and keep the active ones, run:\n`prune-duplicates confirm`")
+			sb.WriteString("\nTo consolidate these rooms, replay message history into the active rooms, and permanently delete the duplicates, run:\n`prune-duplicates confirm`")
 			ce.Reply("%s", sb.String())
 			return
 		}
 
-		var deletedCount int
+		var consolidatedCount, deletedCount int
 		var errs []string
-		for _, g := range dupGroups {
-			for _, d := range g.duplicates {
-				if err := deleteSinglePortal(ce, d.portal); err != nil {
-					errs = append(errs, fmt.Sprintf("%s (%s): %v", d.name, d.portal.MXID, err))
+		for _, c := range dupClusters {
+			var portal *bridgev2.Portal
+			if c.primary.portal != nil {
+				portal = c.primary.portal
+			} else {
+				for _, d := range c.duplicates {
+					if d.portal != nil {
+						portal = d.portal
+						break
+					}
+				}
+			}
+			if portal == nil && c.targetJID != "" {
+				portalKey := networkid.PortalKey{ID: MakePortalID(c.targetJID)}
+				portal, _ = ce.Bridge.GetPortalByKey(ce.Ctx, portalKey)
+			}
+
+			if portal != nil {
+				_, err := rebindSinglePortal(ce, portal, c.primary.roomID, login, true)
+				if err != nil {
+					errs = append(errs, fmt.Sprintf("rebind primary %s (%s): %v", c.name, c.primary.roomID, err))
 				} else {
+					consolidatedCount++
+				}
+			}
+
+			for _, d := range c.duplicates {
+				if d.roomID == c.primary.roomID {
+					continue
+				}
+				sendNotice(ce.Bridge.Bot, d.roomID, fmt.Sprintf("⚠️ This duplicate room has been consolidated into the active conversation: https://matrix.to/#/%s", c.primary.roomID))
+				if login.SpaceRoom != "" {
+					removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, d.roomID)
+				}
+				if d.portal != nil && (portal == nil || d.portal.PortalKey != portal.PortalKey) {
+					if err := deleteSinglePortal(ce, d.portal); err != nil {
+						errs = append(errs, fmt.Sprintf("delete portal %s (%s): %v", d.name, d.roomID, err))
+					} else {
+						deletedCount++
+					}
+				} else {
+					_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, d.roomID, false)
 					deletedCount++
 				}
 			}
 		}
 
 		if len(errs) > 0 {
-			ce.Reply("Pruned %d duplicate room(s) across %d contact(s), with %d error(s):\n- %s",
-				deletedCount, len(dupGroups), len(errs), strings.Join(errs, "\n- "))
+			ce.Reply("Consolidated %d contact(s) and pruned %d duplicate room(s) with %d error(s):\n- %s",
+				consolidatedCount, deletedCount, len(errs), strings.Join(errs, "\n- "))
 		} else {
-			ce.Reply("Successfully pruned %d duplicate room(s) across %d contact(s). Kept the most active room for each contact.",
-				deletedCount, len(dupGroups))
+			ce.Reply("Successfully consolidated %d contact(s) into their active rooms with history replay, and deleted %d duplicate room(s).",
+				consolidatedCount, deletedCount)
 		}
 	},
 	Name: "prune-duplicates",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionAdmin,
-		Description: "Find and delete duplicate rooms for the same contact, keeping the active room (usage: prune-duplicates [dry-run|confirm])",
+		Description: "Find and delete duplicate rooms for contacts across phone/name variants, consolidating into the primary active room (usage: prune-duplicates [dry-run|confirm])",
 		Args:        "[dry-run|confirm]",
 	},
 	RequiresLogin: true,
+}
+
+func findPortalForTarget(ctx context.Context, ce *commands.Event, login *bridgev2.UserLogin, target string) (*bridgev2.Portal, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil, fmt.Errorf("target identifier is empty")
+	}
+
+	if strings.HasPrefix(target, "!") {
+		portal, err := ce.Bridge.GetPortalByMXID(ctx, id.RoomID(target))
+		if err == nil && portal != nil {
+			return portal, nil
+		}
+	}
+
+	targetJID := normalizeJID(target)
+	if targetJID != "" {
+		portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
+		portal, err := ce.Bridge.GetExistingPortalByKey(ctx, portalKey)
+		if err == nil && portal != nil {
+			return portal, nil
+		}
+	}
+
+	rawKey := networkid.PortalKey{ID: MakePortalID(target)}
+	portal, err := ce.Bridge.GetExistingPortalByKey(ctx, rawKey)
+	if err == nil && portal != nil {
+		return portal, nil
+	}
+
+	if login != nil {
+		candidates, err := collectCandidateRooms(ce, login)
+		if err == nil && len(candidates) > 0 {
+			targetLower := strings.ToLower(target)
+			targetClean := strings.ToLower(stripContactSuffixAny(target))
+			targetDigits := extractPhoneDigits(target)
+			for _, c := range candidates {
+				if c.portal == nil {
+					continue
+				}
+				cNameLower := strings.ToLower(stripContactSuffixAny(c.name))
+				if cNameLower == targetLower || cNameLower == targetClean {
+					return c.portal, nil
+				}
+				if targetDigits != "" {
+					if extractPhoneDigits(c.name) == targetDigits || extractPhoneDigits(c.targetJID) == targetDigits {
+						return c.portal, nil
+					}
+				}
+			}
+		}
+	}
+
+	if targetJID != "" {
+		portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
+		return ce.Bridge.GetPortalByKey(ctx, portalKey)
+	}
+
+	return nil, fmt.Errorf("portal not found for %q", target)
 }
 
 var CommandDeleteRoom = &commands.FullHandler{
@@ -1863,22 +2328,9 @@ var CommandDeleteRoom = &commands.FullHandler{
 			return
 		}
 
-		var portal *bridgev2.Portal
-		var err error
-		if strings.HasPrefix(target, "!") {
-			portal, err = ce.Bridge.GetPortalByMXID(ce.Ctx, id.RoomID(target))
-		} else {
-			targetJID := normalizeJID(target)
-			portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
-			portal, err = ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
-			if portal == nil {
-				rawKey := networkid.PortalKey{ID: MakePortalID(target)}
-				portal, _ = ce.Bridge.GetExistingPortalByKey(ce.Ctx, rawKey)
-			}
-		}
-
+		portal, err := findPortalForTarget(ce.Ctx, ce, login, target)
 		if err != nil || portal == nil {
-			ce.Reply("Portal room not found for %q. Provide a valid Matrix room ID (!...) or contact phone/JID.", target)
+			ce.Reply("Portal room not found for %q. Provide a valid Matrix room ID (!...) or contact phone/JID/name.", target)
 			return
 		}
 
@@ -1904,27 +2356,21 @@ var CommandDeleteRoom = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
-func parseRebindRoomArgs(args []string) (targetJID string, roomID id.RoomID, err error) {
+func parseRebindRoomArgs(args []string) (targetContact string, roomID id.RoomID, err error) {
 	if len(args) != 2 {
-		return "", "", fmt.Errorf("usage: rebind-room <target_jid_or_phone> <matrix_room_id>")
+		return "", "", fmt.Errorf("usage: rebind-room <target_jid_or_phone_or_room> <matrix_room_id>")
 	}
 	arg0 := strings.TrimSpace(args[0])
 	arg1 := strings.TrimSpace(args[1])
 
-	if strings.HasPrefix(arg0, "!") {
-		roomID = id.RoomID(arg0)
-		targetJID = normalizeJID(arg1)
+	if strings.HasPrefix(arg0, "!") && strings.HasPrefix(arg1, "!") {
+		return arg0, id.RoomID(arg1), nil
+	} else if strings.HasPrefix(arg0, "!") {
+		return arg1, id.RoomID(arg0), nil
 	} else if strings.HasPrefix(arg1, "!") {
-		roomID = id.RoomID(arg1)
-		targetJID = normalizeJID(arg0)
-	} else {
-		return "", "", fmt.Errorf("one of the arguments must be a Matrix room ID starting with '!' (got %q and %q)", arg0, arg1)
+		return arg0, id.RoomID(arg1), nil
 	}
-
-	if targetJID == "" {
-		return "", "", fmt.Errorf("invalid contact JID or phone number")
-	}
-	return targetJID, roomID, nil
+	return "", "", fmt.Errorf("one of the arguments must be a Matrix room ID starting with '!' (got %q and %q)", arg0, arg1)
 }
 
 func parseReplaceRoomArgs(args []string) (target string, deleteOld bool, err error) {
@@ -2171,7 +2617,7 @@ func replaceSinglePortal(ce *commands.Event, portal *bridgev2.Portal, login *bri
 
 var CommandRebindRoom = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
-		targetJID, targetRoomID, err := parseRebindRoomArgs(ce.Args)
+		targetContact, targetRoomID, err := parseRebindRoomArgs(ce.Args)
 		if err != nil {
 			ce.Reply("%v", err)
 			return
@@ -2182,10 +2628,18 @@ var CommandRebindRoom = &commands.FullHandler{
 			return
 		}
 
-		portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
-		portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, portalKey)
+		portal, err := findPortalForTarget(ce.Ctx, ce, login, targetContact)
 		if err != nil || portal == nil {
-			ce.Reply("Could not find or create portal for %q: %v", targetJID, err)
+			if strings.HasPrefix(targetContact, "!") {
+				altPortal, altErr := findPortalForTarget(ce.Ctx, ce, login, string(targetRoomID))
+				if altErr == nil && altPortal != nil {
+					portal = altPortal
+					targetRoomID = id.RoomID(targetContact)
+				}
+			}
+		}
+		if portal == nil {
+			ce.Reply("Could not find portal for %q: %v", targetContact, err)
 			return
 		}
 
@@ -2195,6 +2649,7 @@ var CommandRebindRoom = &commands.FullHandler{
 			return
 		}
 
+		targetJID := UnescapeJID(string(portal.ID))
 		var supersededNote string
 		if oldBoundRoom != "" && oldBoundRoom != targetRoomID {
 			supersededNote = fmt.Sprintf("\n- Superseded previous room: `%s`", oldBoundRoom)
@@ -2225,15 +2680,18 @@ var CommandRebindAll = &commands.FullHandler{
 			return
 		}
 
-		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		candidates, err := collectCandidateRooms(ce, login)
 		if err != nil {
-			ce.Reply("Failed to list portals: %v", err)
+			ce.Reply("Failed to list rooms: %v", err)
 			return
 		}
 
+		clusters := clusterCandidateRooms(candidates)
+
 		type rebindPlan struct {
-			kind        string // "rebind" | "prune" | "manual"
+			kind        string // "rebind" | "prune"
 			reason      string
+			contactName string
 			targetJID   string
 			portal      *bridgev2.Portal
 			currentRoom id.RoomID
@@ -2245,127 +2703,54 @@ var CommandRebindAll = &commands.FullHandler{
 
 		var plans []rebindPlan
 
-		excludeRooms := map[id.RoomID]struct{}{
-			login.SpaceRoom:        {},
-			ce.User.ManagementRoom: {},
-		}
-
-		grouped := make(map[string][]*roomPruneStats)
-		for _, up := range userPortals {
-			portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
-			if err != nil || portal == nil {
-				continue
-			}
-			if portal.MXID != "" {
-				excludeRooms[portal.MXID] = struct{}{}
-			}
-			stats := getRoomPruneStats(ce, portal)
-			key := strings.ToLower(stats.targetJID)
-			grouped[key] = append(grouped[key], stats)
-		}
-
-		// Phase A: multiple portal rows pointing at the same contact.
-		// Empty duplicates can be pruned. Duplicates that carry message
-		// history cannot be merged safely (message rows live under the
-		// duplicate portal key), so they are listed for manual handling.
-		for jid, statsList := range grouped {
-			if len(statsList) <= 1 {
-				continue
-			}
-			sortRoomPruneStatsDesc(statsList)
-			keeper := statsList[0]
-			for _, s := range statsList[1:] {
-				if s.portal.MXID == "" {
-					continue
+		for _, cluster := range clusters {
+			var portal *bridgev2.Portal
+			if cluster.primary.portal != nil {
+				portal = cluster.primary.portal
+			} else {
+				for _, r := range cluster.rooms {
+					if r.portal != nil {
+						portal = r.portal
+						break
+					}
 				}
-				if s.portal.PortalKey == keeper.portal.PortalKey {
-					continue
-				}
-				if s.messageCount > 0 {
-					plans = append(plans, rebindPlan{
-						kind:        "manual",
-						reason:      "duplicate portal carries message history and cannot be merged automatically",
-						targetJID:   jid,
-						portal:      s.portal,
-						currentRoom: s.portal.MXID,
-						targetRoom:  s.portal.MXID,
-						targetName:  s.name,
-						targetMsgs:  s.messageCount,
-						targetLast:  s.lastTS,
-					})
+			}
+			if portal == nil && cluster.targetJID != "" {
+				portalKey := networkid.PortalKey{ID: MakePortalID(cluster.targetJID)}
+				portal, _ = ce.Bridge.GetPortalByKey(ce.Ctx, portalKey)
+			}
+
+			if portal != nil && portal.MXID != cluster.primary.roomID {
+				plans = append(plans, rebindPlan{
+					kind:        "rebind",
+					reason:      "rebind contact to historical primary room with most message activity",
+					contactName: cluster.name,
+					targetJID:   cluster.targetJID,
+					portal:      portal,
+					currentRoom: portal.MXID,
+					targetRoom:  cluster.primary.roomID,
+					targetName:  cluster.primary.name,
+					targetMsgs:  cluster.primary.messageCount,
+					targetLast:  cluster.primary.lastTS,
+				})
+			}
+
+			for _, dup := range cluster.duplicates {
+				if dup.roomID == cluster.primary.roomID {
 					continue
 				}
 				plans = append(plans, rebindPlan{
 					kind:        "prune",
-					reason:      "empty duplicate portal room",
-					targetJID:   jid,
-					portal:      s.portal,
-					currentRoom: s.portal.MXID,
-					targetRoom:  s.portal.MXID,
-					targetName:  s.name,
-					targetMsgs:  0,
-					targetLast:  s.lastTS,
+					reason:      fmt.Sprintf("duplicate room of %s (%s)", cluster.name, cluster.primary.roomID),
+					contactName: cluster.name,
+					targetJID:   cluster.targetJID,
+					portal:      dup.portal,
+					currentRoom: dup.roomID,
+					targetRoom:  dup.roomID,
+					targetName:  dup.name,
+					targetMsgs:  dup.messageCount,
+					targetLast:  dup.lastTS,
 				})
-			}
-		}
-
-		// Phase B: discover orphaned rooms the bot is still joined to that
-		// contain exactly one contact ghost and no stranger members. These
-		// are historically bridged rooms that lost their portal binding
-		// (e.g. after a bridge reset created fresh rooms). We can rebind the
-		// contact's active portal back onto them without losing history.
-		mc, ok := ce.Bridge.Matrix.(*matrix.Connector)
-		if ok && mc != nil && mc.AS != nil {
-			botClient := mc.AS.BotClient()
-			joined, err := botClient.JoinedRooms(ce.Ctx)
-			if err != nil {
-				ce.Log.Warn().Err(err).Msg("Failed to enumerate joined rooms during rebind-all")
-			} else if joined != nil {
-				for _, roomID := range joined.JoinedRooms {
-					if _, seen := excludeRooms[roomID]; seen {
-						continue
-					}
-					members, err := mc.GetMembers(ce.Ctx, roomID)
-					if err != nil || len(members) < 2 {
-						continue
-					}
-					var ghosts []networkid.UserID
-					var humans []id.UserID
-					for mxid, member := range members {
-						if mxid == ce.Bridge.Bot.GetMXID() || !member.Membership.IsInviteOrJoin() {
-							continue
-						}
-						if ghost, ok := mc.ParseGhostMXID(mxid); ok {
-							ghosts = append(ghosts, ghost)
-						} else {
-							humans = append(humans, mxid)
-						}
-					}
-					if len(ghosts) != 1 || len(humans) > 1 {
-						continue
-					}
-					if len(humans) == 1 && humans[0] != ce.User.MXID {
-						continue
-					}
-					contactJID := string(ghosts[0])
-					portalKey := networkid.PortalKey{ID: MakePortalID(contactJID)}
-					portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
-					if err != nil || portal == nil || portal.MXID == "" || portal.MXID == roomID {
-						continue
-					}
-					plans = append(plans, rebindPlan{
-						kind:        "rebind",
-						reason:      "orphaned DM room still contains the contact ghost",
-						targetJID:   contactJID,
-						portal:      portal,
-						currentRoom: portal.MXID,
-						targetRoom:  roomID,
-						targetName:  formatPortalName(portal),
-						targetMsgs:  getRoomPruneStats(ce, portal).messageCount,
-						targetLast:  getRoomPruneStats(ce, portal).lastTS,
-					})
-					excludeRooms[roomID] = struct{}{}
-				}
 			}
 		}
 
@@ -2376,47 +2761,55 @@ var CommandRebindAll = &commands.FullHandler{
 
 		if !confirm {
 			var sb strings.Builder
-			var rebinds, prunes, manuals int
+			var rebinds, prunes int
 			for _, p := range plans {
 				switch p.kind {
 				case "rebind":
 					rebinds++
-					sb.WriteString(fmt.Sprintf("- **Rebind**: `%s` (current: `%s`) → `%s` (Name: %q, %d msgs, last active %s; reason: %s)\n",
-						p.targetJID, p.currentRoom, p.targetRoom, p.targetName, p.targetMsgs, formatLastActivity(p.targetLast), p.reason))
+					sb.WriteString(fmt.Sprintf("- **Rebind**: **%s** (%s) current: `%s` → `%s` (Name: %q, %d msgs, last active %s; reason: %s)\n",
+						p.contactName, p.targetJID, p.currentRoom, p.targetRoom, p.targetName, p.targetMsgs, formatLastActivity(p.targetLast), p.reason))
 				case "prune":
 					prunes++
-					sb.WriteString(fmt.Sprintf("- **Prune**: `%s` (`%s`)\n", p.targetJID, p.targetRoom))
-				case "manual":
-					manuals++
-					sb.WriteString(fmt.Sprintf("- **Manual Review**: `%s` (`%s`) — %s\n", p.targetJID, p.targetRoom, p.reason))
+					sb.WriteString(fmt.Sprintf("- **Prune/Consolidate**: **%s** `%s` (Name: %q, %d msgs, last active %s; reason: %s)\n",
+						p.contactName, p.targetRoom, p.targetName, p.targetMsgs, formatLastActivity(p.targetLast), p.reason))
 				}
 			}
-			sb.WriteString(fmt.Sprintf("\nFound %d rebind(s), %d prune(s), %d manual review(s).\nTo execute, run: `rebind-all confirm`",
-				rebinds, prunes, manuals))
+			sb.WriteString(fmt.Sprintf("\nFound %d rebind(s), %d prune/consolidate(s).\nTo execute, rebind active rooms with history replay, and prune duplicates, run:\n`rebind-all confirm`",
+				rebinds, prunes))
 			ce.Reply("%s", sb.String())
 			return
 		}
 
 		var reboundCount, prunedCount int
 		var errs []string
-		var unboundNewRooms []id.RoomID
 
 		for _, p := range plans {
 			switch p.kind {
 			case "rebind":
-				oldRoom, err := rebindSinglePortal(ce, p.portal, p.targetRoom, login, true)
-				if err != nil {
-					errs = append(errs, fmt.Sprintf("%s (%s): %v", p.targetJID, p.targetRoom, err))
-				} else {
-					reboundCount++
-					if oldRoom != "" && oldRoom != p.targetRoom {
-						unboundNewRooms = append(unboundNewRooms, oldRoom)
+				if p.portal != nil {
+					oldRoom, err := rebindSinglePortal(ce, p.portal, p.targetRoom, login, true)
+					if err != nil {
+						errs = append(errs, fmt.Sprintf("%s (%s): %v", p.targetJID, p.targetRoom, err))
+					} else {
+						reboundCount++
+						if oldRoom != "" && oldRoom != p.targetRoom {
+							sendNotice(ce.Bridge.Bot, oldRoom, fmt.Sprintf("⚠️ This room has been rebound to https://matrix.to/#/%s", p.targetRoom))
+						}
 					}
 				}
 			case "prune":
+				if login.SpaceRoom != "" {
+					removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, p.targetRoom)
+				}
 				if p.portal != nil {
 					if err := deleteSinglePortal(ce, p.portal); err != nil {
 						errs = append(errs, fmt.Sprintf("prune %s (%s): %v", p.targetJID, p.targetRoom, err))
+					} else {
+						prunedCount++
+					}
+				} else {
+					if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, p.targetRoom, false); err != nil {
+						errs = append(errs, fmt.Sprintf("delete %s (%s): %v", p.targetJID, p.targetRoom, err))
 					} else {
 						prunedCount++
 					}
@@ -2424,26 +2817,18 @@ var CommandRebindAll = &commands.FullHandler{
 			}
 		}
 
-		var notes strings.Builder
-		if len(unboundNewRooms) > 0 {
-			notes.WriteString("\n\n**Note**: The following previously active room(s) are now unbound. You can delete them with `delete-room <room_id>` if not needed:\n")
-			for _, r := range unboundNewRooms {
-				notes.WriteString(fmt.Sprintf("- `%s`\n", r))
-			}
-		}
-
 		if len(errs) > 0 {
-			ce.Reply("Rebound %d contact(s) (pruned %d empty duplicate rooms), with %d error(s):\n- %s%s",
-				reboundCount, prunedCount, len(errs), strings.Join(errs, "\n- "), notes.String())
+			ce.Reply("Rebound %d contact(s) (pruned/consolidated %d duplicate rooms), with %d error(s):\n- %s",
+				reboundCount, prunedCount, len(errs), strings.Join(errs, "\n- "))
 		} else {
-			ce.Reply("Successfully rebound %d contact(s) back to their historical rooms and added them to your Space (pruned %d empty duplicate rooms).%s",
-				reboundCount, prunedCount, notes.String())
+			ce.Reply("Successfully rebound %d contact(s) back to their historical active rooms with history replay and added them to your Space (pruned/consolidated %d duplicate rooms).",
+				reboundCount, prunedCount)
 		}
 	},
 	Name: "rebind-all",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Automatically rebind all contacts to their historical rooms with message history and clean up empty duplicate rooms (usage: rebind-all [dry-run|confirm])",
+		Description: "Automatically rebind all contacts to their historical rooms with message history and clean up duplicate rooms across phone/name variants (usage: rebind-all [dry-run|confirm])",
 		Args:        "[dry-run|confirm]",
 	},
 	RequiresLogin: true,
@@ -2462,21 +2847,9 @@ var CommandReplaceRoom = &commands.FullHandler{
 			return
 		}
 
-		var portal *bridgev2.Portal
-		if strings.HasPrefix(target, "!") {
-			portal, err = ce.Bridge.GetPortalByMXID(ce.Ctx, id.RoomID(target))
-		} else {
-			targetJID := normalizeJID(target)
-			portalKey := networkid.PortalKey{ID: MakePortalID(targetJID)}
-			portal, err = ce.Bridge.GetExistingPortalByKey(ce.Ctx, portalKey)
-			if portal == nil {
-				rawKey := networkid.PortalKey{ID: MakePortalID(target)}
-				portal, _ = ce.Bridge.GetExistingPortalByKey(ce.Ctx, rawKey)
-			}
-		}
-
+		portal, err := findPortalForTarget(ce.Ctx, ce, login, target)
 		if err != nil || portal == nil {
-			ce.Reply("Portal room not found for %q. Provide a valid Matrix room ID (!...) or contact phone/JID.", target)
+			ce.Reply("Portal room not found for %q. Provide a valid Matrix room ID (!...) or contact phone/JID/name.", target)
 			return
 		}
 
@@ -2530,6 +2903,14 @@ var CommandReplaceAll = &commands.FullHandler{
 				continue
 			}
 			portalList = append(portalList, portal)
+		}
+
+		candidates, _ := collectCandidateRooms(ce, login)
+		for _, c := range candidates {
+			if c.portal != nil && !seen[c.portal.PortalKey] {
+				seen[c.portal.PortalKey] = true
+				portalList = append(portalList, c.portal)
+			}
 		}
 
 		if len(portalList) == 0 {

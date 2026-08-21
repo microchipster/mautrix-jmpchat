@@ -269,29 +269,35 @@ func TestParseRebindRoomArgs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		args       []string
-		wantJID    string
-		wantRoomID string
-		wantErr    bool
+		name        string
+		args        []string
+		wantContact string
+		wantRoomID  string
+		wantErr     bool
 	}{
 		{
-			name:       "jid first then room ID",
-			args:       []string{"+15551234567", "!oldroom:example.com"},
-			wantJID:    "+15551234567@cheogram.com",
-			wantRoomID: "!oldroom:example.com",
+			name:        "jid first then room ID",
+			args:        []string{"+15551234567", "!oldroom:example.com"},
+			wantContact: "+15551234567",
+			wantRoomID:  "!oldroom:example.com",
 		},
 		{
-			name:       "room ID first then phone",
-			args:       []string{"!oldroom:example.com", "+15551234567"},
-			wantJID:    "+15551234567@cheogram.com",
-			wantRoomID: "!oldroom:example.com",
+			name:        "room ID first then phone",
+			args:        []string{"!oldroom:example.com", "+15551234567"},
+			wantContact: "+15551234567",
+			wantRoomID:  "!oldroom:example.com",
 		},
 		{
-			name:       "full jid and room ID",
-			args:       []string{"contact@cheogram.com", "!oldroom:example.com"},
-			wantJID:    "contact@cheogram.com",
-			wantRoomID: "!oldroom:example.com",
+			name:        "full jid and room ID",
+			args:        []string{"contact@cheogram.com", "!oldroom:example.com"},
+			wantContact: "contact@cheogram.com",
+			wantRoomID:  "!oldroom:example.com",
+		},
+		{
+			name:        "two room IDs",
+			args:        []string{"!oldroom:example.com", "!newroom:example.com"},
+			wantContact: "!oldroom:example.com",
+			wantRoomID:  "!newroom:example.com",
 		},
 		{
 			name:    "missing arguments",
@@ -312,13 +318,13 @@ func TestParseRebindRoomArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jid, roomID, err := parseRebindRoomArgs(tt.args)
+			contact, roomID, err := parseRebindRoomArgs(tt.args)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("parseRebindRoomArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.wantErr)
 			}
 			if !tt.wantErr {
-				if jid != tt.wantJID {
-					t.Errorf("jid = %q, want %q", jid, tt.wantJID)
+				if contact != tt.wantContact {
+					t.Errorf("contact = %q, want %q", contact, tt.wantContact)
 				}
 				if string(roomID) != tt.wantRoomID {
 					t.Errorf("roomID = %q, want %q", roomID, tt.wantRoomID)
@@ -600,5 +606,126 @@ func TestParseDeleteSpaceArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStripContactSuffixAny(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "Alice (jmp.chat)", want: "Alice"},
+		{input: "Bob (jmpchat)", want: "Bob"},
+		{input: "Charlie (jmp)", want: "Charlie"},
+		{input: "Dave (cheogram)", want: "Dave"},
+		{input: "Eve (sms)", want: "Eve"},
+		{input: "+15551234567 (jmp.chat)", want: "+15551234567"},
+		{input: "Frank (custom suffix)", want: "Frank"},
+		{input: "Grace [SMS]", want: "Grace"},
+		{input: "Heidi", want: "Heidi"},
+		{input: "   Ivan (JMP.CHAT)   ", want: "Ivan"},
+	}
+
+	for _, tt := range tests {
+		if got := stripContactSuffixAny(tt.input); got != tt.want {
+			t.Errorf("stripContactSuffixAny(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestExtractPhoneDigits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "+15551234567@cheogram.com", want: "5551234567"},
+		{input: "+1 (555) 123-4567", want: "5551234567"},
+		{input: "555-123-4567", want: "5551234567"},
+		{input: "+447911123456@cheogram.com", want: "447911123456"},
+		{input: "alice@example.com", want: ""},
+		{input: "12345", want: ""}, // too short (< 7 digits)
+	}
+
+	for _, tt := range tests {
+		if got := extractPhoneDigits(tt.input); got != tt.want {
+			t.Errorf("extractPhoneDigits(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestClusterCandidateRooms(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	r1 := &candidateRoom{
+		roomID:       "!room1:example.com",
+		name:         "Alice Smith (jmp.chat)",
+		targetJID:    "+15551230001@cheogram.com",
+		messageCount: 100,
+		lastTS:       now.Add(-1 * time.Hour),
+		matchKeys:    map[string]bool{"jid:+15551230001@cheogram.com": true, "phone:5551230001": true, "name:alice smith": true},
+	}
+	r2 := &candidateRoom{
+		roomID:       "!room2:example.com",
+		name:         "+1 (555) 123-0001",
+		targetJID:    "+15551230001@cheogram.com",
+		messageCount: 0,
+		lastTS:       now.Add(-10 * time.Hour),
+		matchKeys:    map[string]bool{"jid:+15551230001@cheogram.com": true, "phone:5551230001": true},
+	}
+	r3 := &candidateRoom{
+		roomID:       "!room3:example.com",
+		name:         "Alice Smith",
+		targetJID:    "",
+		messageCount: 5,
+		lastTS:       now.Add(-2 * time.Hour),
+		matchKeys:    map[string]bool{"name:alice smith": true},
+	}
+	r4 := &candidateRoom{
+		roomID:       "!room4:example.com",
+		name:         "Bob Jones (jmp.chat)",
+		targetJID:    "+15559870002@cheogram.com",
+		messageCount: 42,
+		lastTS:       now,
+		matchKeys:    map[string]bool{"jid:+15559870002@cheogram.com": true, "phone:5559870002": true, "name:bob jones": true},
+	}
+
+	clusters := clusterCandidateRooms([]*candidateRoom{r1, r2, r3, r4})
+
+	if len(clusters) != 2 {
+		t.Fatalf("len(clusters) = %d, want 2", len(clusters))
+	}
+
+	var aliceCluster, bobCluster *duplicateRoomCluster
+	for _, c := range clusters {
+		if strings.Contains(c.name, "Alice") {
+			aliceCluster = c
+		} else if strings.Contains(c.name, "Bob") {
+			bobCluster = c
+		}
+	}
+
+	if aliceCluster == nil {
+		t.Fatal("missing Alice cluster")
+	}
+	if aliceCluster.primary.roomID != "!room1:example.com" {
+		t.Errorf("Alice primary room = %s, want !room1:example.com", aliceCluster.primary.roomID)
+	}
+	if len(aliceCluster.duplicates) != 2 {
+		t.Errorf("Alice duplicates count = %d, want 2", len(aliceCluster.duplicates))
+	}
+
+	if bobCluster == nil {
+		t.Fatal("missing Bob cluster")
+	}
+	if bobCluster.primary.roomID != "!room4:example.com" {
+		t.Errorf("Bob primary room = %s, want !room4:example.com", bobCluster.primary.roomID)
+	}
+	if len(bobCluster.duplicates) != 0 {
+		t.Errorf("Bob duplicates count = %d, want 0", len(bobCluster.duplicates))
 	}
 }
