@@ -49,6 +49,7 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 	}
 
 	gate := newRoomEncryptionGate()
+	resolver := newManagementRoomResolver()
 
 	main.Matrix.EventProcessor.PrependHandler(event.EventMessage, func(ctx context.Context, evt *event.Event) {
 		if evt.Sender == "" || evt.RoomID == "" || evt.Sender == main.Bridge.Bot.GetMXID() {
@@ -81,11 +82,6 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 			return
 		}
 
-		prefix := main.Bridge.Config.CommandPrefix
-		if prefix == "" || strings.HasPrefix(message.Body, prefix) {
-			return
-		}
-
 		user, err := main.Bridge.GetUserByMXID(ctx, evt.Sender)
 		if err != nil || user == nil {
 			return
@@ -102,8 +98,16 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 			return
 		}
 
-		// A private two-member room with bridge bot is management room by
-		// definition. Prefixing lets normal bridgev2 command routing handle
+		// A private two-member room with the bridge bot is a management room candidate.
+		// Automatically adopt it or bias towards the most recent candidate with warnings.
+		resolver.resolveManagementRoom(ctx, main, user, evt.RoomID)
+
+		prefix := main.Bridge.Config.CommandPrefix
+		if prefix == "" || strings.HasPrefix(message.Body, prefix) {
+			return
+		}
+
+		// Prefixing lets normal bridgev2 command routing handle
 		// permissions, replies, and command errors.
 		message.Body = prefix + " " + message.Body
 	})
