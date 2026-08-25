@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package connector
 
 import (
@@ -427,7 +431,15 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 		targetJID := UnescapeJID(string(portal.ID))
 		remoteUserID := MakeUserID(targetJID)
 		chatInfo.Members = &bridgev2.ChatMemberList{
+			IsFull:      true,
+			OtherUserID: remoteUserID,
 			Members: []bridgev2.ChatMember{
+				{
+					EventSender: bridgev2.EventSender{
+						IsFromMe: true,
+					},
+					Membership: event.MembershipJoin,
+				},
 				{
 					EventSender: bridgev2.EventSender{
 						IsFromMe: false,
@@ -436,6 +448,43 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 					Membership: event.MembershipJoin,
 				},
 			},
+		}
+	} else {
+		targetJID := UnescapeJID(string(portal.ID))
+		contacts := splitCheogramGroupContacts(targetJID)
+		if len(contacts) > 0 {
+			members := make([]bridgev2.ChatMember, 0, len(contacts)+1)
+			members = append(members, bridgev2.ChatMember{
+				EventSender: bridgev2.EventSender{
+					IsFromMe: true,
+				},
+				Membership: event.MembershipJoin,
+			})
+			for _, contact := range contacts {
+				members = append(members, bridgev2.ChatMember{
+					EventSender: bridgev2.EventSender{
+						IsFromMe: false,
+						Sender:   MakeUserID(contact),
+					},
+					Membership: event.MembershipJoin,
+				})
+			}
+			chatInfo.Members = &bridgev2.ChatMemberList{
+				IsFull:  true,
+				Members: members,
+			}
+		} else {
+			chatInfo.Members = &bridgev2.ChatMemberList{
+				IsFull: false,
+				Members: []bridgev2.ChatMember{
+					{
+						EventSender: bridgev2.EventSender{
+							IsFromMe: true,
+						},
+						Membership: event.MembershipJoin,
+					},
+				},
+			}
 		}
 	}
 	return chatInfo, nil

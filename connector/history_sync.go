@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package connector
 
 import (
@@ -32,6 +36,16 @@ func shouldUpdateHistoryProgress(existingTS *time.Time, existingID string, newTS
 func (nc *MyNetworkClient) markPortalHistoryProgress(ctx context.Context, portal *bridgev2.Portal, timestamp time.Time, messageID string, serverMessageID string) {
 	if portal == nil || timestamp.IsZero() {
 		return
+	}
+	if messageID != "" && portal.Bridge != nil && portal.Bridge.DB != nil {
+		parts, err := portal.Bridge.DB.Message.GetAllPartsByID(ctx, portal.Receiver, networkid.MessageID(messageID))
+		if err != nil || len(parts) == 0 {
+			nc.log.Debug().
+				Str("portal_id", string(portal.ID)).
+				Str("message_id", messageID).
+				Msg("Message was not persisted to Matrix DB; skipping history sync progress update")
+			return
+		}
 	}
 	meta, _ := portal.Metadata.(*PortalMetadata)
 	if meta == nil {

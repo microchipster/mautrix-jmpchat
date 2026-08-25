@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package connector
 
 import (
@@ -6,10 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"go.mau.fi/util/ptr"
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/event"
@@ -356,7 +358,6 @@ func (nc *MyNetworkClient) handleIncomingXMPPCall(msg stanza.Message, timestamp 
 			senderID = meta.RemoteUserID
 		}
 	}
-	roomType := ptr.Ptr(database.RoomTypeDM)
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
@@ -364,10 +365,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCall(msg stanza.Message, timestamp 
 			CreatePortal: true,
 			Timestamp:    timestamp,
 		},
-		ChatInfo: &bridgev2.ChatInfo{
-			Name: ptr.Ptr(dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())),
-			Type: roomType,
-		},
+		ChatInfo: nil,
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 	msgID := nc.extractMessageID(msg)

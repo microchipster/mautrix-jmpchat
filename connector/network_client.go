@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package connector
 
 import (
@@ -14,11 +18,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"go.mau.fi/util/ptr"
 	"gosrc.io/xmpp"
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
@@ -432,6 +434,32 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 	supported, known := nc.mamSupportedForServer()
 	if !known {
 		nc.requestOwnDiscoInfo()
+		// Fallback: if server disco response is delayed or dropped, proceed with default MAM2
+		time.AfterFunc(3*time.Second, func() {
+			if nc.isXMPPConnected() {
+				nc.syncMu.Lock()
+				hasPending := len(nc.dmBackfillPending) > 0
+				nc.syncMu.Unlock()
+				if hasPending {
+					_, k := nc.mamSupportedForServer()
+					if !k {
+						nc.log.Info().Msg("Disco info timed out; proceeding with default MAM support for DM catchup")
+						nc.discoMu.Lock()
+						if nc.discoFeatures == nil {
+							nc.discoFeatures = map[string]map[string]bool{}
+						}
+						bare := nc.ownBareJID()
+						if bare != "" {
+							if nc.discoFeatures[bare] == nil {
+								nc.discoFeatures[bare] = map[string]bool{NSMAM2: true}
+							}
+						}
+						nc.discoMu.Unlock()
+						nc.maybeStartPendingDMBackfills()
+					}
+				}
+			}
+		})
 		return
 	}
 
@@ -825,8 +853,6 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 			}
 			continue
 		}
-		name := groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, conf.Name, nc.contactNameSuffix())
-
 		portalID := MakePortalID(roomJID)
 		if nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().
@@ -841,10 +867,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 				CreatePortal: true,
 				Timestamp:    time.Now(),
 			},
-			ChatInfo: &bridgev2.ChatInfo{
-				Name: &name,
-				Type: ptr.Ptr(database.RoomTypeDefault),
-			},
+			ChatInfo: nil,
 		}
 		nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
 		nc.bridge.QueueRemoteEvent(nc.login, resync)
@@ -1266,9 +1289,7 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 	if jid == "" {
 		return fmt.Errorf("jid is empty")
 	}
-	name := dmRoomName(ctx, nc.bridge, jid, "", nc.contactNameSuffix())
 	portalID := MakePortalID(jid)
-	remoteUserID := MakeUserID(jid)
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
@@ -1276,26 +1297,11 @@ func (nc *MyNetworkClient) createDM(ctx context.Context, jid string) error {
 			CreatePortal: true,
 			Timestamp:    time.Now(),
 		},
-		ChatInfo: &bridgev2.ChatInfo{
-			Name: &name,
-			Type: ptr.Ptr(database.RoomTypeDM),
-			Members: &bridgev2.ChatMemberList{
-				Members: []bridgev2.ChatMember{
-					{
-						EventSender: bridgev2.EventSender{
-							IsFromMe: false,
-							Sender:   remoteUserID,
-						},
-						Membership: event.MembershipJoin,
-					},
-				},
-			},
-		},
+		ChatInfo: nil,
 	}
 	nc.log.Info().
 		Str("target_jid", jid).
 		Str("portal_id", string(portalID)).
-		Str("room_name", name).
 		Msg("Queueing ChatResync to create DM portal")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 	return nil
@@ -2296,7 +2302,6 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 					nc.rosterItems[bareJID] = true
 				}
 				nc.rosterMu.Unlock()
-				name := dmRoomName(context.Background(), nc.bridge, bareJID, item.Name, nc.contactNameSuffix())
 				portalID := MakePortalID(bareJID)
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
@@ -2311,10 +2316,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 						CreatePortal: true,
 						Timestamp:    time.Now(),
 					},
-					ChatInfo: &bridgev2.ChatInfo{
-						Name: &name,
-						Type: ptr.Ptr(database.RoomTypeDM),
-					},
+					ChatInfo: nil,
 				}
 				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing roster chat resync")
 				nc.bridge.QueueRemoteEvent(nc.login, resync)
@@ -2474,10 +2476,7 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 							CreatePortal: true,
 							Timestamp:    time.Now(),
 						},
-						ChatInfo: &bridgev2.ChatInfo{
-							Name: ptr.Ptr(groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, "", nc.contactNameSuffix())),
-							Type: ptr.Ptr(database.RoomTypeDefault),
-						},
+						ChatInfo: nil,
 					}
 					nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing discovered groupchat resync")
 					nc.bridge.QueueRemoteEvent(nc.login, resync)
@@ -2699,10 +2698,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 					CreatePortal: true,
 					Timestamp:    time.Now(),
 				},
-				ChatInfo: &bridgev2.ChatInfo{
-					Name: ptr.Ptr(groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, "", nc.contactNameSuffix())),
-					Type: ptr.Ptr(database.RoomTypeDefault),
-				},
+				ChatInfo: nil,
 			}
 			nc.log.Info().
 				Str("room_jid", roomJID).
@@ -2731,10 +2727,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 					CreatePortal: true,
 					Timestamp:    time.Now(),
 				},
-				ChatInfo: &bridgev2.ChatInfo{
-					Name: ptr.Ptr(groupRoomNameFromJID(context.Background(), nc.bridge, roomJID, "", nc.contactNameSuffix())),
-					Type: ptr.Ptr(database.RoomTypeDefault),
-				},
+				ChatInfo: nil,
 			}
 			nc.log.Info().
 				Str("room_jid", roomJID).
@@ -2904,7 +2897,6 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	}
 
 	var senderID string
-	var roomType *database.RoomType
 	if delayStamp != "" && nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().
 			Str("from", fromJidStr).
@@ -2978,15 +2970,8 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		}
 	}
 
-	roomType = ptr.Ptr(database.RoomTypeDefault)
 	if !isMUC {
-		roomType = ptr.Ptr(database.RoomTypeDM)
 		nc.recordDMPortal(string(portalID))
-	}
-
-	chatName := dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())
-	if isMUC {
-		chatName = groupRoomNameFromJID(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())
 	}
 
 	// First send a ChatResync to create or update the portal with correct info
@@ -2997,15 +2982,12 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			CreatePortal: true,
 			Timestamp:    timestamp,
 		},
-		ChatInfo: &bridgev2.ChatInfo{
-			Name: ptr.Ptr(chatName),
-			Type: roomType,
-		},
+		ChatInfo: nil,
 	}
 	nc.log.Info().
 		Str("portal_id", string(portalID)).
-		Str("chat_name", chatName).
-		Str("room_type", string(*roomType)).
+		Str("bare_from", bareFromJid).
+		Bool("is_muc", isMUC).
 		Msg("Queueing chat resync for incoming message")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
@@ -3031,6 +3013,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		Data: stanza.StringValue(msg.Body),
 		ID:   networkid.MessageID(msgID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data string) (*bridgev2.ConvertedMessage, error) {
+			if err := nc.ensurePortalRoomHealthy(ctx, portal); err != nil {
+				nc.log.Warn().Err(err).Str("portal_id", string(portal.ID)).Msg("ensurePortalRoomHealthy returned error; attempting message conversion anyway")
+			}
 			// Save the room type metadata inside the ConvertMessageFunc as we have the portal
 			meta, _ := portal.Metadata.(*PortalMetadata)
 			if meta != nil && meta.IsMUC != isMUC {
@@ -3210,10 +3195,6 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 	}
 
 	portalID := MakePortalID(bareFromJid)
-	roomType := ptr.Ptr(database.RoomTypeDefault)
-	if !isMUC {
-		roomType = ptr.Ptr(database.RoomTypeDM)
-	}
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
 			Type:         bridgev2.RemoteEventChatResync,
@@ -3221,10 +3202,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 			CreatePortal: true,
 			Timestamp:    timestamp,
 		},
-		ChatInfo: &bridgev2.ChatInfo{
-			Name: ptr.Ptr(dmRoomName(context.Background(), nc.bridge, bareFromJid, "", nc.contactNameSuffix())),
-			Type: roomType,
-		},
+		ChatInfo: nil,
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 	reactionList := reactions.All()

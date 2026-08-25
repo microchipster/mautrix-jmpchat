@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package connector
 
 import (
@@ -492,7 +496,6 @@ var CommandJoinRoom = &commands.FullHandler{
 		if ce.Log != nil {
 			logJIDNormalization(*ce.Log, "join_room", roomJID)
 		}
-		name := roomJID
 		portalID := MakePortalID(roomJID)
 		if ce.Log != nil {
 			ce.Log.Debug().
@@ -507,10 +510,7 @@ var CommandJoinRoom = &commands.FullHandler{
 				CreatePortal: true,
 				Timestamp:    time.Now(),
 			},
-			ChatInfo: &bridgev2.ChatInfo{
-				Name: &name,
-				Type: ptr.Ptr(database.RoomTypeDefault),
-			},
+			ChatInfo: nil,
 		}
 		client.bridge.QueueRemoteEvent(login, resync)
 		start := time.Now().Add(-lookback)

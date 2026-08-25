@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package main
 
 import (
@@ -61,8 +65,20 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 			return
 		}
 
-		// The Matrix leg to the bot must be encrypted in every room. Verify or
-		// establish encryption before any command routing or bridging happens;
+		// Skip portal rooms immediately - command prefixing and management room encryption
+		// are only for non-portal direct management rooms.
+		portal, err := main.Bridge.GetPortalByMXID(ctx, evt.RoomID)
+		if err == nil && portal != nil {
+			return
+		}
+
+		user, err := main.Bridge.GetUserByMXID(ctx, evt.Sender)
+		if err != nil || user == nil {
+			return
+		}
+
+		// The Matrix leg to the bot must be encrypted in every management room. Verify or
+		// establish encryption before any command routing happens;
 		// a failure to prove encryption drops the message (fail closed).
 		establishedNow, err := gate.ensureBotRoomEncrypted(ctx, main, evt.RoomID)
 		if err != nil {
@@ -82,14 +98,6 @@ func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {
 			return
 		}
 
-		user, err := main.Bridge.GetUserByMXID(ctx, evt.Sender)
-		if err != nil || user == nil {
-			return
-		}
-		portal, err := main.Bridge.GetPortalByMXID(ctx, evt.RoomID)
-		if err != nil || portal != nil {
-			return
-		}
 		members, err := main.Matrix.GetMembers(ctx, evt.RoomID)
 		if err != nil || len(members) != 2 {
 			return

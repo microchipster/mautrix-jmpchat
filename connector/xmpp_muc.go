@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 package connector
 
 import (
@@ -8,10 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"go.mau.fi/util/ptr"
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 )
@@ -61,10 +63,7 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 			CreatePortal: true,
 			Timestamp:    time.Now(),
 		},
-		ChatInfo: &bridgev2.ChatInfo{
-			Name: &name,
-			Type: ptr.Ptr(database.RoomTypeDefault),
-		},
+		ChatInfo: nil,
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
