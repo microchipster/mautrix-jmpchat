@@ -144,7 +144,7 @@ func advanceXMPPCallSession(session *xmppCallSessionState, call *xmppCallEvent, 
 		notice = retractNoticeForSession(session)
 	case "finish":
 		session.Terminal = true
-		notice = finishNoticeForSession(session, call, timestamp)
+		notice = finishNoticeForSession(session, call, timestamp, isFromMe)
 	default:
 		return session, ""
 	}
@@ -161,6 +161,8 @@ func advanceXMPPCallSession(session *xmppCallSessionState, call *xmppCallEvent, 
 func formatCallNoticeForParty(notice, party string) string {
 	party = strings.TrimSpace(party)
 	if party == "" {
+		notice = strings.ReplaceAll(notice, " (peer hung up)", " (ended by other party)")
+		notice = strings.ReplaceAll(notice, " (peer declined)", " (declined by other party)")
 		return notice
 	}
 	switch {
@@ -184,12 +186,17 @@ func formatCallNoticeForParty(notice, party string) string {
 		return fmt.Sprintf("Call to %s cancelled", party)
 	case notice == "Call declined":
 		return fmt.Sprintf("%s declined the call", party)
+	case notice == "Declined incoming call":
+		return fmt.Sprintf("Declined call from %s", party)
 	case notice == "Call ended":
 		return fmt.Sprintf("Call with %s ended", party)
 	case notice == "Outgoing call ended":
 		return fmt.Sprintf("Call with %s ended", party)
-	case strings.HasPrefix(notice, "Call ended after "):
-		return fmt.Sprintf("Call with %s ended after %s", party, strings.TrimPrefix(notice, "Call ended after "))
+	case strings.HasPrefix(notice, "Call ended"):
+		detail := strings.TrimPrefix(notice, "Call ended")
+		detail = strings.ReplaceAll(detail, "(peer hung up)", fmt.Sprintf("(%s hung up)", party))
+		detail = strings.ReplaceAll(detail, "(peer declined)", fmt.Sprintf("(%s declined)", party))
+		return fmt.Sprintf("Call with %s ended%s", party, detail)
 	default:
 		return notice
 	}
@@ -221,13 +228,16 @@ func callPartyLabelFromJID(jid string) string {
 
 func rejectNoticeForSession(session *xmppCallSessionState, isFromMe bool) string {
 	if session.WasAnswered {
-		return "Call ended"
+		if isFromMe {
+			return "Call ended (you hung up)"
+		}
+		return "Call ended (peer hung up)"
 	}
 	if session.InitiatedByMe {
 		return "Call declined"
 	}
 	if isFromMe {
-		return "Call declined"
+		return "Declined incoming call"
 	}
 	return "Missed call"
 }
@@ -242,12 +252,32 @@ func retractNoticeForSession(session *xmppCallSessionState) string {
 	return "Incoming call cancelled"
 }
 
-func finishNoticeForSession(session *xmppCallSessionState, call *xmppCallEvent, timestamp time.Time) string {
+func finishNoticeForSession(session *xmppCallSessionState, call *xmppCallEvent, timestamp time.Time, isFromMe bool) string {
 	if session.WasAnswered {
+		durationStr := ""
 		if duration := callDuration(session, timestamp); duration > 0 {
-			return fmt.Sprintf("Call ended after %s", formatCallDuration(duration))
+			durationStr = fmt.Sprintf(" after %s", formatCallDuration(duration))
 		}
-		return "Call ended"
+		var tag string
+		switch call.Reason {
+		case "busy":
+			tag = " (busy)"
+		case "decline":
+			if isFromMe {
+				tag = " (you declined)"
+			} else {
+				tag = " (peer declined)"
+			}
+		case "connectivity-error", "media-error":
+			tag = " (connection lost)"
+		default:
+			if isFromMe {
+				tag = " (you hung up)"
+			} else {
+				tag = " (peer hung up)"
+			}
+		}
+		return fmt.Sprintf("Call ended%s%s", durationStr, tag)
 	}
 	switch call.Reason {
 	case "busy", "decline":
@@ -256,6 +286,9 @@ func finishNoticeForSession(session *xmppCallSessionState, call *xmppCallEvent, 
 				return "Call busy"
 			}
 			return "Call declined"
+		}
+		if isFromMe {
+			return "Declined incoming call"
 		}
 		return "Missed call"
 	case "cancel", "timeout":
@@ -267,7 +300,10 @@ func finishNoticeForSession(session *xmppCallSessionState, call *xmppCallEvent, 
 		}
 		return retractNoticeForSession(session)
 	case "success":
-		return "Call ended"
+		if isFromMe {
+			return "Call ended (you hung up)"
+		}
+		return "Call ended (peer hung up)"
 	default:
 		if session.InitiatedByMe {
 			return "Outgoing call ended"

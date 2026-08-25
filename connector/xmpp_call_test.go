@@ -52,7 +52,7 @@ func TestAdvanceXMPPCallSessionIncomingMissed(t *testing.T) {
 	}
 }
 
-func TestAdvanceXMPPCallSessionOutgoingAnsweredAndFinished(t *testing.T) {
+func TestAdvanceXMPPCallSessionOutgoingAnsweredAndFinishedByPeer(t *testing.T) {
 	ts := time.Unix(100, 0)
 	state, notice := advanceXMPPCallSession(nil, &xmppCallEvent{Action: "propose", SessionID: "sess"}, ts, true)
 	if notice != "Outgoing call" {
@@ -67,8 +67,37 @@ func TestAdvanceXMPPCallSessionOutgoingAnsweredAndFinished(t *testing.T) {
 		t.Fatalf("unexpected proceed notice: %q", notice)
 	}
 	_, notice = advanceXMPPCallSession(state, &xmppCallEvent{Action: "finish", SessionID: "sess", Reason: "success"}, ts.Add(70*time.Second), false)
-	if notice != "Call ended after 1m" {
+	if notice != "Call ended after 1m (peer hung up)" {
 		t.Fatalf("unexpected finish notice: %q", notice)
+	}
+}
+
+func TestAdvanceXMPPCallSessionOutgoingAnsweredAndFinishedByMe(t *testing.T) {
+	ts := time.Unix(100, 0)
+	state, _ := advanceXMPPCallSession(nil, &xmppCallEvent{Action: "propose", SessionID: "sess"}, ts, true)
+	state, _ = advanceXMPPCallSession(state, &xmppCallEvent{Action: "proceed", SessionID: "sess"}, ts.Add(5*time.Second), false)
+	_, notice := advanceXMPPCallSession(state, &xmppCallEvent{Action: "finish", SessionID: "sess", Reason: "success"}, ts.Add(65*time.Second), true)
+	if notice != "Call ended after 1m (you hung up)" {
+		t.Fatalf("unexpected finish notice: %q", notice)
+	}
+}
+
+func TestAdvanceXMPPCallSessionIncomingAnsweredAndDeclinedByMe(t *testing.T) {
+	ts := time.Unix(100, 0)
+	state, _ := advanceXMPPCallSession(nil, &xmppCallEvent{Action: "propose", SessionID: "sess"}, ts, false)
+	state, _ = advanceXMPPCallSession(state, &xmppCallEvent{Action: "proceed", SessionID: "sess"}, ts.Add(5*time.Second), false)
+	_, notice := advanceXMPPCallSession(state, &xmppCallEvent{Action: "finish", SessionID: "sess", Reason: "decline"}, ts.Add(25*time.Second), true)
+	if notice != "Call ended after 20s (you declined)" {
+		t.Fatalf("unexpected finish notice: %q", notice)
+	}
+}
+
+func TestAdvanceXMPPCallSessionIncomingRejectedByMe(t *testing.T) {
+	ts := time.Unix(100, 0)
+	state, _ := advanceXMPPCallSession(nil, &xmppCallEvent{Action: "propose", SessionID: "sess"}, ts, false)
+	_, notice := advanceXMPPCallSession(state, &xmppCallEvent{Action: "reject", SessionID: "sess"}, ts.Add(5*time.Second), true)
+	if notice != "Declined incoming call" {
+		t.Fatalf("unexpected reject notice: %q", notice)
 	}
 }
 
@@ -122,8 +151,26 @@ func TestFormatCallNoticeForParty(t *testing.T) {
 	if got := formatCallNoticeForParty("Call declined", "Alice"); got != "Alice declined the call" {
 		t.Fatalf("unexpected declined formatting: %q", got)
 	}
-	if got := formatCallNoticeForParty("Call ended after 45s", "Alice"); got != "Call with Alice ended after 45s" {
+	if got := formatCallNoticeForParty("Declined incoming call", "Alice"); got != "Declined call from Alice" {
+		t.Fatalf("unexpected declined incoming formatting: %q", got)
+	}
+	if got := formatCallNoticeForParty("Call ended after 45s (peer hung up)", "Alice"); got != "Call with Alice ended after 45s (Alice hung up)" {
 		t.Fatalf("unexpected ended formatting: %q", got)
+	}
+	if got := formatCallNoticeForParty("Call ended after 1m 24s (you hung up)", "Alice"); got != "Call with Alice ended after 1m 24s (you hung up)" {
+		t.Fatalf("unexpected ended formatting: %q", got)
+	}
+	if got := formatCallNoticeForParty("Call ended (you hung up)", "Alice"); got != "Call with Alice ended (you hung up)" {
+		t.Fatalf("unexpected ended formatting: %q", got)
+	}
+	if got := formatCallNoticeForParty("Call ended (peer hung up)", "Alice"); got != "Call with Alice ended (Alice hung up)" {
+		t.Fatalf("unexpected ended formatting: %q", got)
+	}
+	if got := formatCallNoticeForParty("Call ended after 2m (connection lost)", "Alice"); got != "Call with Alice ended after 2m (connection lost)" {
+		t.Fatalf("unexpected ended formatting: %q", got)
+	}
+	if got := formatCallNoticeForParty("Call ended after 45s (peer hung up)", ""); got != "Call ended after 45s (ended by other party)" {
+		t.Fatalf("unexpected empty party formatting: %q", got)
 	}
 }
 
