@@ -32,14 +32,20 @@ func TestSuffixFormatting(t *testing.T) {
 func TestContactLabelFromJID(t *testing.T) {
 	t.Parallel()
 
-	if got := contactLabelFromJID("+15551234567@cheogram.com"); got != "5551234567" {
-		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "5551234567")
+	if got := contactLabelFromJID("+15551234567@cheogram.com"); got != "+15551234567" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "+15551234567")
 	}
-	if got := contactLabelFromJID("+15550102000@cheogram.com"); got != "4569876543" {
-		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "4569876543")
+	if got := contactLabelFromJID("+15550102000@cheogram.com"); got != "+15550102000" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "+15550102000")
+	}
+	if got := contactLabelFromJID("+447123456789@cheogram.com"); got != "+447123456789" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "+447123456789")
 	}
 	if got := contactLabelFromJID("room@example.com/Nick"); got != "Nick" {
 		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "Nick")
+	}
+	if got := contactLabelFromJID("alice@example.com"); got != "alice" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "alice")
 	}
 }
 
@@ -49,8 +55,8 @@ func TestGroupInitialsFromLabels(t *testing.T) {
 	if got := groupInitialsFromLabels([]string{"Joe Apple", "Bob Pear", "Cindy Banana"}); got != "JBC" {
 		t.Fatalf("groupInitialsFromLabels() = %q, want %q", got, "JBC")
 	}
-	if got := groupInitialsFromLabels([]string{"Joe Apple", "4569876543", "Cindy Banana"}); got != "J4C" {
-		t.Fatalf("groupInitialsFromLabels() = %q, want %q", got, "J4C")
+	if got := groupInitialsFromLabels([]string{"Joe Apple", "+15550102000", "Cindy Banana"}); got != "J1C" {
+		t.Fatalf("groupInitialsFromLabels() = %q, want %q", got, "J1C")
 	}
 }
 
@@ -125,8 +131,8 @@ func TestCheogramGroupFallbackWithoutMetadata(t *testing.T) {
 		t.Fatal("did not expect cheogram group room to match an unrelated contact")
 	}
 
-	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp"); got != "55 (jmp)" {
-		t.Fatalf("groupRoomNameFromJID() = %q, want %q", got, "55 (jmp)")
+	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp"); got != "11 (jmp)" {
+		t.Fatalf("groupRoomNameFromJID() = %q, want %q", got, "11 (jmp)")
 	}
 }
 

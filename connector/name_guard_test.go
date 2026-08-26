@@ -45,11 +45,22 @@ func TestDesiredGhostName(t *testing.T) {
 		}
 	}
 
-	t.Run("bare jid fallback", func(t *testing.T) {
+	t.Run("bare jid phone fallback", func(t *testing.T) {
 		nc := &MyNetworkClient{}
-		desired, custom := nc.desiredGhostName(ghostFromID("+1@example.com", nil))
-		if desired != "+1@example.com" {
-			t.Errorf("desired = %q, want %q", desired, "+1@example.com")
+		desired, custom := nc.desiredGhostName(ghostFromID("=2b15551234567@cheogram.com", nil))
+		if desired != "+15551234567" {
+			t.Errorf("desired = %q, want %q", desired, "+15551234567")
+		}
+		if custom != "" {
+			t.Errorf("custom = %q, want empty", custom)
+		}
+	})
+
+	t.Run("bare jid non-phone fallback", func(t *testing.T) {
+		nc := &MyNetworkClient{}
+		desired, custom := nc.desiredGhostName(ghostFromID("alice@example.com", nil))
+		if desired != "alice" {
+			t.Errorf("desired = %q, want %q", desired, "alice")
 		}
 		if custom != "" {
 			t.Errorf("custom = %q, want empty", custom)
@@ -58,15 +69,23 @@ func TestDesiredGhostName(t *testing.T) {
 
 	t.Run("resource part preferred when no custom", func(t *testing.T) {
 		nc := &MyNetworkClient{}
-		desired, _ := nc.desiredGhostName(ghostFromID("+1@example.com/Typing", &GhostMetadata{}))
+		desired, _ := nc.desiredGhostName(ghostFromID("room@example.com/Typing", &GhostMetadata{}))
 		if desired != "Typing" {
 			t.Errorf("desired = %q, want %q", desired, "Typing")
 		}
 	})
 
+	t.Run("remote name preferred when no custom", func(t *testing.T) {
+		nc := &MyNetworkClient{}
+		desired, custom := nc.desiredGhostName(ghostFromID("=2b15551234567@cheogram.com", &GhostMetadata{RemoteName: "Alice"}))
+		if desired != "Alice" || custom != "" {
+			t.Errorf("desired = %q custom = %q, want %q/empty", desired, custom, "Alice")
+		}
+	})
+
 	t.Run("custom name wins", func(t *testing.T) {
 		nc := &MyNetworkClient{}
-		desired, custom := nc.desiredGhostName(ghostFromID("+1@example.com", &GhostMetadata{CustomName: "Some Person"}))
+		desired, custom := nc.desiredGhostName(ghostFromID("=2b15551234567@cheogram.com", &GhostMetadata{CustomName: "Some Person"}))
 		if desired != "Some Person" || custom != "Some Person" {
 			t.Errorf("desired = %q custom = %q, want %q/%q", desired, custom, "Some Person", "Some Person")
 		}

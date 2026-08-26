@@ -2925,13 +2925,14 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			msg.Body = stanza.StringPtr(stripped)
 		} else if isMUC {
 			if bodyParts := strings.SplitN(stanza.StringValue(msg.Body), " ", 2); len(bodyParts) == 2 && strings.HasPrefix(bodyParts[0], "+") {
+				cleanPrefix := strings.TrimSuffix(bodyParts[0], ":")
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
 						Str("room_jid", bareFromJid).
-						Str("phone_prefix", bodyParts[0]).
+						Str("phone_prefix", cleanPrefix).
 						Msg("Using phone number prefix as sender")
 				}
-				senderID = bodyParts[0] + "@cheogram.com"
+				senderID = cleanPrefix + "@cheogram.com"
 				msg.Body = stanza.StringPtr(bodyParts[1])
 			}
 		}
@@ -3301,6 +3302,10 @@ func stripMUCSenderPrefix(body string, senderID string) string {
 	if parts := strings.Split(senderID, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
 		nick := parts[len(parts)-1]
 		prefixes = append(prefixes, nick+":")
+	}
+	if parts := strings.SplitN(senderID, "@", 2); len(parts) == 2 && parts[0] != "" {
+		prefixes = append(prefixes, parts[0]+":")
+		prefixes = append(prefixes, parts[0])
 	}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(trimmed, prefix) {

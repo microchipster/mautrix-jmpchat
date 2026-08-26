@@ -248,3 +248,85 @@ func TestResolveOutboundError(t *testing.T) {
 		t.Fatal("expected outbound error to resolve by target JID fallback")
 	}
 }
+
+func TestStripMUCSenderPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		body     string
+		senderID string
+		want     string
+	}{
+		{
+			name:     "standard phone prefix with colon",
+			body:     "+15551230001: Hello everyone!",
+			senderID: "+15551230001@cheogram.com",
+			want:     "Hello everyone!",
+		},
+		{
+			name:     "standard phone prefix with space",
+			body:     "+15551230001 Hello everyone!",
+			senderID: "+15551230001@cheogram.com",
+			want:     "Hello everyone!",
+		},
+		{
+			name:     "xmpp uri bracketed prefix",
+			body:     "<xmpp:+15551230001@cheogram.com> Hello group!",
+			senderID: "+15551230001@cheogram.com",
+			want:     "Hello group!",
+		},
+		{
+			name:     "xmpp uri prefix with colon",
+			body:     "xmpp:+15551230001@cheogram.com: Hello group!",
+			senderID: "+15551230001@cheogram.com",
+			want:     "Hello group!",
+		},
+		{
+			name:     "full JID prefix with colon",
+			body:     "+15551230001@cheogram.com: Hello group!",
+			senderID: "+15551230001@cheogram.com",
+			want:     "Hello group!",
+		},
+		{
+			name:     "occupant nickname prefix",
+			body:     "Alice: Let's meet at 5",
+			senderID: "conference@server.com/Alice",
+			want:     "Let's meet at 5",
+		},
+		{
+			name:     "no prefix matches",
+			body:     "Just a regular message",
+			senderID: "+15551230001@cheogram.com",
+			want:     "Just a regular message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripMUCSenderPrefix(tt.body, tt.senderID); got != tt.want {
+				t.Errorf("stripMUCSenderPrefix(%q, %q) = %q, want %q", tt.body, tt.senderID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractPrefixedSender(t *testing.T) {
+	t.Parallel()
+
+	jid, stripped, ok := extractPrefixedSender("<xmpp:+15551230001@cheogram.com> Hello group!")
+	if !ok {
+		t.Fatal("expected extractPrefixedSender to succeed")
+	}
+	if jid != "+15551230001@cheogram.com" {
+		t.Errorf("jid = %q, want %q", jid, "+15551230001@cheogram.com")
+	}
+	if stripped != "Hello group!" {
+		t.Errorf("stripped = %q, want %q", stripped, "Hello group!")
+	}
+
+	_, _, ok = extractPrefixedSender("Hello group without prefix!")
+	if ok {
+		t.Fatal("expected extractPrefixedSender to return false for un-prefixed message")
+	}
+}

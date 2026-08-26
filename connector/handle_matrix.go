@@ -366,13 +366,19 @@ func (nc *MyNetworkClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 // desiredGhostName returns the name the bridge wants to show for a ghost,
 // plus the custom name explicitly set via set-contact-name (empty when unset).
 func (nc *MyNetworkClient) desiredGhostName(ghost *bridgev2.Ghost) (desired, customName string) {
-	desired = UnescapeJID(string(ghost.ID))
-	if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil && meta.CustomName != "" {
-		customName = meta.CustomName
-		desired = customName
-	} else if parts := strings.Split(desired, "/"); len(parts) > 1 && parts[len(parts)-1] != "" {
-		desired = parts[len(parts)-1]
+	rawJID := UnescapeJID(string(ghost.ID))
+	if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil {
+		if meta.CustomName != "" {
+			customName = meta.CustomName
+			desired = customName
+			return
+		}
+		if meta.RemoteName != "" {
+			desired = meta.RemoteName
+			return
+		}
 	}
+	desired = contactLabelFromJID(rawJID)
 	return
 }
 

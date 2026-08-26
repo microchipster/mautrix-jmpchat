@@ -125,7 +125,9 @@ func contactLabelFromJID(jid string) string {
 		return ""
 	}
 	if parts := strings.SplitN(jid, "/", 2); len(parts) == 2 && parts[1] != "" {
-		return parts[1]
+		if !strings.HasPrefix(parts[0], "+") {
+			return parts[1]
+		}
 	}
 	jid = bareJID(jid)
 	if jid == "" {
@@ -157,10 +159,7 @@ func phoneSubscriberLabel(localpart string) string {
 			return ""
 		}
 	}
-	if len(digits) > 10 {
-		digits = digits[len(digits)-10:]
-	}
-	return digits
+	return "+" + digits
 }
 
 func contactInitial(label string) string {

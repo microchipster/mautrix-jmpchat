@@ -175,7 +175,7 @@ func TestFormatCallNoticeForParty(t *testing.T) {
 }
 
 func TestCallPartyLabelFromJID(t *testing.T) {
-	if got := callPartyLabelFromJID("+15551234567@cheogram.com"); got != "5551234567" {
+	if got := callPartyLabelFromJID("+15551234567@cheogram.com"); got != "+15551234567" {
 		t.Fatalf("unexpected phone label: %q", got)
 	}
 	if got := callPartyLabelFromJID("room@example.com/Nick"); got != "Nick" {
