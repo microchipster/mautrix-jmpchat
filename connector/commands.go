@@ -56,7 +56,7 @@ var CommandSync = &commands.FullHandler{
 	Aliases: []string{"sync-groups"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Sync roster + bookmarks and MAM backfill. Usage: sync [full|<duration>] (default: 30d)",
+		Description: "Sync roster + bookmarks and MAM backfill. Usage: sync [full|<duration>] (default: 30d; full also recreates empty rooms)",
 	},
 	RequiresLogin: true,
 }

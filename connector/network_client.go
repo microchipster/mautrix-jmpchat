@@ -120,6 +120,7 @@ type MyNetworkClient struct {
 	rosterItems                  map[string]bool
 	bookmarkedRooms              map[string]bool
 	fullSyncRequested            bool
+	fullSyncCreateEmpty          bool
 	fullSyncRosterPending        bool
 	fullSyncBookmarksPending     bool
 	fullSyncAccountDiscoPending  bool
@@ -824,6 +825,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().Str("source", source).Int("items", len(confs)).Msg("Processing bookmarks")
 	}
+	createEmptyRooms := nc.shouldCreateEmptyRooms()
 	for _, conf := range confs {
 		roomJID := strings.TrimSpace(conf.JID)
 		if roomJID == "" {
@@ -860,17 +862,19 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 				Str("portal_id", string(portalID)).
 				Msg("Resolved portal ID for bookmark")
 		}
-		resync := &simplevent.ChatResync{
-			EventMeta: simplevent.EventMeta{
-				Type:         bridgev2.RemoteEventChatResync,
-				PortalKey:    networkid.PortalKey{ID: portalID},
-				CreatePortal: true,
-				Timestamp:    time.Now(),
-			},
-			ChatInfo: nil,
+		if createEmptyRooms {
+			resync := &simplevent.ChatResync{
+				EventMeta: simplevent.EventMeta{
+					Type:         bridgev2.RemoteEventChatResync,
+					PortalKey:    networkid.PortalKey{ID: portalID},
+					CreatePortal: true,
+					Timestamp:    time.Now(),
+				},
+				ChatInfo: nil,
+			}
+			nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync for explicit empty-room recreate sync")
+			nc.bridge.QueueRemoteEvent(nc.login, resync)
 		}
-		nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing bookmarked groupchat resync")
-		nc.bridge.QueueRemoteEvent(nc.login, resync)
 		nc.recordMUCBookmarkPortal(string(portalID))
 
 		nick := strings.TrimSpace(conf.Nick)
@@ -2303,23 +2307,25 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				}
 				nc.rosterMu.Unlock()
 				portalID := MakePortalID(bareJID)
-				if nc.log.GetLevel() <= zerolog.DebugLevel {
-					nc.log.Debug().
-						Str("raw_jid", bareJID).
-						Str("portal_id", string(portalID)).
-						Msg("Resolved portal ID for roster item")
+				if nc.shouldCreateEmptyRooms() {
+					if nc.log.GetLevel() <= zerolog.DebugLevel {
+						nc.log.Debug().
+							Str("raw_jid", bareJID).
+							Str("portal_id", string(portalID)).
+							Msg("Resolved portal ID for roster item")
+					}
+					resync := &simplevent.ChatResync{
+						EventMeta: simplevent.EventMeta{
+							Type:         bridgev2.RemoteEventChatResync,
+							PortalKey:    networkid.PortalKey{ID: portalID},
+							CreatePortal: true,
+							Timestamp:    time.Now(),
+						},
+						ChatInfo: nil,
+					}
+					nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing roster chat resync for explicit empty-room recreate sync")
+					nc.bridge.QueueRemoteEvent(nc.login, resync)
 				}
-				resync := &simplevent.ChatResync{
-					EventMeta: simplevent.EventMeta{
-						Type:         bridgev2.RemoteEventChatResync,
-						PortalKey:    networkid.PortalKey{ID: portalID},
-						CreatePortal: true,
-						Timestamp:    time.Now(),
-					},
-					ChatInfo: nil,
-				}
-				nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing roster chat resync")
-				nc.bridge.QueueRemoteEvent(nc.login, resync)
 				nc.recordDMPortal(string(portalID))
 				if nc.fullSyncRequested {
 					start := time.Time{}
@@ -2463,23 +2469,25 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 						continue
 					}
 					portalID := MakePortalID(roomJID)
-					if nc.log.GetLevel() <= zerolog.DebugLevel {
-						nc.log.Debug().
-							Str("raw_jid", roomJID).
-							Str("portal_id", string(portalID)).
-							Msg("Resolved portal ID for disco room")
+					if nc.shouldCreateEmptyRooms() {
+						if nc.log.GetLevel() <= zerolog.DebugLevel {
+							nc.log.Debug().
+								Str("raw_jid", roomJID).
+								Str("portal_id", string(portalID)).
+								Msg("Resolved portal ID for disco room")
+						}
+						resync := &simplevent.ChatResync{
+							EventMeta: simplevent.EventMeta{
+								Type:         bridgev2.RemoteEventChatResync,
+								PortalKey:    networkid.PortalKey{ID: portalID},
+								CreatePortal: true,
+								Timestamp:    time.Now(),
+							},
+							ChatInfo: nil,
+						}
+						nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing discovered groupchat resync for explicit empty-room recreate sync")
+						nc.bridge.QueueRemoteEvent(nc.login, resync)
 					}
-					resync := &simplevent.ChatResync{
-						EventMeta: simplevent.EventMeta{
-							Type:         bridgev2.RemoteEventChatResync,
-							PortalKey:    networkid.PortalKey{ID: portalID},
-							CreatePortal: true,
-							Timestamp:    time.Now(),
-						},
-						ChatInfo: nil,
-					}
-					nc.log.Debug().Str("portal_id", string(portalID)).Msg("Queueing discovered groupchat resync")
-					nc.bridge.QueueRemoteEvent(nc.login, resync)
 					nc.recordMUCDiscoPortal(string(portalID))
 				}
 				return
@@ -3347,11 +3355,13 @@ func (nc *MyNetworkClient) maybeClearFullSync() {
 		return
 	}
 	nc.fullSyncRequested = false
+	nc.fullSyncCreateEmpty = false
 }
 
 func (nc *MyNetworkClient) clearFullSyncState() {
 	nc.syncMu.Lock()
 	nc.fullSyncRequested = false
+	nc.fullSyncCreateEmpty = false
 	nc.fullSyncRosterPending = false
 	nc.fullSyncBookmarksPending = false
 	nc.fullSyncAccountDiscoPending = false
@@ -3366,6 +3376,12 @@ func (nc *MyNetworkClient) fullSyncSnapshot() (requested, useStart bool, start t
 	nc.syncMu.Lock()
 	defer nc.syncMu.Unlock()
 	return nc.fullSyncRequested, nc.fullSyncUseStart, nc.fullSyncStart
+}
+
+func (nc *MyNetworkClient) shouldCreateEmptyRooms() bool {
+	nc.syncMu.Lock()
+	defer nc.syncMu.Unlock()
+	return nc.fullSyncCreateEmpty
 }
 
 func (nc *MyNetworkClient) trackFullSyncBackfill() bool {
@@ -3427,6 +3443,7 @@ func (nc *MyNetworkClient) StartFullSync(ctx context.Context, notify func(string
 	nc.syncLastErr = ""
 	nc.syncStartedAt = time.Now()
 	nc.fullSyncBackfillsPending = 0
+	nc.fullSyncCreateEmpty = full
 	nc.fullSyncAccountDiscoPending = false
 	nc.dmBackfillPending = map[string]time.Time{}
 	if full {

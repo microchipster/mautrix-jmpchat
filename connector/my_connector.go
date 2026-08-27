@@ -294,7 +294,7 @@ func managementRoomHelpText() string {
 		"  - resync-matrix-encryption: refresh Matrix encryption state after a decrypt error, device mismatch, or missing keys; keeps rooms and history\n" +
 		"  - reset-matrix-encryption yes: rebuild Matrix crypto state if resync still fails, for stale device/signing-key problems; keeps rooms and history\n" +
 		"- ping\n" +
-		"- sync [full|30d] (default 30d)\n" +
+		"- sync [full|30d] (default 30d; 'full' also recreates empty rooms)\n" +
 		"- sync-status\n" +
 		"- create [--name <name>] <jid> [jid...]\n" +
 		"- list-contacts\n" +

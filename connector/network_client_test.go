@@ -38,6 +38,25 @@ func TestMyNetworkClientTryStartConnect(t *testing.T) {
 	}
 }
 
+func TestShouldCreateEmptyRoomsOnlyForExplicitFullSync(t *testing.T) {
+	client := &MyNetworkClient{}
+	if client.shouldCreateEmptyRooms() {
+		t.Fatal("empty-room recreation should be disabled by default")
+	}
+
+	client.syncMu.Lock()
+	client.fullSyncCreateEmpty = true
+	client.syncMu.Unlock()
+	if !client.shouldCreateEmptyRooms() {
+		t.Fatal("empty-room recreation should be enabled for explicit full sync")
+	}
+
+	client.clearFullSyncState()
+	if client.shouldCreateEmptyRooms() {
+		t.Fatal("empty-room recreation should be cleared after sync")
+	}
+}
+
 func TestWaitForConnectedReloadsAfterStateChange(t *testing.T) {
 	client := &MyNetworkClient{connectionChanged: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
