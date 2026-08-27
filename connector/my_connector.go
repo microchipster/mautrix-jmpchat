@@ -60,6 +60,8 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandMatrixEncryptionReset)
 		proc.AddHandler(CommandJoinRoom)
 		proc.AddHandler(CommandListDiscoveredRooms)
+		proc.AddHandler(CommandListRooms)
+		proc.AddHandler(CommandListUnnamedContacts)
 		proc.AddHandler(CommandGatewayActions)
 		proc.AddHandler(CommandGatewayForm)
 		proc.AddHandler(CommandGatewaySubmit)
@@ -307,7 +309,9 @@ func managementRoomHelpText() string {
 		"- set-contact-name <jid> <name>\n" +
 		"- auto-rename\n" +
 		"- join-room <room_jid> [full|<duration>]\n" +
-		"- list-rooms"
+		"- list-rooms [all|dm|group|orphans|space|stale]\n" +
+		"- list-discovered-rooms\n" +
+		"- list-unnamed-contacts"
 }
 
 func (c *MyConnector) addExistingPortalsToSpace(ctx context.Context, login *bridgev2.UserLogin) {

@@ -184,7 +184,7 @@ func (nc *MyNetworkClient) recreatePortalRoom(ctx context.Context, portal *bridg
 	}
 
 	if oldMXID != "" && oldMXID != newRoomID && nc.login.SpaceRoom != "" {
-		removeRoomFromSpace(ctx, nc.bridge.Bot, nc.login.SpaceRoom, oldMXID)
+		_ = removeRoomFromSpace(ctx, nc.bridge.Bot, nc.login.SpaceRoom, oldMXID)
 	}
 	if nc.login.SpaceRoom != "" {
 		_ = addRoomToSpace(ctx, nc.bridge, nc.login.SpaceRoom, newRoomID, false)

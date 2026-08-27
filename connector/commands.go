@@ -452,6 +452,169 @@ var CommandListContacted = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+var CommandListUnnamedContacts = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		type unnamedContact struct {
+			JID          string
+			Phone        string
+			RoomID       id.RoomID
+			RemoteName   string
+			MessageCount int
+			LastTS       time.Time
+			Preview      string
+		}
+
+		unnamedMap := make(map[string]*unnamedContact)
+
+		userPortals, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+		if err == nil {
+			for _, up := range userPortals {
+				portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, up.Portal)
+				if err != nil || portal == nil {
+					continue
+				}
+				var jids []string
+				if portalUsesGroupChat(portal) {
+					jids = portalContacts(portal)
+				} else {
+					jid := string(portal.OtherUserID)
+					if jid == "" {
+						jid = string(portal.ID)
+					}
+					if jid != "" {
+						jids = append(jids, UnescapeJID(jid))
+					}
+				}
+
+				stats := getRoomPruneStats(ce, portal)
+				for _, rawJID := range jids {
+					jid := bareJID(UnescapeJID(strings.TrimSpace(rawJID)))
+					if jid == "" {
+						continue
+					}
+					ghostID := MakeUserID(jid)
+					ghost, _ := ce.Bridge.GetExistingGhostByID(ce.Ctx, ghostID)
+					var customName, remoteName string
+					if ghost != nil {
+						if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil {
+							customName = strings.TrimSpace(meta.CustomName)
+							remoteName = strings.TrimSpace(meta.RemoteName)
+						}
+					}
+					if customName != "" {
+						continue
+					}
+					existing, exists := unnamedMap[jid]
+					if !exists {
+						unnamedMap[jid] = &unnamedContact{
+							JID:          jid,
+							Phone:        extractPhoneDigits(jid),
+							RoomID:       portal.MXID,
+							RemoteName:   remoteName,
+							MessageCount: stats.messageCount,
+							LastTS:       stats.lastTS,
+							Preview:      stats.preview,
+						}
+					} else {
+						if stats.messageCount > existing.MessageCount {
+							existing.MessageCount = stats.messageCount
+							existing.LastTS = stats.lastTS
+							existing.Preview = stats.preview
+							existing.RoomID = portal.MXID
+						}
+						if remoteName != "" && existing.RemoteName == "" {
+							existing.RemoteName = remoteName
+						}
+					}
+				}
+			}
+		}
+
+		if client, ok := login.Client.(*MyNetworkClient); ok && client != nil {
+			for _, rosterJID := range client.rosterContactList() {
+				jid := bareJID(UnescapeJID(strings.TrimSpace(rosterJID)))
+				if jid == "" {
+					continue
+				}
+				ghostID := MakeUserID(jid)
+				ghost, _ := ce.Bridge.GetExistingGhostByID(ce.Ctx, ghostID)
+				var customName, remoteName string
+				if ghost != nil {
+					if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil {
+						customName = strings.TrimSpace(meta.CustomName)
+						remoteName = strings.TrimSpace(meta.RemoteName)
+					}
+				}
+				if customName != "" {
+					continue
+				}
+				if _, exists := unnamedMap[jid]; !exists {
+					unnamedMap[jid] = &unnamedContact{
+						JID:        jid,
+						Phone:      extractPhoneDigits(jid),
+						RemoteName: remoteName,
+					}
+				}
+			}
+		}
+
+		if len(unnamedMap) == 0 {
+			ce.Reply("All contacts have custom display names set! (0 unnamed contacts found)")
+			return
+		}
+
+		var list []*unnamedContact
+		for _, u := range unnamedMap {
+			list = append(list, u)
+		}
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].MessageCount != list[j].MessageCount {
+				return list[i].MessageCount > list[j].MessageCount
+			}
+			if !list[i].LastTS.Equal(list[j].LastTS) {
+				return list[i].LastTS.After(list[j].LastTS)
+			}
+			return list[i].JID < list[j].JID
+		})
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Found %d unnamed contact(s) without a custom display name:\n\n", len(list)))
+		for _, u := range list {
+			label := u.JID
+			if u.Phone != "" {
+				label = fmt.Sprintf("+%s (%s)", u.Phone, u.JID)
+			}
+			roomInfo := ""
+			if u.RoomID != "" {
+				roomInfo = fmt.Sprintf(" (Room: `%s`)", u.RoomID)
+			}
+			sb.WriteString(fmt.Sprintf("- **%s**%s\n", label, roomInfo))
+			remoteInfo := ""
+			if u.RemoteName != "" {
+				remoteInfo = fmt.Sprintf(" | Remote name: %q", u.RemoteName)
+			}
+			sb.WriteString(fmt.Sprintf("  - Messages: %d | Last active: %s%s\n", u.MessageCount, formatLastActivity(u.LastTS), remoteInfo))
+			if u.Preview != "" {
+				sb.WriteString(fmt.Sprintf("  - Last message: %q\n", u.Preview))
+			}
+		}
+		sb.WriteString("\n---\nTo set a custom display name for any contact, run:\n`set-contact-name <jid_or_phone> <name>`\nExample: `set-contact-name +15551234567 Alice Smith`")
+		ce.Reply("%s", sb.String())
+	},
+	Name:    "list-unnamed-contacts",
+	Aliases: []string{"list-unnamed", "unnamed-contacts", "unnamed"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List contacts that do not have a custom display name set (use: list-unnamed-contacts)",
+	},
+	RequiresLogin: true,
+}
+
 var CommandBlockContact = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		handleBlockCommand(ce, false)
@@ -572,10 +735,83 @@ var CommandListDiscoveredRooms = &commands.FullHandler{
 		}
 		ce.Reply(strings.Join(parts, "\n\n"))
 	},
-	Name: "list-rooms",
+	Name:    "list-discovered-rooms",
+	Aliases: []string{"disco-rooms", "discovered-rooms"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "List rooms discovered via bookmarks, disco, or joins",
+	},
+	RequiresLogin: true,
+}
+
+func parseListRoomsArgs(args []string) (string, error) {
+	filter := "all"
+	if len(args) > 1 {
+		return "", fmt.Errorf("usage: list-rooms [all|dm|group|orphans|space|stale]")
+	}
+	if len(args) == 1 {
+		filter = strings.ToLower(strings.TrimSpace(args[0]))
+	}
+	switch filter {
+	case "all", "dm", "group", "orphans", "space", "stale":
+		return filter, nil
+	default:
+		return "", fmt.Errorf("unknown room filter %q (use all, dm, group, orphans, space, or stale)", filter)
+	}
+}
+
+var CommandListRooms = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		filter, err := parseListRoomsArgs(ce.Args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		candidates, err := collectCandidateRooms(ce, login)
+		if err != nil {
+			ce.Reply("Failed to list rooms: %v", err)
+			return
+		}
+		lines := make([]string, 0, len(candidates)+2)
+		for _, room := range candidates {
+			kind := "dm"
+			if room.portal != nil && room.portal.RoomType != database.RoomTypeDM && room.portal.RoomType != database.RoomTypeSpace {
+				kind = "group"
+			}
+			if (filter == "dm" && kind != "dm") || (filter == "group" && kind != "group") || (filter == "orphans" && !room.isOrphan) || (filter == "stale" && room.messageCount > 0) || filter == "space" {
+				continue
+			}
+			preview := ""
+			if room.preview != "" {
+				preview = " | " + room.preview
+			}
+			lines = append(lines, fmt.Sprintf("[%s] %s | %s | messages=%d | last=%s%s", kind, room.roomID, room.name, room.messageCount, formatLastActivity(room.lastTS), preview))
+		}
+		if filter == "all" || filter == "space" {
+			if login.SpaceRoom != "" {
+				lines = append(lines, fmt.Sprintf("[space] %s", login.SpaceRoom))
+			}
+			if filter == "all" && ce.User.ManagementRoom != "" {
+				lines = append(lines, fmt.Sprintf("[management] %s", ce.User.ManagementRoom))
+			}
+		}
+		sort.Strings(lines)
+		if len(lines) == 0 {
+			ce.Reply("No rooms found (filter: %s)", filter)
+			return
+		}
+		ce.Reply("Rooms (filter: %s, %d):\n%s", filter, len(lines), strings.Join(lines, "\n"))
+	},
+	Name:    "list-rooms",
+	Aliases: []string{"rooms", "list-chats"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List all bot-managed Matrix rooms (use: list-rooms [all|dm|group|orphans|space|stale])",
 	},
 	RequiresLogin: true,
 }
@@ -1466,15 +1702,26 @@ func validateGatewayAssignments(pending PendingGatewayForm, values map[string]st
 	return nil
 }
 
-func removeRoomFromSpace(ctx context.Context, bot bridgev2.MatrixAPI, spaceRoom id.RoomID, childRoom id.RoomID) {
+func removeRoomFromSpace(ctx context.Context, bot bridgev2.MatrixAPI, spaceRoom id.RoomID, childRoom id.RoomID) error {
 	if bot == nil || spaceRoom == "" || childRoom == "" || spaceRoom == childRoom {
-		return
+		return nil
 	}
-	_, _ = bot.SendState(ctx, spaceRoom, event.StateSpaceChild, childRoom.String(), &event.Content{
+	if err := bot.EnsureJoined(ctx, spaceRoom); err != nil {
+		return fmt.Errorf("ensure joined Space %s: %w", spaceRoom, err)
+	}
+	if _, err := bot.SendState(ctx, spaceRoom, event.StateSpaceChild, childRoom.String(), &event.Content{
 		Parsed: &event.SpaceChildEventContent{
 			Via: nil,
 		},
-	}, time.Now())
+	}, time.Now()); err != nil {
+		return fmt.Errorf("remove %s from Space %s: %w", childRoom, spaceRoom, err)
+	}
+	if _, err := bot.SendState(ctx, childRoom, event.StateSpaceParent, spaceRoom.String(), &event.Content{
+		Parsed: &event.SpaceParentEventContent{Via: nil, Canonical: false},
+	}, time.Now()); err != nil {
+		return fmt.Errorf("clear Space parent on %s: %w", childRoom, err)
+	}
+	return nil
 }
 
 func addRoomToSpace(ctx context.Context, bridge *bridgev2.Bridge, spaceRoom id.RoomID, childRoom id.RoomID, canonical bool) error {
@@ -1507,13 +1754,17 @@ func deleteSinglePortal(ce *commands.Event, portal *bridgev2.Portal) error {
 	}
 	oldMXID := portal.MXID
 	login := ce.User.GetDefaultLogin()
+	var cleanupErr error
 	if login != nil && login.SpaceRoom != "" && oldMXID != "" {
-		removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldMXID)
+		cleanupErr = removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldMXID)
 	}
 	userPortals, err := ce.Bridge.DB.UserPortal.GetAllInPortal(ce.Ctx, portal.PortalKey)
-	if err == nil {
-		for _, up := range userPortals {
-			_ = ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up)
+	if err != nil {
+		return fmt.Errorf("failed to list portal users: %w", err)
+	}
+	for _, up := range userPortals {
+		if err := ce.Bridge.DB.UserPortal.Delete(ce.Ctx, up); err != nil {
+			return fmt.Errorf("failed to delete portal user: %w", err)
 		}
 	}
 	err = portal.Delete(ce.Ctx)
@@ -1521,7 +1772,12 @@ func deleteSinglePortal(ce *commands.Event, portal *bridgev2.Portal) error {
 		return fmt.Errorf("failed to delete portal: %w", err)
 	}
 	if oldMXID != "" {
-		_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, oldMXID, false)
+		if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, oldMXID, false); err != nil {
+			return fmt.Errorf("failed to purge Matrix room %s: %w", oldMXID, err)
+		}
+	}
+	if cleanupErr != nil {
+		return cleanupErr
 	}
 	return nil
 }
@@ -1789,6 +2045,55 @@ func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*ca
 	mc, ok := ce.Bridge.Matrix.(*matrix.Connector)
 	if ok && mc != nil && mc.AS != nil {
 		botClient := mc.AS.BotClient()
+		if login != nil && login.SpaceRoom != "" {
+			if state, err := botClient.State(ce.Ctx, login.SpaceRoom); err == nil && state != nil {
+				if childEvents, ok := state[event.StateSpaceChild]; ok {
+					for stateKey, childEvent := range childEvents {
+						roomID := id.RoomID(stateKey)
+						if roomID == "" {
+							continue
+						}
+						if _, excluded := excludeRooms[roomID]; excluded {
+							continue
+						}
+						if _, exists := candidatesMap[roomID]; exists {
+							continue
+						}
+						if childEvent == nil || childEvent.Content.AsSpaceChild() == nil {
+							continue
+						}
+
+						portal, _ := ce.Bridge.GetPortalByMXID(ce.Ctx, roomID)
+						candidate := &candidateRoom{
+							roomID:   roomID,
+							portal:   portal,
+							isOrphan: portal == nil,
+						}
+						if portal != nil {
+							stats := getRoomPruneStats(ce, portal)
+							candidate.targetJID = stats.targetJID
+							candidate.name = stats.name
+							candidate.messageCount = stats.messageCount
+							candidate.lastTS = stats.lastTS
+							candidate.preview = stats.preview
+						} else {
+							nameEvent, _ := mc.GetStateEvent(ce.Ctx, roomID, event.StateRoomName, "")
+							if nameEvent != nil && nameEvent.Content.AsRoomName() != nil {
+								candidate.name = strings.TrimSpace(nameEvent.Content.AsRoomName().Name)
+							}
+						}
+						if candidate.name == "" {
+							candidate.name = candidate.targetJID
+						}
+						if candidate.name == "" {
+							candidate.name = string(roomID)
+						}
+						candidate.matchKeys = computeRoomMatchKeys(ce.Ctx, ce.Bridge, candidate.targetJID, "", candidate.name)
+						candidatesMap[roomID] = candidate
+					}
+				}
+			}
+		}
 		joined, err := botClient.JoinedRooms(ce.Ctx)
 		if err == nil && joined != nil {
 			for _, roomID := range joined.JoinedRooms {
@@ -2097,7 +2402,9 @@ var CommandPruneRooms = &commands.FullHandler{
 		var errs []string
 		for _, s := range staleCandidates {
 			if login.SpaceRoom != "" {
-				removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, s.roomID)
+				if err := removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, s.roomID); err != nil {
+					errs = append(errs, fmt.Sprintf("unlink %s: %v", s.roomID, err))
+				}
 			}
 			if s.portal != nil {
 				if err := deleteSinglePortal(ce, s.portal); err != nil {
@@ -2224,7 +2531,9 @@ var CommandPruneDuplicates = &commands.FullHandler{
 				}
 				sendNotice(ce.Bridge.Bot, d.roomID, fmt.Sprintf("⚠️ This duplicate room has been consolidated into the active conversation: https://matrix.to/#/%s", c.primary.roomID))
 				if login.SpaceRoom != "" {
-					removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, d.roomID)
+					if err := removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, d.roomID); err != nil {
+						errs = append(errs, fmt.Sprintf("unlink %s: %v", d.roomID, err))
+					}
 				}
 				if d.portal != nil && (portal == nil || d.portal.PortalKey != portal.PortalKey) {
 					if err := deleteSinglePortal(ce, d.portal); err != nil {
@@ -2467,7 +2776,7 @@ func rebindSinglePortal(ce *commands.Event, portal *bridgev2.Portal, targetRoomI
 
 	oldBoundRoom = portal.MXID
 	if oldBoundRoom != "" && oldBoundRoom != targetRoomID && login.SpaceRoom != "" {
-		removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldBoundRoom)
+		_ = removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldBoundRoom)
 	}
 	err = portal.UpdateMatrixRoomID(ce.Ctx, targetRoomID, bridgev2.UpdateMatrixRoomIDParams{
 		FailIfMXIDSet:      false,
@@ -2605,7 +2914,7 @@ func replaceSinglePortal(ce *commands.Event, portal *bridgev2.Portal, login *bri
 		sendNotice(ce.Bridge.Bot, oldMXID, fmt.Sprintf("⚠️ This conversation has been replaced with a fresh room: https://matrix.to/#/%s", newRoomID))
 	}
 	if oldMXID != "" && oldMXID != newRoomID && login.SpaceRoom != "" {
-		removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldMXID)
+		_ = removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, oldMXID)
 	}
 
 	login.MarkInPortal(ce.Ctx, portal)
@@ -2799,7 +3108,7 @@ var CommandRebindAll = &commands.FullHandler{
 				}
 			case "prune":
 				if login.SpaceRoom != "" {
-					removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, p.targetRoom)
+					_ = removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, login.SpaceRoom, p.targetRoom)
 				}
 				if p.portal != nil {
 					if err := deleteSinglePortal(ce, p.portal); err != nil {
@@ -3108,11 +3417,18 @@ var CommandResyncSpace = &commands.FullHandler{
 							continue
 						}
 						childContent := evt.Content.AsSpaceChild()
-						if childContent == nil || len(childContent.Via) == 0 {
+						if childContent == nil {
 							continue
 						}
 						if !activeChildren[childID] {
-							removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, spaceRoom, childID)
+							if err := removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, spaceRoom, childID); err != nil {
+								ce.Log.Warn().Err(err).Stringer("room", childID).Msg("Failed to unlink stale Space child")
+								continue
+							}
+							if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, childID, false); err != nil {
+								ce.Log.Warn().Err(err).Stringer("room", childID).Msg("Failed to purge stale Space child")
+								continue
+							}
 							unlinkedStale++
 						}
 					}

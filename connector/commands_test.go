@@ -213,6 +213,36 @@ func TestParsePruneRoomsArgs(t *testing.T) {
 	}
 }
 
+func TestParseListRoomsArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		args  []string
+		want  string
+		isErr bool
+	}{
+		{args: nil, want: "all"},
+		{args: []string{"DM"}, want: "dm"},
+		{args: []string{"group"}, want: "group"},
+		{args: []string{"orphans"}, want: "orphans"},
+		{args: []string{"space"}, want: "space"},
+		{args: []string{"stale"}, want: "stale"},
+		{args: []string{"unknown"}, isErr: true},
+		{args: []string{"dm", "stale"}, isErr: true},
+	}
+
+	for _, tt := range tests {
+		got, err := parseListRoomsArgs(tt.args)
+		if (err != nil) != tt.isErr {
+			t.Errorf("parseListRoomsArgs(%v) error = %v, wantErr = %v", tt.args, err, tt.isErr)
+			continue
+		}
+		if !tt.isErr && got != tt.want {
+			t.Errorf("parseListRoomsArgs(%v) = %q, want %q", tt.args, got, tt.want)
+		}
+	}
+}
+
 func TestParsePruneDuplicatesArgs(t *testing.T) {
 	t.Parallel()
 
