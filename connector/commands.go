@@ -536,7 +536,11 @@ var CommandListUnnamedContacts = &commands.FullHandler{
 		}
 
 		if client, ok := login.Client.(*MyNetworkClient); ok && client != nil {
-			for _, rosterJID := range client.rosterContactList() {
+			roster := client.rosterContactList()
+			if meta, ok := login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
+				roster = append(roster, meta.RemoteUserID)
+			}
+			for _, rosterJID := range roster {
 				jid := bareJID(UnescapeJID(strings.TrimSpace(rosterJID)))
 				if jid == "" {
 					continue
@@ -603,7 +607,7 @@ var CommandListUnnamedContacts = &commands.FullHandler{
 				sb.WriteString(fmt.Sprintf("  - Last message: %q\n", u.Preview))
 			}
 		}
-		sb.WriteString("\n---\nTo set a custom display name for any contact, run:\n`set-contact-name <jid_or_phone> <name>`\nExample: `set-contact-name +15551234567 Alice Smith`")
+		sb.WriteString("\n---\nTo set a custom display name for any contact, run:\n`set-contact-name <jid_or_phone> <name>`\nExample: `set-contact-name +15551234567 Alice Smith`\n\nName your own XMPP identity too, so group names can include you:\n`set-contact-name <your_xmpp_jid_or_phone> <your name>`")
 		ce.Reply("%s", sb.String())
 	},
 	Name:    "list-unnamed-contacts",
@@ -1164,27 +1168,15 @@ var CommandLogout = &commands.FullHandler{
 }
 
 func normalizeJID(input string) string {
-	val := strings.TrimSpace(input)
-	if val == "" {
+	input = strings.TrimSpace(UnescapeJID(input))
+	if input == "" || (!strings.Contains(input, "@") && !isPhoneLike(input)) {
 		return ""
 	}
-	if strings.Contains(val, "@") {
-		return val
-	}
-	var digits strings.Builder
-	for _, r := range val {
-		if r >= '0' && r <= '9' {
-			digits.WriteRune(r)
-		}
-	}
-	if digits.Len() == 0 {
-		return ""
-	}
-	return "+" + digits.String() + "@cheogram.com"
+	return CanonicalBareJID(input)
 }
 
 func splitCheogramGroupContacts(jid string) []string {
-	jid = bareJID(strings.TrimSpace(strings.ToLower(jid)))
+	jid = CanonicalBareJID(jid)
 	if jid == "" || !strings.Contains(jid, ",") || !strings.HasSuffix(jid, "@cheogram.com") {
 		return nil
 	}
@@ -1196,10 +1188,7 @@ func splitCheogramGroupContacts(jid string) []string {
 		if part == "" {
 			continue
 		}
-		if !strings.HasPrefix(part, "+") {
-			part = "+" + part
-		}
-		contacts = append(contacts, part+"@cheogram.com")
+		contacts = append(contacts, canonicalCheogramLocalPart(part)+"@cheogram.com")
 	}
 	return contacts
 }
@@ -2542,8 +2531,11 @@ var CommandPruneDuplicates = &commands.FullHandler{
 						deletedCount++
 					}
 				} else {
-					_ = ce.Bridge.Bot.DeleteRoom(ce.Ctx, d.roomID, false)
-					deletedCount++
+					if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, d.roomID, false); err != nil {
+						errs = append(errs, fmt.Sprintf("delete %s (%s): %v", d.name, d.roomID, err))
+					} else {
+						deletedCount++
+					}
 				}
 			}
 		}
@@ -2759,10 +2751,16 @@ func rebindSinglePortal(ce *commands.Event, portal *bridgev2.Portal, targetRoomI
 	}
 
 	targetJID := UnescapeJID(string(portal.ID))
-	ghostID := MakeUserID(targetJID)
-	ghost, err := ce.Bridge.GetGhostByID(ce.Ctx, ghostID)
-	if err == nil && ghost != nil {
-		_ = ghost.Intent.EnsureJoined(ce.Ctx, targetRoomID)
+	for _, participant := range portalParticipantJIDs(portal) {
+		ghost, err := ce.Bridge.GetGhostByID(ce.Ctx, MakeUserID(participant))
+		if err != nil {
+			return "", fmt.Errorf("failed to load ghost for %s: %w", participant, err)
+		}
+		if ghost != nil {
+			if err := ghost.Intent.EnsureJoined(ce.Ctx, targetRoomID); err != nil {
+				return "", fmt.Errorf("failed to join ghost %s: %w", participant, err)
+			}
+		}
 	}
 
 	info, err := login.Client.GetChatInfo(ce.Ctx, portal)
@@ -2863,16 +2861,20 @@ func replaceSinglePortal(ce *commands.Event, portal *bridgev2.Portal, login *bri
 	}
 
 	inviteList := []id.UserID{ce.User.MXID}
-	ghostID := MakeUserID(targetJID)
-	ghost, _ := ce.Bridge.GetGhostByID(ce.Ctx, ghostID)
-	if ghost != nil {
-		inviteList = append(inviteList, ghost.Intent.GetMXID())
+	for _, participant := range portalParticipantJIDs(portal) {
+		ghost, err := ce.Bridge.GetGhostByID(ce.Ctx, MakeUserID(participant))
+		if err != nil {
+			return "", fmt.Errorf("failed to load ghost for %s: %w", participant, err)
+		}
+		if ghost != nil {
+			inviteList = append(inviteList, ghost.Intent.GetMXID())
+		}
 	}
 
 	req := &mautrix.ReqCreateRoom{
 		Visibility: "private",
 		Preset:     "private_chat",
-		IsDirect:   portal.RoomType == database.RoomTypeDM,
+		IsDirect:   portal.RoomType == database.RoomTypeDM && !portalUsesGroupChat(portal),
 		Name:       roomName,
 		Invite:     inviteList,
 		PowerLevelOverride: &event.PowerLevelsEventContent{
@@ -2894,8 +2896,16 @@ func replaceSinglePortal(ce *commands.Event, portal *bridgev2.Portal, login *bri
 
 	oldMXID := portal.MXID
 
-	if ghost != nil {
-		_ = ghost.Intent.EnsureJoined(ce.Ctx, newRoomID)
+	for _, participant := range portalParticipantJIDs(portal) {
+		ghost, err := ce.Bridge.GetGhostByID(ce.Ctx, MakeUserID(participant))
+		if err != nil {
+			return newRoomID, fmt.Errorf("failed to load ghost for %s after creating room: %w", participant, err)
+		}
+		if ghost != nil {
+			if err := ghost.Intent.EnsureJoined(ce.Ctx, newRoomID); err != nil {
+				return newRoomID, fmt.Errorf("failed to join ghost %s: %w", participant, err)
+			}
+		}
 	}
 
 	err = portal.UpdateMatrixRoomID(ce.Ctx, newRoomID, bridgev2.UpdateMatrixRoomIDParams{
@@ -3423,10 +3433,6 @@ var CommandResyncSpace = &commands.FullHandler{
 						if !activeChildren[childID] {
 							if err := removeRoomFromSpace(ce.Ctx, ce.Bridge.Bot, spaceRoom, childID); err != nil {
 								ce.Log.Warn().Err(err).Stringer("room", childID).Msg("Failed to unlink stale Space child")
-								continue
-							}
-							if err := ce.Bridge.Bot.DeleteRoom(ce.Ctx, childID, false); err != nil {
-								ce.Log.Warn().Err(err).Stringer("room", childID).Msg("Failed to purge stale Space child")
 								continue
 							}
 							unlinkedStale++

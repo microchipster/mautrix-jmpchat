@@ -15,7 +15,7 @@ import (
 // It strips resource parts, trims spaces, normalizes phone numbers to +digits@cheogram.com,
 // lowercases domain names, and sorts comma-separated group contact lists for cheogram.com.
 func CanonicalBareJID(jid string) string {
-	jid = strings.TrimSpace(jid)
+	jid = strings.TrimSpace(UnescapeJID(jid))
 	if jid == "" {
 		return ""
 	}
@@ -25,16 +25,12 @@ func CanonicalBareJID(jid string) string {
 	if jid == "" {
 		return ""
 	}
-	// Check if phone-only format without @
+	// Check phone-only input without @. Cheogram uses E.164-like JIDs; local
+	// US numbers without a country code are unambiguous enough to assume +1.
 	if !strings.Contains(jid, "@") {
-		var digits strings.Builder
-		for _, r := range jid {
-			if r >= '0' && r <= '9' {
-				digits.WriteRune(r)
-			}
-		}
-		if digits.Len() > 0 {
-			return "+" + digits.String() + "@cheogram.com"
+		if isPhoneLike(jid) {
+			local := canonicalCheogramLocalPart(jid)
+			return local + "@cheogram.com"
 		}
 		return jid
 	}
@@ -47,35 +43,68 @@ func CanonicalBareJID(jid string) string {
 	if domainPart == "cheogram.com" {
 		if strings.Contains(localPart, ",") {
 			contactList := strings.Split(localPart, ",")
+			seen := make(map[string]struct{}, len(contactList))
 			cleaned := make([]string, 0, len(contactList))
 			for _, c := range contactList {
 				c = strings.TrimSpace(c)
 				if c == "" {
 					continue
 				}
-				if !strings.HasPrefix(c, "+") {
-					c = "+" + c
+				c = canonicalCheogramLocalPart(c)
+				if _, ok := seen[c]; ok {
+					continue
 				}
+				seen[c] = struct{}{}
 				cleaned = append(cleaned, c)
 			}
 			sort.Strings(cleaned)
 			return strings.Join(cleaned, ",") + "@cheogram.com"
 		}
-		if !strings.HasPrefix(localPart, "+") {
-			allDigits := true
-			for _, r := range localPart {
-				if r < '0' || r > '9' {
-					allDigits = false
-					break
-				}
-			}
-			if allDigits && len(localPart) > 0 {
-				localPart = "+" + localPart
-			}
-		}
+		localPart = canonicalCheogramLocalPart(localPart)
 	}
 
 	return localPart + "@" + domainPart
+}
+
+func isPhoneLike(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	hasDigit := false
+	for i, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r == '+' && i == 0:
+		case r == '(' || r == ')' || r == '-' || r == '.' || r == ' ' || r == '\t':
+		default:
+			return false
+		}
+	}
+	return hasDigit
+}
+
+func canonicalCheogramLocalPart(localPart string) string {
+	localPart = strings.TrimSpace(localPart)
+	if !isPhoneLike(localPart) {
+		return strings.ToLower(localPart)
+	}
+	hasCountryPrefix := strings.HasPrefix(localPart, "+")
+	var digits strings.Builder
+	for _, r := range localPart {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	value := digits.String()
+	if !hasCountryPrefix && (len(value) == 7 || len(value) == 10) {
+		value = "1" + value
+	}
+	if value == "" {
+		return ""
+	}
+	return "+" + value
 }
 
 // EscapeJID converts an XMPP JID into a format that is safe for Matrix User IDs,
@@ -99,4 +128,3 @@ func MakeUserID(jid string) networkid.UserID {
 func MakePortalID(jid string) networkid.PortalID {
 	return networkid.PortalID(EscapeJID(CanonicalBareJID(jid)))
 }
-

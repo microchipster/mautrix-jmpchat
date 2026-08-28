@@ -17,8 +17,8 @@ import (
 )
 
 // ensurePortalRoomHealthy verifies that a portal's Matrix room is live, accessible by the bot,
-// not tombstoned, and that the Matrix user is present/invited. If the room is dead, inaccessible,
-// or stale, it automatically revives or recreates the room and rebinds the portal.
+// not tombstoned, and that the Matrix user and remote participants are present. It follows
+// confirmed tombstone replacements, but leaves uncertain or temporarily inaccessible rooms alone.
 func (nc *MyNetworkClient) ensurePortalRoomHealthy(ctx context.Context, portal *bridgev2.Portal) error {
 	if portal == nil || portal.MXID == "" {
 		return nil
@@ -35,8 +35,8 @@ func (nc *MyNetworkClient) ensurePortalRoomHealthy(ctx context.Context, portal *
 			Err(err).
 			Str("room_id", string(roomID)).
 			Str("portal_id", string(portal.ID)).
-			Msg("Portal Matrix room is inaccessible to bot; recreating fresh room")
-		return nc.recreatePortalRoom(ctx, portal)
+			Msg("Portal Matrix room is inaccessible to bot; refusing automatic room replacement")
+		return fmt.Errorf("portal room %s is inaccessible: %w", roomID, err)
 	}
 
 	// 2. Check if the room has a tombstone.
@@ -65,8 +65,8 @@ func (nc *MyNetworkClient) ensurePortalRoomHealthy(ctx context.Context, portal *
 					nc.log.Warn().
 						Err(joinErr).
 						Str("replacement_room", string(tombstoneContent.ReplacementRoom)).
-						Msg("Tombstone replacement room inaccessible; recreating fresh room")
-					return nc.recreatePortalRoom(ctx, portal)
+						Msg("Tombstone replacement room inaccessible; refusing automatic room replacement")
+					return fmt.Errorf("tombstone replacement room %s is inaccessible: %w", tombstoneContent.ReplacementRoom, joinErr)
 				}
 			}
 		}
@@ -80,17 +80,23 @@ func (nc *MyNetworkClient) ensurePortalRoomHealthy(ctx context.Context, portal *
 				Err(inviteErr).
 				Str("room_id", string(roomID)).
 				Str("user_mxid", string(nc.login.UserMXID)).
-				Msg("Failed to ensure user invited to portal room; recreating fresh room")
-			return nc.recreatePortalRoom(ctx, portal)
+				Msg("Failed to ensure user invited to portal room; refusing automatic room replacement")
+			return fmt.Errorf("failed to ensure user invited to portal room: %w", inviteErr)
 		}
 	}
 
-	// 4. Ensure ghost is joined.
-	targetJID := UnescapeJID(string(portal.ID))
-	ghostID := MakeUserID(targetJID)
-	ghost, err := nc.bridge.GetGhostByID(ctx, ghostID)
-	if err == nil && ghost != nil {
-		_ = ghost.Intent.EnsureJoined(ctx, roomID)
+	// 4. Ensure every remote participant has its own ghost in group rooms.
+	for _, participant := range portalParticipantJIDs(portal) {
+		ghost, err := nc.bridge.GetGhostByID(ctx, MakeUserID(participant))
+		if err != nil {
+			return fmt.Errorf("failed to load ghost for %s: %w", participant, err)
+		}
+		if ghost == nil {
+			continue
+		}
+		if err := ghost.Intent.EnsureJoined(ctx, roomID); err != nil {
+			return fmt.Errorf("failed to ensure ghost %s joined portal room: %w", participant, err)
+		}
 	}
 
 	// 5. Ensure room is in user's Space.
@@ -131,10 +137,14 @@ func (nc *MyNetworkClient) recreatePortalRoom(ctx context.Context, portal *bridg
 	}
 
 	inviteList := []id.UserID{nc.login.UserMXID}
-	ghostID := MakeUserID(targetJID)
-	ghost, _ := nc.bridge.GetGhostByID(ctx, ghostID)
-	if ghost != nil {
-		inviteList = append(inviteList, ghost.Intent.GetMXID())
+	for _, participant := range portalParticipantJIDs(portal) {
+		ghost, err := nc.bridge.GetGhostByID(ctx, MakeUserID(participant))
+		if err != nil {
+			return fmt.Errorf("failed to load ghost for %s: %w", participant, err)
+		}
+		if ghost != nil {
+			inviteList = append(inviteList, ghost.Intent.GetMXID())
+		}
 	}
 
 	isDM := portal.RoomType == database.RoomTypeDM
@@ -167,8 +177,16 @@ func (nc *MyNetworkClient) recreatePortalRoom(ctx context.Context, portal *bridg
 
 	oldMXID := portal.MXID
 
-	if ghost != nil {
-		_ = ghost.Intent.EnsureJoined(ctx, newRoomID)
+	for _, participant := range portalParticipantJIDs(portal) {
+		ghost, err := nc.bridge.GetGhostByID(ctx, MakeUserID(participant))
+		if err != nil {
+			return fmt.Errorf("failed to load ghost for %s after creating room: %w", participant, err)
+		}
+		if ghost != nil {
+			if err := ghost.Intent.EnsureJoined(ctx, newRoomID); err != nil {
+				return fmt.Errorf("failed to join ghost %s to replacement room: %w", participant, err)
+			}
+		}
 	}
 
 	err = portal.UpdateMatrixRoomID(ctx, newRoomID, bridgev2.UpdateMatrixRoomIDParams{

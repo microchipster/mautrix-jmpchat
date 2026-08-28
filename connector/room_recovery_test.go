@@ -84,4 +84,41 @@ func TestGetChatInfoCheogramGroupMembers(t *testing.T) {
 	if len(info.Members.Members) != 3 { // me + 2 contacts
 		t.Errorf("Expected 3 members, got %d", len(info.Members.Members))
 	}
+	wantGhosts := map[networkid.UserID]bool{
+		MakeUserID("+5550102100@cheogram.com"): false,
+		MakeUserID("+5550102200@cheogram.com"): false,
+	}
+	for _, member := range info.Members.Members {
+		if _, ok := wantGhosts[member.Sender]; ok {
+			wantGhosts[member.Sender] = true
+		}
+	}
+	for ghostID, found := range wantGhosts {
+		if !found {
+			t.Errorf("expected distinct group ghost %s", ghostID)
+		}
+	}
+}
+
+func TestGetChatInfoCheogramFormattedGroupMembers(t *testing.T) {
+	nc := &MyNetworkClient{}
+	portal := &bridgev2.Portal{
+		Portal: &database.Portal{
+			PortalKey: networkid.PortalKey{
+				ID: MakePortalID("(555) 123-4567,5551234568@cheogram.com"),
+			},
+			RoomType: database.RoomTypeDefault,
+		},
+	}
+
+	info, err := nc.GetChatInfo(context.Background(), portal)
+	if err != nil {
+		t.Fatalf("GetChatInfo failed: %v", err)
+	}
+	if info == nil || info.Members == nil || len(info.Members.Members) != 3 {
+		t.Fatalf("expected self plus two formatted phone ghosts, got %#v", info)
+	}
+	if info.Members.Members[1].Sender == info.Members.Members[2].Sender {
+		t.Fatal("formatted group participants collapsed into one ghost")
+	}
 }

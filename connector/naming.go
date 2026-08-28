@@ -186,10 +186,18 @@ func groupRoomNameFromParticipants(ctx context.Context, bridge *bridgev2.Bridge,
 		return name
 	}
 	labels := make([]string, 0, len(participants))
+	allNamed := len(participants) > 0
 	for _, participant := range participants {
-		labels = append(labels, contactDisplayName(ctx, bridge, participant))
+		label := contactDisplayName(ctx, bridge, participant)
+		labels = append(labels, label)
+		if phoneSubscriberLabel(strings.TrimSuffix(bareJID(participant), "@cheogram.com")) == label {
+			allNamed = false
+		}
 	}
-	name := groupInitialsFromLabels(labels)
+	name := strings.Join(labels, ",")
+	if allNamed {
+		name = groupInitialsFromLabels(labels)
+	}
 	if name == "" {
 		name = "JMPChat Group"
 	}
@@ -240,6 +248,23 @@ func portalContacts(portal *bridgev2.Portal) []string {
 	return splitCheogramGroupContacts(UnescapeJID(string(portal.ID)))
 }
 
+func portalParticipantJIDs(portal *bridgev2.Portal) []string {
+	if portal == nil {
+		return nil
+	}
+	if contacts := portalContacts(portal); len(contacts) > 0 {
+		return contacts
+	}
+	target := strings.TrimSpace(string(portal.OtherUserID))
+	if target == "" {
+		target = UnescapeJID(string(portal.ID))
+	}
+	if target = CanonicalBareJID(target); target == "" {
+		return nil
+	}
+	return []string{target}
+}
+
 func portalMatchesContact(portal *bridgev2.Portal, jid string) bool {
 	if portal == nil {
 		return false
@@ -253,7 +278,7 @@ func portalMatchesContact(portal *bridgev2.Portal, jid string) bool {
 		if other == "" {
 			other = strings.TrimSpace(UnescapeJID(string(portal.ID)))
 		}
-		return strings.EqualFold(bareJID(other), jid)
+		return strings.EqualFold(CanonicalBareJID(UnescapeJID(other)), jid)
 	}
 	for _, contact := range portalContacts(portal) {
 		if strings.EqualFold(bareJID(contact), jid) {
@@ -264,7 +289,7 @@ func portalMatchesContact(portal *bridgev2.Portal, jid string) bool {
 }
 
 func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
-	if portal == nil || portal.NameIsCustom {
+	if portal == nil {
 		return false
 	}
 	if !portalUsesGroupChat(portal) {
@@ -283,6 +308,13 @@ func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
 	contacts := portalContacts(portal)
 	if len(contacts) == 0 {
 		return false
+	}
+	phoneLabels := make([]string, 0, len(contacts))
+	for _, contact := range contacts {
+		phoneLabels = append(phoneLabels, contactLabelFromJID(contact))
+	}
+	if name == strings.Join(phoneLabels, ",") {
+		return true
 	}
 	return strings.ToUpper(name) == name && utf8.RuneCountInString(name) == len(contacts)
 }
@@ -351,13 +383,17 @@ func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridg
 		if err != nil || portal == nil || portal.MXID == "" {
 			continue
 		}
-		if match != nil && !match(portal) {
+		matched := match == nil || match(portal)
+		if !matched {
 			continue
 		}
-		if !portalLooksAutoNamed(portal, suffix) {
+		if match == nil && !portalLooksAutoNamed(portal, suffix) {
 			continue
 		}
 		name := portalDesiredName(ctx, bridge, portal, suffix)
+		if match != nil {
+			name = portalGeneratedName(ctx, bridge, portal, suffix)
+		}
 		if name == "" || strings.TrimSpace(portal.Name) == name {
 			continue
 		}
@@ -365,4 +401,18 @@ func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridg
 		count++
 	}
 	return count, nil
+}
+
+func portalGeneratedName(ctx context.Context, bridge *bridgev2.Bridge, portal *bridgev2.Portal, suffix string) string {
+	if portal == nil {
+		return ""
+	}
+	if portalUsesGroupChat(portal) {
+		return groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix)
+	}
+	jid := strings.TrimSpace(string(portal.OtherUserID))
+	if jid == "" {
+		jid = UnescapeJID(string(portal.ID))
+	}
+	return dmRoomName(ctx, bridge, jid, "", suffix)
 }

@@ -85,7 +85,7 @@ func normalizedCheogramGroupJID(participants []string) (string, error) {
 	numbers := make([]string, 0, len(participants))
 	seen := make(map[string]struct{}, len(participants))
 	for _, participant := range participants {
-		jid := strings.TrimSpace(strings.ToLower(participant))
+		jid := CanonicalBareJID(participant)
 		if jid == "" {
 			continue
 		}

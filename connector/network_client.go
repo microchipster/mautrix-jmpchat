@@ -2863,6 +2863,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		}
 	}
 	attachment := extractXMPPAttachment(msg)
+	xhtml := extractXMPPHTML(&msg)
 	replyTargetID := extractXMPPReplyTarget(msg)
 	if replyTargetID != "" {
 		msg.Body = stanza.StringPtr(trimBlankLines(strings.TrimSpace(stripXMPPFallbackFromMessage(msg, NSReply))))
@@ -3139,7 +3140,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 					}
 				}
 			}
-			applyMatrixLinkFormatting(content)
+			applyXMPPMessageFormatting(content, xhtml)
 
 			return &bridgev2.ConvertedMessage{
 				ReplyTo: func() *networkid.MessageOptionalPartID {

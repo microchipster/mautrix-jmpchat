@@ -131,8 +131,8 @@ func TestCheogramGroupFallbackWithoutMetadata(t *testing.T) {
 		t.Fatal("did not expect cheogram group room to match an unrelated contact")
 	}
 
-	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp"); got != "11 (jmp)" {
-		t.Fatalf("groupRoomNameFromJID() = %q, want %q", got, "11 (jmp)")
+	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp"); got != "+15551230001,+15551230002 (jmp)" {
+		t.Fatalf("groupRoomNameFromJID() = %q, want %q", got, "+15551230001,+15551230002 (jmp)")
 	}
 }
 

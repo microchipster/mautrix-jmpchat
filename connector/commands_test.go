@@ -15,10 +15,27 @@ import (
 func TestSplitCheogramGroupContacts(t *testing.T) {
 	t.Parallel()
 
-	got := splitCheogramGroupContacts("+15551230001,+15551230002@cheogram.com")
+	got := splitCheogramGroupContacts("555-123-0002, (555) 123-0001,5551230002@cheogram.com/resource")
 	want := []string{"+15551230001@cheogram.com", "+15551230002@cheogram.com"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("splitCheogramGroupContacts() = %v, want %v", got, want)
+	}
+}
+
+func TestNormalizedCheogramGroupJID(t *testing.T) {
+	t.Parallel()
+
+	got, err := normalizedCheogramGroupJID([]string{
+		"(555) 123-0002@cheogram.com",
+		"555-123-0001@cheogram.com/resource",
+		"+15551230002@cheogram.com",
+	})
+	if err != nil {
+		t.Fatalf("normalizedCheogramGroupJID() returned error: %v", err)
+	}
+	want := "+15551230001,+15551230002@cheogram.com"
+	if got != want {
+		t.Fatalf("normalizedCheogramGroupJID() = %q, want %q", got, want)
 	}
 }
 
@@ -145,13 +162,13 @@ func TestNormalizeJID(t *testing.T) {
 		{input: "", want: ""},
 		{input: "   ", want: ""},
 		{input: "alice@example.com", want: "alice@example.com"},
-		{input: "  bob@example.com/phone  ", want: "bob@example.com/phone"},
+		{input: "  bob@example.com/phone  ", want: "bob@example.com"},
 		{input: "+15551234567", want: "+15551234567@cheogram.com"},
 		{input: "15551234567", want: "+15551234567@cheogram.com"},
 		{input: "+1 (555) 123-4567", want: "+15551234567@cheogram.com"},
-		{input: "555-123-4567", want: "+5551234567@cheogram.com"},
-		{input: "555.123.4567", want: "+5551234567@cheogram.com"},
-		{input: "(555) 123 4567", want: "+5551234567@cheogram.com"},
+		{input: "555-123-4567", want: "+15551234567@cheogram.com"},
+		{input: "555.123.4567", want: "+15551234567@cheogram.com"},
+		{input: "(555) 123 4567", want: "+15551234567@cheogram.com"},
 		{input: "invalid_no_digits!", want: ""},
 	}
 
