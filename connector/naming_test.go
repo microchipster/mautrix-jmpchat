@@ -47,6 +47,12 @@ func TestContactLabelFromJID(t *testing.T) {
 	if got := contactLabelFromJID("alice@example.com"); got != "alice" {
 		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "alice")
 	}
+	if got := contactLabelFromJID("69061;phone-context=ca-us.phone-context.soprani.ca@cheogram.com"); got != "69061" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "69061")
+	}
+	if got := contactLabelFromJID("69061@cheogram.com"); got != "69061" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "69061")
+	}
 }
 
 func TestGroupInitialsFromLabels(t *testing.T) {
@@ -175,5 +181,39 @@ func TestSimpleConfigUnmarshalYAMLInlineMapping(t *testing.T) {
 	}
 	if cfg.Network.ContactNameSuffix != "bridge" {
 		t.Fatalf("unexpected contact name suffix: %q", cfg.Network.ContactNameSuffix)
+	}
+}
+
+func TestDMRoomNameWithShortCodePhoneContext(t *testing.T) {
+	t.Parallel()
+
+	got := dmRoomName(context.Background(), nil, "69061;phone-context=ca-us.phone-context.soprani.ca@cheogram.com", "", "jmp")
+	if got != "69061 (jmp)" {
+		t.Fatalf("dmRoomName() = %q, want %q", got, "69061 (jmp)")
+	}
+}
+
+func TestAutoRenameDetectionWithPhoneContextAndCustomFlag(t *testing.T) {
+	t.Parallel()
+
+	// Even if NameIsCustom is true (due to bridgev2 setting it on room creation),
+	// if the name has phone-context or is auto-named short code/phone, it should be recognized
+	// and desired name should compute the clean name.
+	portal := &bridgev2.Portal{
+		Portal: &database.Portal{
+			PortalKey:    networkid.PortalKey{ID: MakePortalID("69061;phone-context=ca-us.phone-context.soprani.ca@cheogram.com")},
+			Name:         "69061;phone-context=ca-us.phone-context.soprani.ca (jmp)",
+			RoomType:     database.RoomTypeDM,
+			NameIsCustom: true,
+		},
+	}
+
+	if !portalLooksAutoNamed(portal, "jmp") {
+		t.Fatal("expected portal with phone-context to be recognized as auto-named")
+	}
+
+	desired := portalDesiredName(context.Background(), nil, portal, "jmp")
+	if desired != "69061 (jmp)" {
+		t.Fatalf("portalDesiredName() = %q, want %q", desired, "69061 (jmp)")
 	}
 }

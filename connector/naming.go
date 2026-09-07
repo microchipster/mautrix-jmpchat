@@ -146,20 +146,29 @@ func contactLabelFromJID(jid string) string {
 }
 
 func phoneSubscriberLabel(localpart string) string {
-	localpart = strings.TrimSpace(localpart)
-	if !strings.HasPrefix(localpart, "+") {
-		return ""
-	}
-	digits := strings.TrimPrefix(localpart, "+")
-	if digits == "" {
-		return ""
-	}
-	for _, r := range digits {
-		if !unicode.IsDigit(r) {
+	localpart = stripPhoneURIParameters(strings.TrimSpace(localpart))
+	if strings.HasPrefix(localpart, "+") {
+		digits := strings.TrimPrefix(localpart, "+")
+		if digits == "" {
 			return ""
 		}
+		for _, r := range digits {
+			if !unicode.IsDigit(r) {
+				return ""
+			}
+		}
+		return "+" + digits
 	}
-	return "+" + digits
+	// Also accept short codes (3-6 digits) as raw subscriber label
+	if len(localpart) >= 3 && len(localpart) <= 6 {
+		for _, r := range localpart {
+			if !unicode.IsDigit(r) {
+				return ""
+			}
+		}
+		return localpart
+	}
+	return ""
 }
 
 func contactInitial(label string) string {
@@ -293,16 +302,22 @@ func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
 		return false
 	}
 	if !portalUsesGroupChat(portal) {
-		if portal.RoomType == database.RoomTypeDM {
+		// DMs are auto-named if uncustomized or if current name matches auto-generated forms
+		if !portal.NameIsCustom || portal.RoomType == database.RoomTypeDM {
 			return true
 		}
-		return false
+		name := stripContactNameSuffix(strings.TrimSpace(portal.Name), suffix)
+		if name == "" || strings.Contains(name, "@") || strings.Contains(name, ";") {
+			return true
+		}
+		// If the name is phone-like or shortcode, it was auto-named
+		return phoneSubscriberLabel(name) != ""
 	}
 	name := stripContactNameSuffix(strings.TrimSpace(portal.Name), suffix)
 	if name == "" {
 		return true
 	}
-	if strings.Contains(name, "@cheogram.com") {
+	if strings.Contains(name, "@cheogram.com") || strings.Contains(name, ";") {
 		return true
 	}
 	contacts := portalContacts(portal)
@@ -323,7 +338,7 @@ func portalDesiredName(ctx context.Context, bridge *bridgev2.Bridge, portal *bri
 	if portal == nil {
 		return ""
 	}
-	if portal.NameIsCustom {
+	if portal.NameIsCustom && !portalLooksAutoNamed(portal, suffix) {
 		if name := strings.TrimSpace(portal.Name); name != "" {
 			return name
 		}

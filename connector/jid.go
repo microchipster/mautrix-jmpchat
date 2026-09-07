@@ -66,8 +66,17 @@ func CanonicalBareJID(jid string) string {
 	return localPart + "@" + domainPart
 }
 
+// stripPhoneURIParameters strips RFC 3966 / URI parameters (such as ;phone-context=...)
+// from a phone number or localpart.
+func stripPhoneURIParameters(value string) string {
+	if idx := strings.Index(value, ";"); idx != -1 {
+		return strings.TrimSpace(value[:idx])
+	}
+	return strings.TrimSpace(value)
+}
+
 func isPhoneLike(value string) bool {
-	value = strings.TrimSpace(value)
+	value = stripPhoneURIParameters(value)
 	if value == "" {
 		return false
 	}
@@ -86,7 +95,7 @@ func isPhoneLike(value string) bool {
 }
 
 func canonicalCheogramLocalPart(localPart string) string {
-	localPart = strings.TrimSpace(localPart)
+	localPart = stripPhoneURIParameters(localPart)
 	if !isPhoneLike(localPart) {
 		return strings.ToLower(localPart)
 	}
@@ -98,11 +107,15 @@ func canonicalCheogramLocalPart(localPart string) string {
 		}
 	}
 	value := digits.String()
-	if !hasCountryPrefix && (len(value) == 7 || len(value) == 10) {
-		value = "1" + value
-	}
 	if value == "" {
 		return ""
+	}
+	// Short codes (3-6 digits) without explicit '+' should stay raw short codes
+	if !hasCountryPrefix && len(value) >= 3 && len(value) <= 6 {
+		return value
+	}
+	if !hasCountryPrefix && (len(value) == 7 || len(value) == 10) {
+		value = "1" + value
 	}
 	return "+" + value
 }

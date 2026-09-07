@@ -57,6 +57,18 @@ func TestCanonicalBareJID(t *testing.T) {
 			input: "room@conference.example.com/nick",
 			want:  "room@conference.example.com",
 		},
+		{
+			input: "69061;phone-context=ca-us.phone-context.soprani.ca@cheogram.com",
+			want:  "69061@cheogram.com",
+		},
+		{
+			input: "+15551234567;phone-context=ca-us.phone-context.soprani.ca@cheogram.com",
+			want:  "+15551234567@cheogram.com",
+		},
+		{
+			input: "69061;phone-context=ca-us.phone-context.soprani.ca",
+			want:  "69061@cheogram.com",
+		},
 	}
 
 	for _, tt := range tests {
