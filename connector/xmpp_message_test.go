@@ -78,8 +78,8 @@ func TestCarbonForwardedUnmarshalingWithDelay(t *testing.T) {
 	if carbonSent.Forwarded.Message.To != "+15551234567@cheogram.com" {
 		t.Fatalf("message to = %q, want +15551234567@cheogram.com", carbonSent.Forwarded.Message.To)
 	}
-	if carbonSent.Forwarded.Message.Body == nil || *carbonSent.Forwarded.Message.Body != "Hello via Carbon Sent" {
-		t.Fatalf("message body = %v, want 'Hello via Carbon Sent'", carbonSent.Forwarded.Message.Body)
+	if stanza.StringValue(carbonSent.Forwarded.Message.Body) != "Hello via Carbon Sent" {
+		t.Fatalf("message body = %q, want 'Hello via Carbon Sent'", stanza.StringValue(carbonSent.Forwarded.Message.Body))
 	}
 }
 
@@ -110,7 +110,7 @@ func TestCarbonReceivedUnmarshalingWithDelay(t *testing.T) {
 	if carbonReceived.Forwarded.Message.From != "+15551234567@cheogram.com" {
 		t.Fatalf("message from = %q, want +15551234567@cheogram.com", carbonReceived.Forwarded.Message.From)
 	}
-	if carbonReceived.Forwarded.Message.Body == nil || *carbonReceived.Forwarded.Message.Body != "Hello via Carbon Received" {
-		t.Fatalf("message body = %v, want 'Hello via Carbon Received'", carbonReceived.Forwarded.Message.Body)
+	if stanza.StringValue(carbonReceived.Forwarded.Message.Body) != "Hello via Carbon Received" {
+		t.Fatalf("message body = %q, want 'Hello via Carbon Received'", stanza.StringValue(carbonReceived.Forwarded.Message.Body))
 	}
 }
