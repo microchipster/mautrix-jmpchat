@@ -1,15 +1,14 @@
 module jmpchat
 
-go 1.26
-
-toolchain go1.26.4
+go 1.27.1
 
 require (
 	github.com/google/uuid v1.6.0
 	github.com/rs/zerolog v1.35.1
 	go.mau.fi/util v0.10.0
-	gosrc.io/xmpp v0.5.1
 	golang.org/x/net v0.58.0
+	gopkg.in/yaml.v3 v3.0.1
+	gosrc.io/xmpp v0.5.1
 	maunium.net/go/mautrix v0.30.0
 )
 
@@ -40,7 +39,6 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	maunium.net/go/mauflag v1.0.0 // indirect
 	nhooyr.io/websocket v1.8.17 // indirect
 )
