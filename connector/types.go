@@ -86,3 +86,20 @@ type PortalMetadata struct {
 func (m *PortalMetadata) New() any {
 	return &PortalMetadata{}
 }
+
+// MessageMetadata stores the plain-text body of a bridged message.
+//
+// BridgeV2 does not persist message bodies by default, but iMessage-style
+// tapbacks (SMS texts such as `Liked “see you at 8”`) only carry the quoted
+// text of the message they react to. Keeping the body around lets the bridge
+// find that message and turn the tapback into a Matrix reaction instead of
+// forwarding it as a confusing text message.
+type MessageMetadata struct {
+	Body          string `json:"body,omitempty"`
+	HasAttachment bool   `json:"has_attachment,omitempty"`
+}
+
+// New creates a new instance for database registration.
+func (m *MessageMetadata) New() any {
+	return &MessageMetadata{}
+}

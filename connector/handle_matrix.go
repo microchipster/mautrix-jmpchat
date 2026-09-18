@@ -79,9 +79,10 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		Type: msgType,
 		Id:   uuid.NewString(),
 	})
+	isAttachment := msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile
 	body := ""
 	extensions := make([]stanza.MsgExtension, 0, 8)
-	if msg.Content.MsgType == event.MsgImage || msg.Content.MsgType == event.MsgVideo || msg.Content.MsgType == event.MsgAudio || msg.Content.MsgType == event.MsgFile {
+	if isAttachment {
 		uploadedURL, desc, err := nc.uploadMatrixMediaToXMPP(ctx, msg)
 		if err != nil {
 			log.Err(err).Msg("Failed to upload Matrix media to XMPP HTTP upload")
@@ -174,6 +175,11 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			SenderID:   senderID,
 			SenderMXID: msg.Event.Sender,
 			Timestamp:  time.UnixMilli(msg.Event.Timestamp),
+			// Tapback matching needs the sent body; bridgev2 does not keep it.
+			Metadata: &MessageMetadata{
+				Body:          body,
+				HasAttachment: isAttachment,
+			},
 		},
 	}, nil
 }

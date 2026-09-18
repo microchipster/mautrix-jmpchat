@@ -426,6 +426,7 @@ func (c *MyConnector) GetDBMetaTypes() database.MetaTypes {
 	return database.MetaTypes{
 		Portal: func() any { return &PortalMetadata{} },
 		Ghost: func() any { return &GhostMetadata{} },
+		Message: func() any { return &MessageMetadata{} },
 		UserLogin: func() any { return &LoginMetadata{} },
 	}
 }
@@ -435,6 +436,11 @@ Two Go details matter here:
 
 - `any` is just an alias for `interface{}`.
 - Functions are first-class values and are used here as factories.
+
+`MessageMetadata` exists because bridgev2 does not store message bodies by
+default. It keeps the plain-text body (and whether the message had an
+attachment) so iMessage tapbacks, which only quote the text they react to, can
+be matched back to a bridged message. See `connector/xmpp_tapback.go`.
 
 ### `LoadUserLogin`
 
@@ -649,6 +655,8 @@ Then those handlers inspect packets and queue bridge events like `simplevent.Cha
 
 That is the real event bridge: decode remote protocol state, translate it into `bridgev2` events, and let the framework create or update Matrix objects.
 
+One special case: iPhone tapbacks arrive as plain text (`Liked “...”`), so `handleIncomingXMPPMessage` checks the body with `parseTapback` and turns it into a `simplevent.ReactionSync` before the regular message path runs. That logic lives in `connector/xmpp_tapback.go`.
+
 ### Full sync and backfill
 
 Read `StartFullSync` and `runFullSync` in `connector/network_client.go`, then `connector/history_sync.go`, then `connector/xmpp_mam.go`.
@@ -829,6 +837,7 @@ If you need to work on a particular area, start here:
 - Management room commands: `connector/commands.go`
 - Matrix -> XMPP messaging: `connector/handle_matrix.go`
 - Connection lifecycle and incoming XMPP handling: `connector/network_client.go`
+- iMessage tapback detection and matching: `connector/xmpp_tapback.go`
 - JID escaping and bridge IDs: `connector/jid.go`
 - History sync state tracking: `connector/history_sync.go`
 - MAM backfill: `connector/xmpp_mam.go`

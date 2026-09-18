@@ -2984,6 +2984,15 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		nc.recordDMPortal(string(portalID))
 	}
 
+	// iPhone tapbacks arrive as text; convert them to reactions when the
+	// referenced message can be found, otherwise fall through and forward the
+	// text unchanged.
+	if tb, ok := parseTapback(stanza.StringValue(msg.Body)); ok {
+		if nc.handleIncomingXMPPTapback(msg, timestamp, bareFromJid, senderID, isFromMe, tb) {
+			return
+		}
+	}
+
 	// First send a ChatResync to create or update the portal with correct info
 	resync := &simplevent.ChatResync{
 		EventMeta: simplevent.EventMeta{
@@ -3152,6 +3161,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					Type:    event.EventMessage,
 					Content: content,
+					// Store the body so future tapbacks can find this message.
+					DBMetadata: &MessageMetadata{
+						Body:          content.Body,
+						HasAttachment: mediaURL != "" || encryptedFile != nil,
+					},
 				}},
 			}, nil
 		},

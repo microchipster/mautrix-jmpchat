@@ -132,6 +132,9 @@ func (c *MyConnector) GetDBMetaTypes() database.MetaTypes {
 		Ghost: func() any {
 			return &GhostMetadata{}
 		},
+		Message: func() any {
+			return &MessageMetadata{}
+		},
 		UserLogin: func() any {
 			return &LoginMetadata{}
 		},
