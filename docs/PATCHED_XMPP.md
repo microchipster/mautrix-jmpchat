@@ -139,9 +139,11 @@ Repeat with the relevant branch name. Use `--force-with-lease`, not plain `--for
 
 ## Current Baseline
 
-The local `go-xmpp` fork was rebased against upstream `main` at commit `784ff58cc201e448b671096b2f6be34f3785a9bd`.
+The local `go-xmpp` fork is rebased against upstream `main` at commit `98830ceeb5d22dcf95b7136d328119834c96f182` (2026-08-19, "Fix `client is not disconnected` error with components (#168)").
 
-This bridge currently pins the `patched-xmpp` submodule to integration commit `a6fdb5548f05f8c2b627f301ef3784c1a120ce02` on `jmpchat-patches`.
+This bridge currently pins the `patched-xmpp` submodule to integration commit `1a86efb925c33eab13244839d6fef122d07d65fa` on `jmpchat-patches`.
+
+The module path stays `gosrc.io/xmpp`, which is the import path for `FluuxIO/go-xmpp`. Do not confuse it with `xmppo/go-xmpp`: that is an unrelated maintained fork of `mattn/go-xmpp` with a different API (`Chat`, `Client`), even though its repository name looks similar.
 
 ## Go And Dependency Policy
 
