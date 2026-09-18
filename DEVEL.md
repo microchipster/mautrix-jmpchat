@@ -441,6 +441,8 @@ Two Go details matter here:
 default. It keeps the plain-text body (and whether the message had an
 attachment) so iMessage tapbacks, which only quote the text they react to, can
 be matched back to a bridged message. See `connector/xmpp_tapback.go`.
+Messages bridged before this metadata existed have no stored body, so tapbacks
+that reference them fall back to plain text.
 
 ### `LoadUserLogin`
 

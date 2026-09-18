@@ -182,3 +182,8 @@ If using a direct Go toolchain instead of `rtk`:
 go test ./...
 (cd patched-xmpp && go test ./...)
 ```
+
+Note: the `go-xmpp` test suite uses a TCP mock server with fixed ports, so
+back-to-back runs (`-count` greater than 1) can occasionally fail to bind a
+port that a previous test has not released yet. A single `-count=1` run is the
+supported mode; re-run if a port-bind or timeout failure appears.
