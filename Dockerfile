@@ -18,7 +18,7 @@ FROM alpine:3.23
 ENV UID=1337 \
     GID=1337
 
-RUN apk add --no-cache ffmpeg su-exec ca-certificates bash jq curl yq-go olm tzdata
+RUN apk add --no-cache su-exec ca-certificates bash yq-go olm tzdata
 
 COPY --from=go-builder /build/mautrix-jmpchat /usr/bin/mautrix-jmpchat
 COPY --from=go-builder /build/docker-run.sh /docker-run.sh
