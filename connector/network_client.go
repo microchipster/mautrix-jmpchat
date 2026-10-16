@@ -99,6 +99,7 @@ type MyNetworkClient struct {
 	mucRooms                     map[string]bool
 	mucJoined                    map[string]bool
 	mucOccupants                 map[string]map[string]string
+	mucMemberSnapshot            map[string]string
 	mucNick                      map[string]string
 	mucPasswords                 map[string]string
 	mucPendingCreate             map[string]pendingMUCCreation
@@ -323,10 +324,14 @@ func (nc *MyNetworkClient) resolveMUCPresenceMemberJID(roomJID string, pres stan
 			resource = nick
 		}
 	}
-	if strings.Contains(roomJID, ",") && strings.HasSuffix(roomJID, "@cheogram.com") {
+	if isCheogramGroupRoomJID(roomJID) {
+		// Cheogram group rooms report per-contact members with phone-number
+		// resources. Anything else (e.g. the /tel pseudo-resource) is not a
+		// participant and must not be turned into a ghost user.
 		if strings.HasPrefix(resource, "+") && !strings.Contains(resource, "@") {
 			return resource + "@cheogram.com"
 		}
+		return ""
 	}
 	if resource != "" {
 		return roomJID + "/" + resource
@@ -335,6 +340,72 @@ func (nc *MyNetworkClient) resolveMUCPresenceMemberJID(roomJID string, pres stan
 		return pres.From
 	}
 	return roomJID
+}
+
+func isCheogramGroupRoomJID(jid string) bool {
+	return strings.Contains(jid, ",") && strings.HasSuffix(jid, "@cheogram.com")
+}
+
+func isSubscriptionPresenceType(presType stanza.StanzaType) bool {
+	switch presType {
+	case stanza.PresenceTypeSubscribe, stanza.PresenceTypeSubscribed, stanza.PresenceTypeUnsubscribe, stanza.PresenceTypeUnsubscribed:
+		return true
+	default:
+		return false
+	}
+}
+
+// applyMUCOccupantPresence records or clears a MUC occupant. An empty
+// memberJID (or an unavailable presence) removes the entry, so resources
+// that are not real participants (e.g. cheogram's /tel pseudo-resource)
+// never linger in the occupant list.
+func applyMUCOccupantPresence(occupants map[string]string, from string, memberJID string, unavailable bool) {
+	if unavailable || memberJID == "" {
+		delete(occupants, from)
+		return
+	}
+	occupants[from] = memberJID
+}
+
+func chatMemberMapSnapshot(memberMap bridgev2.ChatMemberMap) string {
+	keys := make([]string, 0, len(memberMap))
+	for key := range memberMap {
+		keys = append(keys, string(key))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, "\n")
+}
+
+// buildMUCMemberMap mirrors GetChatInfo's member model: the bridge user is
+// always present, cheogram group rooms always seat the contacts encoded in
+// the room JID, and live MUC occupants are added on top. It intentionally
+// never returns an empty list, so a full-list reconciliation can not wipe
+// the room when presence data is incomplete.
+func (nc *MyNetworkClient) buildMUCMemberMap(roomJID string, occupants map[string]string) bridgev2.ChatMemberMap {
+	memberMap := bridgev2.ChatMemberMap{}
+	memberMap[""] = bridgev2.ChatMember{
+		EventSender: bridgev2.EventSender{IsFromMe: true},
+		Membership:  event.MembershipJoin,
+	}
+	for _, contactJID := range splitCheogramGroupContacts(roomJID) {
+		ghostID := MakeUserID(contactJID)
+		memberMap[ghostID] = bridgev2.ChatMember{
+			EventSender: bridgev2.EventSender{Sender: ghostID},
+			Membership:  event.MembershipJoin,
+		}
+	}
+	ownBareJID := nc.ownBareJID()
+	for _, memberJID := range occupants {
+		if memberJID == "" || memberJID == ownBareJID {
+			continue
+		}
+		ghostID := MakeUserID(memberJID)
+		memberMap[ghostID] = bridgev2.ChatMember{
+			EventSender: bridgev2.EventSender{Sender: ghostID},
+			Membership:  event.MembershipJoin,
+		}
+	}
+	return memberMap
 }
 
 func (nc *MyNetworkClient) requestBookmarks() error {
@@ -2162,10 +2233,19 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 	// Treat group-DM style JIDs as MUC rooms if they have commas
 	if bareFrom != "" {
 		isMUC := nc.mucRooms != nil && nc.mucRooms[bareFrom]
-		if !isMUC && strings.Contains(bareFrom, ",") && strings.HasSuffix(bareFrom, "@cheogram.com") {
+		if !isMUC && isCheogramGroupRoomJID(bareFrom) {
 			isMUC = true
 		}
 		if isMUC {
+			if isSubscriptionPresenceType(pres.Type) {
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("from", pres.From).
+						Str("type", string(pres.Type)).
+						Msg("Ignoring subscription presence for MUC room; it does not describe occupancy")
+				}
+				return
+			}
 			resource := ""
 			if parts := strings.SplitN(pres.From, "/", 2); len(parts) == 2 {
 				resource = parts[1]
@@ -2209,7 +2289,7 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 				nc.mucOccupants[bareFrom] = occupants
 			}
 			if pres.Type == stanza.PresenceTypeUnavailable {
-				delete(occupants, pres.From)
+				applyMUCOccupantPresence(occupants, pres.From, "", true)
 			} else if pres.From != "" && strings.Contains(pres.From, "/") {
 				if isSelfPresence {
 					if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -2219,25 +2299,38 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 							Msg("Skipping self occupant")
 					}
 				} else {
-					occupants[pres.From] = nc.resolveMUCPresenceMemberJID(bareFrom, pres, resource, func() *MUCUserInvite {
+					memberJID := nc.resolveMUCPresenceMemberJID(bareFrom, pres, resource, func() *MUCUserInvite {
 						if hasMUCUser {
 							return &mucUser
 						}
 						return nil
 					}())
+					if memberJID == "" {
+						if nc.log.GetLevel() <= zerolog.DebugLevel {
+							nc.log.Debug().
+								Str("room_jid", bareFrom).
+								Str("resource", resource).
+								Msg("Ignoring non-participant presence resource")
+						}
+					}
+					applyMUCOccupantPresence(occupants, pres.From, memberJID, false)
 				}
 			}
 
-			memberMap := bridgev2.ChatMemberMap{}
-			for _, memberJID := range occupants {
-				if memberJID == "" || memberJID == nc.ownBareJID() {
-					continue
-				}
-				memberMap[MakeUserID(memberJID)] = bridgev2.ChatMember{
-					EventSender: bridgev2.EventSender{Sender: MakeUserID(memberJID)},
-					Membership:  event.MembershipJoin,
-				}
+			memberMap := nc.buildMUCMemberMap(bareFrom, occupants)
+			snapshot := chatMemberMapSnapshot(memberMap)
+			if nc.mucMemberSnapshot == nil {
+				nc.mucMemberSnapshot = map[string]string{}
 			}
+			if nc.mucMemberSnapshot[bareFrom] == snapshot {
+				if nc.log.GetLevel() <= zerolog.DebugLevel {
+					nc.log.Debug().
+						Str("room_jid", bareFrom).
+						Msg("MUC member list unchanged, skipping chat info change")
+				}
+				return
+			}
+			nc.mucMemberSnapshot[bareFrom] = snapshot
 			members := &bridgev2.ChatMemberList{
 				IsFull:                     true,
 				CheckAllLogins:             true,
