@@ -2730,14 +2730,6 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 		return
 	}
 
-	nc.log.Info().
-		Str("from", msg.From).
-		Str("to", msg.To).
-		Str("id", msg.Id).
-		Str("type", string(msg.Type)).
-		Int("body_len", len(stanza.StringValue(msg.Body))).
-		Msg("Received XMPP message from stream")
-
 	var carbonSent XMPCarbonSent
 	if msg.Get(&carbonSent) && carbonSent.Forwarded != nil && carbonSent.Forwarded.Message != nil {
 		forwarded := *carbonSent.Forwarded.Message
