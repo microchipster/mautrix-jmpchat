@@ -1,5 +1,5 @@
 # -- Build mautrix-jmpchat (with Go) --
-FROM golang:1.27-alpine3.23 AS go-builder
+FROM golang:1.27-alpine3.24 AS go-builder
 RUN apk add --no-cache git ca-certificates build-base olm-dev zlib-dev
 
 WORKDIR /build
@@ -13,7 +13,7 @@ COPY .git .git
 RUN ./build-go.sh
 
 # -- Run mautrix-jmpchat --
-FROM alpine:3.23
+FROM alpine:3.24
 
 ENV UID=1337 \
     GID=1337
