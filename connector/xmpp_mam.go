@@ -38,6 +38,15 @@ func (q *MAMQuery) GetSet() *stanza.ResultSet {
 	return q.Set
 }
 
+// MarshalXML stamps the namespace carried by XMLName onto the serialized
+// element. encoding/xml only honors namespaces declared statically in struct
+// tags, so a runtime XMLName.Space would otherwise be dropped and the server
+// would see an unqualified <query> element (answering service-unavailable).
+func (q *MAMQuery) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	type alias MAMQuery
+	return marshalElementWithNamespace(e, start, q.XMLName, (*alias)(q))
+}
+
 type XData struct {
 	XMLName      xml.Name     `xml:"jabber:x:data x"`
 	Type         string       `xml:"type,attr,omitempty"`
@@ -77,6 +86,13 @@ func (f *MAMFin) GetSet() *stanza.ResultSet {
 	return f.Set
 }
 
+// MarshalXML stamps the namespace carried by XMLName onto the serialized
+// element (see MAMQuery.MarshalXML).
+func (f *MAMFin) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
+	type alias MAMFin
+	return marshalElementWithNamespace(e, start, f.XMLName, (*alias)(f))
+}
+
 type MAMResult struct {
 	stanza.MsgExtension
 	XMLName   xml.Name      `xml:"result"`
@@ -101,6 +117,20 @@ type collectedMAMMessage struct {
 	Timestamp  time.Time
 	IDOverride string
 	IsFromMe   bool
+}
+
+// marshalElementWithNamespace serializes payload as an element named by name,
+// including its XML namespace. It exists because encoding/xml ignores
+// XMLName.Space values assigned at runtime when the struct's XMLName field
+// carries a tag, which would silently drop the namespace of outgoing stanzas.
+func marshalElementWithNamespace(e *xml.Encoder, start xml.StartElement, name xml.Name, payload any) error {
+	if name.Space != "" {
+		start.Name.Space = name.Space
+	}
+	if name.Local != "" {
+		start.Name.Local = name.Local
+	}
+	return e.EncodeElement(payload, start)
 }
 
 func formatMAMTimestamp(ts time.Time) string {

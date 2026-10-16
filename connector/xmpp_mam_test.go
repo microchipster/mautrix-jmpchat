@@ -1,6 +1,8 @@
 package connector
 
 import (
+	"encoding/xml"
+	"strings"
 	"testing"
 
 	"gosrc.io/xmpp/stanza"
@@ -64,6 +66,49 @@ func TestIsValidMAMForwardedJID(t *testing.T) {
 	}
 	if isValidMAMForwardedJID("bad jid@example.com") {
 		t.Fatal("expected JID with spaces to be invalid")
+	}
+}
+
+func TestMarshalMAMQueryIncludesNamespace(t *testing.T) {
+	for _, ns := range []string{NSMAM2, NSMAM1, NSMAM0} {
+		query := &MAMQuery{
+			XMLName: xml.Name{Space: ns, Local: "query"},
+			QueryID: "test-query",
+			Form: XData{
+				Type: "submit",
+				Fields: []XDataField{
+					{Var: "FORM_TYPE", Type: "hidden", Values: []string{ns}},
+				},
+			},
+		}
+
+		out, err := xml.Marshal(query)
+		if err != nil {
+			t.Fatalf("failed to marshal MAM query for %s: %v", ns, err)
+		}
+		serialized := string(out)
+		if !strings.Contains(serialized, `xmlns="`+ns+`"`) {
+			t.Fatalf("MAM query for %s lost its namespace during marshaling: %s", ns, serialized)
+		}
+		if !strings.Contains(serialized, `queryid="test-query"`) {
+			t.Fatalf("MAM query for %s lost its query id during marshaling: %s", ns, serialized)
+		}
+	}
+}
+
+func TestMarshalMAMFinIncludesNamespace(t *testing.T) {
+	fin := &MAMFin{XMLName: xml.Name{Space: NSMAM2, Local: "fin"}, Complete: true}
+
+	out, err := xml.Marshal(fin)
+	if err != nil {
+		t.Fatalf("failed to marshal MAM fin: %v", err)
+	}
+	serialized := string(out)
+	if !strings.Contains(serialized, `xmlns="`+NSMAM2+`"`) {
+		t.Fatalf("MAM fin lost its namespace during marshaling: %s", serialized)
+	}
+	if !strings.Contains(serialized, `complete="true"`) {
+		t.Fatalf("MAM fin lost its complete flag during marshaling: %s", serialized)
 	}
 }
 
