@@ -196,6 +196,28 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}, nil
 }
 
+// xmppReactionSupported reports whether a Matrix reaction key can be
+// represented in XMPP (XEP-0444). Image-based custom emoji (mxc:// keys)
+// cannot, so they are kept Matrix-side only.
+func xmppReactionSupported(emoji string) bool {
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" {
+		return false
+	}
+	return !strings.HasPrefix(strings.ToLower(emoji), "mxc://")
+}
+
+// filterXMPPReactions drops reaction keys that cannot be sent over XMPP.
+func filterXMPPReactions(reactions []string) []string {
+	filtered := make([]string, 0, len(reactions))
+	for _, reaction := range reactions {
+		if xmppReactionSupported(reaction) {
+			filtered = append(filtered, strings.TrimSpace(reaction))
+		}
+	}
+	return filtered
+}
+
 func (nc *MyNetworkClient) PreHandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
 	rel := msg.Content.GetRelatesTo()
 	return bridgev2.MatrixReactionPreResponse{
@@ -216,6 +238,19 @@ func (nc *MyNetworkClient) HandleMatrixReaction(ctx context.Context, msg *bridge
 	}
 	if msg.TargetMessage == nil || msg.TargetMessage.ID == "" {
 		return nil, fmt.Errorf("target message is missing")
+	}
+	if !xmppReactionSupported(emoji) {
+		nc.log.Debug().
+			Str("emoji", emoji).
+			Msg("Storing custom emoji reaction without sending it to XMPP")
+		return &database.Reaction{
+			MessageID:  msg.TargetMessage.ID,
+			SenderID:   nc.reactionSenderID(msg.Event.Sender),
+			SenderMXID: msg.Event.Sender,
+			EmojiID:    networkid.EmojiID(emoji),
+			Emoji:      emoji,
+			Timestamp:  time.UnixMilli(msg.Event.Timestamp),
+		}, nil
 	}
 
 	reactions, err := nc.currentMatrixReactionSet(ctx, msg.Portal, msg.TargetMessage.ID, nc.reactionSenderID(msg.Event.Sender), emoji, "")
@@ -285,6 +320,9 @@ func (nc *MyNetworkClient) currentMatrixReactionSet(ctx context.Context, portal 
 		if emoji == "" {
 			continue
 		}
+		if !xmppReactionSupported(emoji) {
+			continue
+		}
 		if _, ok := seen[emoji]; ok {
 			continue
 		}
@@ -292,7 +330,7 @@ func (nc *MyNetworkClient) currentMatrixReactionSet(ctx context.Context, portal 
 		reactions = append(reactions, emoji)
 	}
 	addEmoji = strings.TrimSpace(addEmoji)
-	if addEmoji != "" {
+	if addEmoji != "" && xmppReactionSupported(addEmoji) {
 		if _, ok := seen[addEmoji]; !ok {
 			reactions = append(reactions, addEmoji)
 		}
@@ -304,6 +342,13 @@ func (nc *MyNetworkClient) sendXMPPReactionSet(ctx context.Context, portal *brid
 	if portal == nil || target == nil || target.ID == "" {
 		return fmt.Errorf("target message is missing")
 	}
+	filteredReactions := filterXMPPReactions(reactions)
+	if len(reactions) > 0 && len(filteredReactions) == 0 {
+		// Everything in the set is Matrix-only (e.g. custom emoji images);
+		// sending an empty XEP-0444 set would wipe reactions on the remote side.
+		return nil
+	}
+	reactions = filteredReactions
 	jid := UnescapeJID(string(portal.ID))
 	msgType := stanza.MessageTypeChat
 	if portalUsesGroupChat(portal) {

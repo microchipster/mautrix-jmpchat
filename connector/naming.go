@@ -25,6 +25,7 @@ type SimpleConfig struct {
 	SendTyping           *bool         `yaml:"send_typing,omitempty"`
 	SendReadMarkers      *bool         `yaml:"send_read_markers,omitempty"`
 	SendDeliveryReceipts *bool         `yaml:"send_delivery_receipts,omitempty"`
+	MUCNickSync          *bool         `yaml:"muc_nick_sync,omitempty"`
 }
 
 // sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.
@@ -43,6 +44,12 @@ func (c *SimpleConfig) sendReadMarkersEnabled() bool {
 // for outgoing direct messages. The default is enabled.
 func (c *SimpleConfig) sendDeliveryReceiptsEnabled() bool {
 	return c == nil || c.SendDeliveryReceipts == nil || *c.SendDeliveryReceipts
+}
+
+// mucNickSyncEnabled reports whether renaming a MUC portal room also changes
+// the occupant nickname used in the XMPP room. The default is enabled.
+func (c *SimpleConfig) mucNickSyncEnabled() bool {
+	return c == nil || c.MUCNickSync == nil || *c.MUCNickSync
 }
 
 func (c *SimpleConfig) UnmarshalYAML(unmarshal func(any) error) error {
@@ -161,6 +168,27 @@ func normalizeContactName(name string) string {
 	return b.String()
 }
 
+// resolveGhostDisplayName resolves a contact display name from the layered
+// name sources with precedence: explicit custom name, CardDAV name, XMPP
+// roster name, the ghost's own name, then the JID/phone label.
+func resolveGhostDisplayName(meta *GhostMetadata, ghostName, jid string) string {
+	if meta != nil {
+		if name := strings.TrimSpace(meta.CustomName); name != "" {
+			return name
+		}
+		if name := strings.TrimSpace(meta.CardDAVName); name != "" {
+			return name
+		}
+		if name := strings.TrimSpace(meta.RemoteName); name != "" {
+			return name
+		}
+	}
+	if name := strings.TrimSpace(ghostName); name != "" {
+		return name
+	}
+	return contactLabelFromJID(jid)
+}
+
 func contactDisplayName(ctx context.Context, bridge *bridgev2.Bridge, jid string) string {
 	jid = bareJID(UnescapeJID(strings.TrimSpace(jid)))
 	if jid == "" {
@@ -169,15 +197,11 @@ func contactDisplayName(ctx context.Context, bridge *bridgev2.Bridge, jid string
 	if bridge != nil {
 		ghost, err := bridge.GetExistingGhostByID(ctx, MakeUserID(jid))
 		if err == nil && ghost != nil {
-			if meta, ok := ghost.Metadata.(*GhostMetadata); ok && meta != nil {
-				if name := strings.TrimSpace(meta.CustomName); name != "" {
-					return name
-				}
-				if name := strings.TrimSpace(meta.RemoteName); name != "" {
-					return name
-				}
+			var meta *GhostMetadata
+			if m, ok := ghost.Metadata.(*GhostMetadata); ok {
+				meta = m
 			}
-			if name := strings.TrimSpace(ghost.Name); name != "" {
+			if name := resolveGhostDisplayName(meta, ghost.Name, jid); name != "" {
 				return name
 			}
 		}

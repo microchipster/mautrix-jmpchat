@@ -110,6 +110,10 @@ var CommandCardDAVStatus = &commands.FullHandler{
 			}
 		}
 		lines = append(lines, fmt.Sprintf("- roster contacts: %d", len(client.rosterContactList())))
+		if login := ce.User.GetDefaultLogin(); login != nil {
+			custom, carddav, roster := countContactNameSources(ce.Ctx, ce.Bridge, login)
+			lines = append(lines, fmt.Sprintf("- name sources: %d explicit, %d CardDAV, %d roster", custom, carddav, roster))
+		}
 		ce.Reply("%s", strings.Join(lines, "\n"))
 	},
 	Name: "carddav-status",
@@ -154,6 +158,106 @@ var CommandCardDAVSync = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Import phone numbers from the configured CardDAV addressbook into the roster",
+	},
+	RequiresLogin: true,
+}
+
+var CommandCardDAVClear = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		client := cardDAVClientFromEvent(ce)
+		if client == nil {
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		suffix := defaultContactNameSuffix
+		if client.contactNameSuffix() != "" {
+			suffix = client.contactNameSuffix()
+		}
+		count, err := clearContactNameSources(ce.Ctx, ce.Bridge, login, "carddav", "", suffix)
+		if err != nil {
+			ce.Reply("Failed to clear CardDAV names: %v", err)
+			return
+		}
+		ce.Reply("Cleared CardDAV names for %d contacts. Auto-named rooms were refreshed to fall back to roster or phone-number names.", count)
+	},
+	Name: "carddav-clear",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Clear all CardDAV-imported display names and refresh auto-named rooms",
+	},
+	RequiresLogin: true,
+}
+
+var CommandClearContactNames = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		client := cardDAVClientFromEvent(ce)
+		if client == nil {
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		source := ""
+		jid := ""
+		for i := 0; i < len(ce.Args); i++ {
+			arg := ce.Args[i]
+			switch {
+			case arg == "--source":
+				if i+1 >= len(ce.Args) {
+					ce.Reply("Usage: clear-contact-names [--source explicit|carddav|roster] [<phone or JID>]")
+					return
+				}
+				i++
+				parsed, ok := parseContactNameSource(ce.Args[i])
+				if !ok {
+					ce.Reply("Unknown name source %q (use explicit, carddav, or roster)", ce.Args[i])
+					return
+				}
+				source = parsed
+			case strings.HasPrefix(arg, "--source="):
+				parsed, ok := parseContactNameSource(strings.TrimPrefix(arg, "--source="))
+				if !ok {
+					ce.Reply("Unknown name source %q (use explicit, carddav, or roster)", strings.TrimPrefix(arg, "--source="))
+					return
+				}
+				source = parsed
+			case strings.HasPrefix(arg, "-"):
+				ce.Reply("Usage: clear-contact-names [--source explicit|carddav|roster] [<phone or JID>]")
+				return
+			default:
+				normalized := normalizeJID(arg)
+				if normalized == "" {
+					ce.Reply("Invalid JID %q", arg)
+					return
+				}
+				jid = normalized
+			}
+		}
+		suffix := defaultContactNameSuffix
+		if client.contactNameSuffix() != "" {
+			suffix = client.contactNameSuffix()
+		}
+		count, err := clearContactNameSources(ce.Ctx, ce.Bridge, login, source, jid, suffix)
+		if err != nil {
+			ce.Reply("Failed to clear contact names: %v", err)
+			return
+		}
+		if jid != "" {
+			ce.Reply("Cleared %d name source(s) for %s", count, jid)
+		} else {
+			ce.Reply("Cleared %d name source(s) across contacts. Auto-named rooms were refreshed.", count)
+		}
+	},
+	Name: "clear-contact-names",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Clear contact names from one source (explicit, carddav, roster) or all sources",
 	},
 	RequiresLogin: true,
 }

@@ -61,6 +61,7 @@ type GhostMetadata struct {
 	RemoteName   string `json:"remote_name,omitempty"`
 	AvatarURL    string `json:"avatar_url,omitempty"`
 	CustomName   string `json:"custom_name,omitempty"`
+	CardDAVName  string `json:"carddav_name,omitempty"`
 	// AvatarHash tracks the last XEP-0153 vCard photo hash we fetched, so
 	// unchanged avatars are not re-fetched or re-uploaded.
 	AvatarHash string `json:"avatar_hash,omitempty"`

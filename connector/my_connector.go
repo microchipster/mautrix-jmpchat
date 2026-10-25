@@ -63,6 +63,8 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandCardDAVLogout)
 		proc.AddHandler(CommandCardDAVStatus)
 		proc.AddHandler(CommandCardDAVSync)
+		proc.AddHandler(CommandCardDAVClear)
+		proc.AddHandler(CommandClearContactNames)
 		proc.AddHandler(CommandAutoRename)
 		proc.AddHandler(matrixbridge.CommandDiscardMegolmSession)
 		proc.AddHandler(CommandMatrixEncryptionResync)

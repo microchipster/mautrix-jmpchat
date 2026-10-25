@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -160,6 +161,8 @@ type MyNetworkClient struct {
 	postConnectMu                sync.Mutex
 	bridgeStateMu                sync.Mutex
 	lastBridgeState              status.BridgeStateEvent
+	lastServerActivity           atomic.Int64
+	lastSelfPing                 atomic.Int64
 }
 
 const defaultMAMLookback = 30 * 24 * time.Hour
@@ -168,6 +171,8 @@ const (
 	xmppReconnectInitialBackoff = 5 * time.Second
 	xmppReconnectMaxBackoff     = 5 * time.Minute
 	xmppHealthCheckInterval     = time.Minute
+	xmppIdlePingThreshold       = 90 * time.Second
+	xmppSelfPingInterval        = 3 * time.Minute
 )
 
 // xmppPendingSendAckTimeout is how long the bridge waits for a delivery
@@ -1470,9 +1475,18 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	}
 
 	nc.xmppRouter = xmpp.NewRouter()
-	nc.xmppRouter.HandleFunc("message", nc.handleXMPPMessage)
-	nc.xmppRouter.HandleFunc("presence", nc.handleXMPPPresence)
-	nc.xmppRouter.HandleFunc("iq", nc.handleXMPPIq)
+	nc.xmppRouter.HandleFunc("message", func(s xmpp.Sender, p stanza.Packet) {
+		nc.recordServerActivity()
+		nc.handleXMPPMessage(s, p)
+	})
+	nc.xmppRouter.HandleFunc("presence", func(s xmpp.Sender, p stanza.Packet) {
+		nc.recordServerActivity()
+		nc.handleXMPPPresence(s, p)
+	})
+	nc.xmppRouter.HandleFunc("iq", func(s xmpp.Sender, p stanza.Packet) {
+		nc.recordServerActivity()
+		nc.handleXMPPIq(s, p)
+	})
 
 	client, err := xmpp.NewClient(&config, nc.xmppRouter, func(err error) {
 		nc.log.Err(err).Str("jid", config.Jid).Int("attempt", attempt).Msg("XMPP error")
@@ -1716,6 +1730,22 @@ func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, m
 	nc.login.BridgeState.Send(state)
 }
 
+// recordServerActivity notes that the XMPP stream was active, so idle-based
+// health pings can be skipped while traffic flows.
+func (nc *MyNetworkClient) recordServerActivity() {
+	nc.lastServerActivity.Store(time.Now().UnixNano())
+}
+
+// serverIdleFor returns how long the XMPP stream has been quiet. A connection
+// that never saw activity is treated as idle so the first health tick pings.
+func (nc *MyNetworkClient) serverIdleFor() time.Duration {
+	last := nc.lastServerActivity.Load()
+	if last == 0 {
+		return time.Duration(1 << 62)
+	}
+	return time.Since(time.Unix(0, last))
+}
+
 func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
 	client, connected, _ := nc.connectionSnapshot()
 	if client == nil {
@@ -1735,6 +1765,7 @@ func (nc *MyNetworkClient) sendXMPP(packet stanza.Packet) error {
 		nc.log.Error().Err(err).Msg("sendXMPP transport send error")
 		return err
 	}
+	nc.recordServerActivity()
 	nc.log.Debug().Msg("sendXMPP packet successfully written to transport")
 	return nil
 }
@@ -2019,6 +2050,13 @@ func (nc *MyNetworkClient) startRuntimeHealth(client *xmpp.Client) {
 				return false
 			}
 
+			if nc.serverIdleFor() < xmppIdlePingThreshold {
+				// Recent inbound or outbound traffic proves the stream works;
+				// pinging a busy stream wastes round trips.
+				consecutiveFailures = 0
+				return true
+			}
+
 			if err := nc.RuntimeHealth(context.Background()); err != nil {
 				consecutiveFailures++
 				nc.log.Warn().
@@ -2051,8 +2089,56 @@ func (nc *MyNetworkClient) startRuntimeHealth(client *xmpp.Client) {
 			if !check() {
 				return
 			}
+			if time.Since(time.Unix(0, nc.lastSelfPing.Load())) >= xmppSelfPingInterval {
+				nc.lastSelfPing.Store(time.Now().UnixNano())
+				nc.selfPingOwnJID(client)
+			}
 		}
 	}()
+}
+
+// selfPingOwnJID sends an XEP-0199 ping to our own full JID. Unlike a server
+// ping, this also proves that the server still routes stanzas into this
+// session (XEP-0410 style), catching half-open streams. The patched router
+// answers inbound pings automatically.
+func (nc *MyNetworkClient) selfPingOwnJID(client *xmpp.Client) {
+	if client == nil || client.Session == nil || nc.serverIdleFor() < xmppIdlePingThreshold {
+		return
+	}
+	target := strings.TrimSpace(client.Session.BindJid)
+	if target == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	iq, err := stanza.NewIQ(stanza.Attrs{
+		Type: stanza.IQTypeGet,
+		To:   target,
+		Id:   fmt.Sprintf("selfping_%d", time.Now().UnixNano()),
+	})
+	if err != nil {
+		return
+	}
+	iq.Payload = &XMPPPing{}
+	resultCh, err := client.SendIQ(ctx, iq)
+	if err != nil {
+		nc.log.Warn().Err(err).Str("target", target).Msg("XMPP self-ping failed")
+		return
+	}
+	select {
+	case resp, ok := <-resultCh:
+		if !ok {
+			nc.log.Warn().Str("target", target).Msg("XMPP self-ping result channel closed")
+			return
+		}
+		if resp.Type == stanza.IQTypeResult || resp.Type == stanza.IQTypeError {
+			nc.log.Debug().Str("target", target).Msg("XMPP self-ping succeeded")
+			return
+		}
+		nc.log.Warn().Str("target", target).Str("iq_type", string(resp.Type)).Msg("XMPP self-ping returned unexpected IQ type")
+	case <-ctx.Done():
+		nc.log.Warn().Err(ctx.Err()).Str("target", target).Msg("XMPP self-ping timed out")
+	}
 }
 
 func serverDomainFromJID(jid string) string {
@@ -3271,6 +3357,30 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				}
 			}
 
+			if mediaURL == "" && !isEncrypted {
+				if bobData, bobMime, _, ok := extractXMPPBob(msg); ok {
+					bobType := classifyContentTypeMessageType(bobMime, true)
+					if bobType != event.MsgText {
+						if fileName == "" || fileName == "file" {
+							fileName = bobInlineFileName(bobMime)
+						}
+						mediaMxc, uploadedFile, err := intent.UploadMedia(ctx, portal.MXID, bobData, fileName, bobMime)
+						if err == nil {
+							mediaURL = string(mediaMxc)
+							encryptedFile = uploadedFile
+							msgType = bobType
+							info = &event.FileInfo{
+								MimeType: bobMime,
+								Size:     len(bobData),
+							}
+							if strings.HasPrefix(strings.ToLower(strings.TrimSpace(body)), "cid:") {
+								body = ""
+							}
+						}
+					}
+				}
+			}
+
 			content := &event.MessageEventContent{
 				MsgType: msgType,
 				Body:    body,
@@ -3299,6 +3409,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 					if isLikelyXMPPVoiceNote(msg, attachment) {
 						content.MSC3245Voice = &event.MSC3245Voice{}
 					}
+				}
+			}
+			if mediaURL == "" && content.MsgType == event.MsgText {
+				if fallback, ok := cidFallbackBody(content.Body); ok {
+					content.Body = fallback
 				}
 			}
 			applyXMPPMessageFormatting(content, xhtml)

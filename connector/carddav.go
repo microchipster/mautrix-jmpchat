@@ -366,6 +366,7 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 				nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to add CardDAV contact to roster")
 				continue
 			}
+			nc.setGhostCardDAVName(ctx, jid, contact.Name)
 			existing[jid] = true
 			result.Added++
 			time.Sleep(cardDAVSyncAddInterval)
