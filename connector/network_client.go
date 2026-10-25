@@ -3118,11 +3118,11 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		Msg("Queueing chat resync for incoming message")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
-	msgID := nc.extractMessageID(msg)
+	msgID := nc.extractMessageID(msg, bareFromJid, isFromMe)
 	if msgID == "" {
 		msgID = idOverride
 	}
-	serverMsgID := nc.extractServerMessageID(msg)
+	serverMsgID := nc.extractServerMessageID(msg, bareFromJid, isFromMe)
 	originAliasID, stanzaAliasID, plainAliasID := xmppMessageAliases(msg)
 
 	evt := &simplevent.Message[string]{
@@ -3262,6 +3262,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				}
 			}
 			applyXMPPMessageFormatting(content, xhtml)
+			if mentionIDs := nc.xmppMentionMXIDs(ctx, msg); len(mentionIDs) > 0 {
+				content.Mentions = &event.Mentions{UserIDs: mentionIDs}
+			}
 
 			return &bridgev2.ConvertedMessage{
 				ReplyTo: func() *networkid.MessageOptionalPartID {
@@ -3398,14 +3401,13 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 	})
 }
 
-func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
+func (nc *MyNetworkClient) extractMessageID(msg stanza.Message, bareFromJid string, isFromMe bool) string {
 	var origin XMPPOriginID
 	if msg.Get(&origin) && origin.ID != "" {
 		return origin.ID
 	}
-	var stanzaID XMPPStanzaID
-	if msg.Get(&stanzaID) && stanzaID.ID != "" {
-		return stanzaID.ID
+	if id := nc.trustedStanzaID(msg, bareFromJid, isFromMe); id != "" {
+		return id
 	}
 	if msg.Id != "" {
 		return msg.Id
@@ -3413,10 +3415,43 @@ func (nc *MyNetworkClient) extractMessageID(msg stanza.Message) string {
 	return ""
 }
 
-func (nc *MyNetworkClient) extractServerMessageID(msg stanza.Message) string {
+func (nc *MyNetworkClient) extractServerMessageID(msg stanza.Message, bareFromJid string, isFromMe bool) string {
+	return nc.trustedStanzaID(msg, bareFromJid, isFromMe)
+}
+
+// trustedStanzaID returns the XEP-0359 stanza-id only when it was assigned by
+// an entity we trust: the sender's server, our own server, or the MUC room.
+// Stanza-ids with a mismatched `by` are ignored so a remote user cannot
+// influence message identity (and therefore deduplication).
+func (nc *MyNetworkClient) trustedStanzaID(msg stanza.Message, bareFromJid string, isFromMe bool) string {
 	var stanzaID XMPPStanzaID
-	if msg.Get(&stanzaID) && stanzaID.ID != "" {
-		return stanzaID.ID
+	if !msg.Get(&stanzaID) {
+		return ""
+	}
+	id := strings.TrimSpace(stanzaID.ID)
+	if id == "" {
+		return ""
+	}
+	by := strings.TrimSpace(stanzaID.By)
+	if by == "" {
+		// Some servers omit `by`; there is nothing to validate against.
+		return id
+	}
+	expected := bareFromJid
+	if isFromMe {
+		if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil && meta.RemoteUserID != "" {
+			expected = meta.RemoteUserID
+		}
+	}
+	if expected == "" {
+		return ""
+	}
+	if strings.EqualFold(by, expected) {
+		return id
+	}
+	// Also accept a bare domain (some servers stamp the server domain).
+	if i := strings.IndexByte(expected, '@'); i >= 0 && strings.EqualFold(by, expected[i+1:]) {
+		return id
 	}
 	return ""
 }

@@ -125,6 +125,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		extensions = append(extensions, reply)
 		body, extensions = addReplyFallbackToBody(body, extensions, nc.buildOutgoingXMPPReplyQuote(ctx, msg.Portal, msg.ReplyTo))
 	}
+	extensions = append(extensions, nc.xmppMentionReferences(msg.Content.Mentions)...)
 	m.Body = stanza.StringPtr(body)
 	if !isMUC {
 		extensions = append(extensions, XMPPReceipt{}, XMPPMarker{})

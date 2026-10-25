@@ -404,7 +404,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCall(msg stanza.Message, timestamp 
 		ChatInfo: nil,
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
-	msgID := nc.extractMessageID(msg)
+	msgID := nc.extractMessageID(msg, bareFromJid, isFromMe)
 	if msgID == "" {
 		msgID = fmt.Sprintf("call-%s-%s", call.Action, call.SessionID)
 	}
