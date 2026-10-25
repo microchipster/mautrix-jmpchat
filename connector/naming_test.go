@@ -249,3 +249,109 @@ func TestInitialsLikeName(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeContactName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"apostrophe", "O'Brien", "O'Brien"},
+		{"typographic apostrophe", "O’Brien", "O’Brien"},
+		{"double quotes", `"Bob"`, `"Bob"`},
+		{"multiple spaces", "Mary   Jane", "Mary Jane"},
+		{"tabs and newlines", "\t Mary \n Jane \r\n", "Mary Jane"},
+		{"control chars dropped", "Bob\x00 \x07Builder", "Bob Builder"},
+		{"emoji preserved", "José 😀", "José 😀"},
+		{"emoji zwj preserved", "👨\u200d👩\u200d👧", "👨\u200d👩\u200d👧"},
+		{"mixed", "  O'Brien \t & \n Sons  ", "O'Brien & Sons"},
+		{"empty", "   \t\n ", ""},
+		{"only control", "\x00\x01\x02", ""},
+	}
+	for _, tc := range tests {
+		if got := normalizeContactName(tc.in); got != tc.want {
+			t.Errorf("normalizeContactName(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestContactInitialSpecialChars(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"O'Brien":    "O",
+		"d'Artagnan": "D",
+		"-Smith":     "S",
+		"🌟Star":      "S",
+		"123 Main":   "1",
+		"!!!":        "",
+		"":           "",
+		"(O'Brien)":  "O",
+	}
+	for input, want := range tests {
+		if got := contactInitial(input); got != want {
+			t.Errorf("contactInitial(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestGroupInitialsSpecialChars(t *testing.T) {
+	t.Parallel()
+
+	if got := groupInitialsFromLabels([]string{"O'Brien", "Smith", "Roe"}); got != "OSR" {
+		t.Fatalf("groupInitialsFromLabels() = %q, want %q", got, "OSR")
+	}
+	if got := groupInitialsFromLabels([]string{"O'Brien", "d'Artagnan", "+15550102000"}); got != "OD1" {
+		t.Fatalf("groupInitialsFromLabels() = %q, want %q", got, "OD1")
+	}
+	if got := groupInitialsFromLabels([]string{"O'Brien", "", "Roe"}); got != "OR" {
+		t.Fatalf("groupInitialsFromLabels() = %q, want %q", got, "OR")
+	}
+}
+
+func TestGroupRoomNameExplicitSpecialChars(t *testing.T) {
+	t.Parallel()
+
+	participants := []string{"+15551230001@cheogram.com", "+15551230002@cheogram.com"}
+	got := groupRoomNameFromParticipants(context.Background(), nil, participants, "The O'Brien Family", "jmp")
+	if got != "The O'Brien Family" {
+		t.Fatalf("groupRoomNameFromParticipants() = %q, want %q", got, "The O'Brien Family")
+	}
+}
+
+func TestSuffixSpecialChars(t *testing.T) {
+	t.Parallel()
+
+	if got := appendContactNameSuffix("O'Brien", "jmp"); got != "O'Brien (jmp)" {
+		t.Fatalf("appendContactNameSuffix() = %q, want %q", got, "O'Brien (jmp)")
+	}
+	if got := appendContactNameSuffix("O'Brien (jmp)", "jmp"); got != "O'Brien (jmp)" {
+		t.Fatalf("appendContactNameSuffix() = %q, want %q", got, "O'Brien (jmp)")
+	}
+	if got := stripContactNameSuffix("O'Brien (jmp)", "jmp"); got != "O'Brien" {
+		t.Fatalf("stripContactNameSuffix() = %q, want %q", got, "O'Brien")
+	}
+}
+
+func TestPortalLooksAutoNamedApostropheName(t *testing.T) {
+	t.Parallel()
+
+	portal := &bridgev2.Portal{
+		Portal: &database.Portal{
+			PortalKey:    networkid.PortalKey{ID: MakePortalID("+15551230001,+15551230002,+15551230003@cheogram.com")},
+			Name:         "O'Brien (jmp)",
+			RoomType:     database.RoomTypeDefault,
+			NameIsCustom: true,
+		},
+	}
+	if portalLooksAutoNamed(portal, "jmp") {
+		t.Fatal("expected apostrophe name to be treated as explicit, not auto-named")
+	}
+
+	portal.Name = "OSR (jmp)"
+	if !portalLooksAutoNamed(portal, "jmp") {
+		t.Fatal("expected initials name to be treated as auto-named")
+	}
+}

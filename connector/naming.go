@@ -94,6 +94,36 @@ func stripContactNameSuffix(name, suffix string) string {
 	return name
 }
 
+// normalizeContactName cleans a display name coming from a user or an XMPP
+// roster: runs of whitespace collapse to a single space, other control
+// characters are dropped (formatting characters such as ZWJ are kept so emoji
+// sequences survive), and surrounding whitespace is trimmed. Apostrophes,
+// quotes, and non-ASCII letters are preserved exactly.
+func normalizeContactName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	spacePending := false
+	for _, r := range name {
+		switch {
+		case unicode.IsSpace(r):
+			spacePending = b.Len() > 0
+		case unicode.IsControl(r):
+			// Drop control runes entirely.
+		default:
+			if spacePending {
+				b.WriteRune(' ')
+				spacePending = false
+			}
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func contactDisplayName(ctx context.Context, bridge *bridgev2.Bridge, jid string) string {
 	jid = bareJID(UnescapeJID(strings.TrimSpace(jid)))
 	if jid == "" {

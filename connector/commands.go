@@ -1084,7 +1084,7 @@ var CommandSetContactName = &commands.FullHandler{
 			return
 		}
 
-		name := strings.TrimSpace(strings.Join(ce.Args[1:], " "))
+		name := normalizeContactName(strings.Join(ce.Args[1:], " "))
 		if name == "" {
 			ce.Reply("Display name cannot be empty")
 			return

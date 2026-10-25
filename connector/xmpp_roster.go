@@ -16,7 +16,7 @@ import (
 // roster data. It returns true when a name was newly stored or changed.
 func (nc *MyNetworkClient) updateRosterContactName(jid, name string) bool {
 	jid = CanonicalBareJID(jid)
-	name = strings.TrimSpace(name)
+	name = normalizeContactName(name)
 	if jid == "" || name == "" || nc.bridge == nil {
 		return false
 	}

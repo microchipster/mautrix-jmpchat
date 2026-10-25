@@ -104,3 +104,23 @@ func TestMakePortalIDAndUserIDConsistency(t *testing.T) {
 		t.Errorf("MakeUserID mismatch for resources: %q vs %q", u1, u2)
 	}
 }
+
+func TestSpecialCharactersInJIDs(t *testing.T) {
+	t.Parallel()
+
+	if got := CanonicalBareJID("o'brien@Example.COM/resource"); got != "o'brien@example.com" {
+		t.Fatalf("CanonicalBareJID() = %q, want %q", got, "o'brien@example.com")
+	}
+	if got := CanonicalBareJID("o’brien@example.com"); got != "o’brien@example.com" {
+		t.Fatalf("CanonicalBareJID() = %q, want %q", got, "o’brien@example.com")
+	}
+	if got := contactLabelFromJID("o'brien@example.com"); got != "o'brien" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "o'brien")
+	}
+	if got := contactLabelFromJID("O'Brien@Example.com/Nick"); got != "Nick" {
+		t.Fatalf("contactLabelFromJID() = %q, want %q", got, "Nick")
+	}
+	if got := MakeUserID("o'brien@example.com"); got != "o'brien@example.com" {
+		t.Fatalf("MakeUserID() = %q, want %q", got, "o'brien@example.com")
+	}
+}

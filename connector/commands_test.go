@@ -776,3 +776,25 @@ func TestClusterCandidateRooms(t *testing.T) {
 		t.Errorf("Bob duplicates count = %d, want 0", len(bobCluster.duplicates))
 	}
 }
+
+func TestRoomNoticesEscapeNames(t *testing.T) {
+	t.Parallel()
+
+	label := `O'Brien & <script>alert("x")</script>`
+	roomID := id.RoomID("!room:example.com")
+
+	notices := map[string]string{
+		"existing": existingRoomNotice("Chat", "+15550101100@cheogram.com", label, roomID),
+		"created":  createdRoomNotice("Chat", "+15550101100@cheogram.com", label, roomID),
+	}
+	for name, out := range notices {
+		if strings.Contains(out, "<script>") {
+			t.Errorf("%s notice contains raw HTML from the label: %q", name, out)
+		}
+		for _, escaped := range []string{"&#39;", "&amp;", "&lt;", "&gt;"} {
+			if !strings.Contains(out, escaped) {
+				t.Errorf("%s notice is missing escaped %q in %q", name, escaped, out)
+			}
+		}
+	}
+}
