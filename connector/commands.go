@@ -1026,17 +1026,12 @@ var CommandListLogins = &commands.FullHandler{
 var CommandSetContactName = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		if len(ce.Args) < 2 {
-			ce.Reply("Usage: set-contact-name <phone or JID> <display name>")
+			ce.Reply("Usage: set-contact-name <phone or JID> <display name>\nUsage: set-contact-name <phone or JID> --clear")
 			return
 		}
 		jid := normalizeJID(ce.Args[0])
 		if jid == "" {
 			ce.Reply("Invalid JID")
-			return
-		}
-		name := strings.TrimSpace(strings.Join(ce.Args[1:], " "))
-		if name == "" {
-			ce.Reply("Display name cannot be empty")
 			return
 		}
 		ghostID := MakeUserID(jid)
@@ -1049,6 +1044,51 @@ var CommandSetContactName = &commands.FullHandler{
 		if meta == nil {
 			meta = &GhostMetadata{}
 		}
+		login := ce.User.GetDefaultLogin()
+		suffix := defaultContactNameSuffix
+		if login != nil {
+			if client, ok := login.Client.(*MyNetworkClient); ok && client != nil {
+				suffix = client.contactNameSuffix()
+			}
+		}
+
+		if ce.Args[1] == "--clear" {
+			if strings.TrimSpace(meta.CustomName) == "" {
+				ce.Reply("No custom display name is set for %s", jid)
+				return
+			}
+			meta.CustomName = ""
+			ghost.Metadata = meta
+			fallback := contactDisplayName(ce.Ctx, ce.Bridge, jid)
+			if fallback == "" {
+				fallback = contactLabelFromJID(jid)
+			}
+			if fallback != "" {
+				ghost.UpdateInfo(ce.Ctx, &bridgev2.UserInfo{Name: &fallback})
+			}
+			if err := ce.Bridge.DB.Ghost.Update(ce.Ctx, ghost.Ghost); err != nil {
+				ce.Reply("Failed to clear display name for %s: %v", jid, err)
+				return
+			}
+			if login != nil {
+				if err := refreshContactNamedPortals(ce.Ctx, ce.Bridge, login, jid, suffix); err != nil {
+					ce.Reply("Cleared display name for %s, but room refresh failed: %v", jid, err)
+					return
+				}
+			}
+			if fallback == "" || fallback == jid {
+				ce.Reply("Cleared custom display name for %s", jid)
+			} else {
+				ce.Reply("Cleared custom display name for %s (now using %s)", jid, fallback)
+			}
+			return
+		}
+
+		name := strings.TrimSpace(strings.Join(ce.Args[1:], " "))
+		if name == "" {
+			ce.Reply("Display name cannot be empty")
+			return
+		}
 		meta.CustomName = name
 		ghost.Metadata = meta
 		ghost.UpdateInfo(ce.Ctx, &bridgev2.UserInfo{Name: &name})
@@ -1056,12 +1096,7 @@ var CommandSetContactName = &commands.FullHandler{
 			ce.Reply("Failed to save display name for %s: %v", jid, err)
 			return
 		}
-		login := ce.User.GetDefaultLogin()
 		if login != nil {
-			suffix := defaultContactNameSuffix
-			if client, ok := login.Client.(*MyNetworkClient); ok && client != nil {
-				suffix = client.contactNameSuffix()
-			}
 			if err := refreshContactNamedPortals(ce.Ctx, ce.Bridge, login, jid, suffix); err != nil {
 				ce.Reply("Set display name for %s, but room refresh failed: %v", jid, err)
 				return
@@ -1073,7 +1108,7 @@ var CommandSetContactName = &commands.FullHandler{
 	Aliases: []string{"set-name"},
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Set a custom display name for a user",
+		Description: "Set a custom display name for a user (--clear removes it)",
 	},
 	RequiresLogin: true,
 }
