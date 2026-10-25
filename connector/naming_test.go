@@ -87,6 +87,11 @@ func TestPortalLooksAutoNamed(t *testing.T) {
 		t.Fatal("expected manual group name to be treated as explicit")
 	}
 
+	portal.Name = "SM (jmp)"
+	if !portalLooksAutoNamed(portal, "jmp") {
+		t.Fatal("expected short initials to be treated as auto-named so they self-heal")
+	}
+
 	portal = &bridgev2.Portal{
 		Portal: &database.Portal{
 			PortalKey: networkid.PortalKey{ID: MakePortalID("+15551230001@cheogram.com")},
@@ -215,5 +220,32 @@ func TestAutoRenameDetectionWithPhoneContextAndCustomFlag(t *testing.T) {
 	desired := portalDesiredName(context.Background(), nil, portal, "jmp")
 	if desired != "69061 (jmp)" {
 		t.Fatalf("portalDesiredName() = %q, want %q", desired, "69061 (jmp)")
+	}
+}
+
+func TestInitialsLikeName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		contacts int
+		want     bool
+	}{
+		{"SM", 3, true},
+		{"SMR", 3, true},
+		{"SM", 2, true},
+		{"S", 3, true},
+		{"1", 3, true},
+		{"SMR", 2, false},
+		{"SMRX", 3, false},
+		{"Sm", 3, false},
+		{"S M", 3, false},
+		{"", 3, false},
+		{"SM", 0, false},
+	}
+	for _, tc := range tests {
+		if got := initialsLikeName(tc.name, tc.contacts); got != tc.want {
+			t.Errorf("initialsLikeName(%q, %d) = %v, want %v", tc.name, tc.contacts, got, tc.want)
+		}
 	}
 }

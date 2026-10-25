@@ -176,9 +176,12 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			SenderMXID: msg.Event.Sender,
 			Timestamp:  time.UnixMilli(msg.Event.Timestamp),
 			// Tapback matching needs the sent body; bridgev2 does not keep it.
+			// The XMPP IDs allow later corrections/retractions to be resolved.
 			Metadata: &MessageMetadata{
 				Body:          body,
 				HasAttachment: isAttachment,
+				XMPPMessageID: m.Id,
+				OriginID:      m.Id,
 			},
 		},
 	}, nil

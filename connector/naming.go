@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 	"maunium.net/go/mautrix/bridgev2"
@@ -190,6 +189,39 @@ func groupInitialsFromLabels(labels []string) string {
 	return strings.Join(initials, "")
 }
 
+// nonEmptyLabels returns the labels that carry usable text.
+func nonEmptyLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, label := range labels {
+		if strings.TrimSpace(label) != "" {
+			out = append(out, label)
+		}
+	}
+	return out
+}
+
+// initialsLikeName reports whether name looks like the initials generated for a
+// group with the given number of contacts. Names shorter than the number of
+// contacts (for example because a participant had no display name yet when the
+// name was generated) still count as auto-generated so that they are
+// regenerated once names are known.
+func initialsLikeName(name string, contacts int) bool {
+	if name == "" || contacts <= 0 {
+		return false
+	}
+	if strings.ToUpper(name) != name {
+		return false
+	}
+	count := 0
+	for _, r := range name {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
+		}
+		count++
+	}
+	return count >= 1 && count <= contacts
+}
+
 func groupRoomNameFromParticipants(ctx context.Context, bridge *bridgev2.Bridge, participants []string, explicit, suffix string) string {
 	if name := strings.TrimSpace(explicit); name != "" {
 		return name
@@ -199,11 +231,17 @@ func groupRoomNameFromParticipants(ctx context.Context, bridge *bridgev2.Bridge,
 	for _, participant := range participants {
 		label := contactDisplayName(ctx, bridge, participant)
 		labels = append(labels, label)
+		if strings.TrimSpace(label) == "" {
+			// A participant without any usable label means the room name
+			// cannot be expressed as initials yet.
+			allNamed = false
+			continue
+		}
 		if phoneSubscriberLabel(strings.TrimSuffix(bareJID(participant), "@cheogram.com")) == label {
 			allNamed = false
 		}
 	}
-	name := strings.Join(labels, ",")
+	name := strings.Join(nonEmptyLabels(labels), ",")
 	if allNamed {
 		name = groupInitialsFromLabels(labels)
 	}
@@ -331,7 +369,7 @@ func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
 	if name == strings.Join(phoneLabels, ",") {
 		return true
 	}
-	return strings.ToUpper(name) == name && utf8.RuneCountInString(name) == len(contacts)
+	return initialsLikeName(name, len(contacts))
 }
 
 func portalDesiredName(ctx context.Context, bridge *bridgev2.Bridge, portal *bridgev2.Portal, suffix string) string {

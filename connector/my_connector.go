@@ -106,6 +106,12 @@ func (c *MyConnector) GetNetworkID() string {
 func (c *MyConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 	return &bridgev2.NetworkGeneralCapabilities{
 		Provisioning: bridgev2.ProvisioningCapabilities{
+			ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
+				CreateDM:    true,
+				LookupPhone: true,
+				AnyPhone:    true,
+				ContactList: true,
+			},
 			GroupCreation: map[string]bridgev2.GroupTypeCapabilities{
 				"default": {
 					TypeDescription: "Cheogram phone-number group chat",

@@ -138,8 +138,9 @@ func (r XMPPReactions) All() []string {
 
 type XMPPEME struct {
 	stanza.MsgExtension
-	XMLName  xml.Name `xml:"urn:xmpp:eme:0 encryption"`
-	InnerXML string   `xml:",innerxml"`
+	XMLName   xml.Name `xml:"urn:xmpp:eme:0 encryption"`
+	Namespace string   `xml:"namespace,attr,omitempty"`
+	InnerXML  string   `xml:",innerxml"`
 }
 
 type CarbonForwarded struct {

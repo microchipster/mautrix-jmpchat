@@ -41,11 +41,14 @@ func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMUCOwner, Local: "query"}, MUCOwnerQuery{})
 }
 
-func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, participants []string) error {
+// initiateGroupChat normalizes the participants, queues the pending MUC creation and joins the group MUC.
+// It returns the resolved room JID and room name.
+func (nc *MyNetworkClient) initiateGroupChat(ctx context.Context, name string, participants []string) (string, string, error) {
 	roomJID, err := normalizedCheogramGroupJID(participants)
 	if err != nil {
-		return err
+		return "", "", err
 	}
+	name = strings.TrimSpace(name)
 	if name == "" {
 		name = groupRoomNameFromParticipants(ctx, nc.bridge, participants, "", nc.contactNameSuffix())
 	}
@@ -55,17 +58,6 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 		participants: append([]string(nil), participants...),
 	})
 	nc.joinMUC(roomJID, "", "")
-	portalID := MakePortalID(roomJID)
-	resync := &simplevent.ChatResync{
-		EventMeta: simplevent.EventMeta{
-			Type:         bridgev2.RemoteEventChatResync,
-			PortalKey:    networkid.PortalKey{ID: portalID},
-			CreatePortal: true,
-			Timestamp:    time.Now(),
-		},
-		ChatInfo: nil,
-	}
-	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
 	if nc.bookmarkedRooms != nil {
 		nc.bookmarkedRooms[roomJID] = true
@@ -78,6 +70,26 @@ func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, par
 	}); err != nil {
 		nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to publish group chat bookmark")
 	}
+
+	return roomJID, name, nil
+}
+
+func (nc *MyNetworkClient) createGroupChat(ctx context.Context, name string, participants []string) error {
+	roomJID, _, err := nc.initiateGroupChat(ctx, name, participants)
+	if err != nil {
+		return err
+	}
+	portalID := MakePortalID(roomJID)
+	resync := &simplevent.ChatResync{
+		EventMeta: simplevent.EventMeta{
+			Type:         bridgev2.RemoteEventChatResync,
+			PortalKey:    networkid.PortalKey{ID: portalID},
+			CreatePortal: true,
+			Timestamp:    time.Now(),
+		},
+		ChatInfo: nil,
+	}
+	nc.bridge.QueueRemoteEvent(nc.login, resync)
 	return nil
 }
 

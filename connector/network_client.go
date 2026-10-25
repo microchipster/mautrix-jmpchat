@@ -2373,12 +2373,18 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				return
 			}
 			nc.log.Info().Int("items", len(payload.Items)).Msg("Received roster items")
+			rosterNamesChanged := false
 			for _, item := range payload.Items {
 				bareJID := strings.Split(item.Jid, "/")[0]
 				if bareJID == "" {
 					continue
 				}
 				logJIDNormalization(nc.log, "roster_item", bareJID)
+				if rosterName := strings.TrimSpace(item.Name); rosterName != "" {
+					if nc.updateRosterContactName(bareJID, rosterName) {
+						rosterNamesChanged = true
+					}
+				}
 				if nc.log.GetLevel() <= zerolog.DebugLevel {
 					nc.log.Debug().
 						Str("jid", bareJID).
@@ -2433,6 +2439,9 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 				nc.maybeClearFullSync()
 			}
 			nc.maybeStartPendingDMBackfills()
+			if rosterNamesChanged {
+				nc.refreshRosterNamedPortals()
+			}
 		case *stanza.Roster:
 			nc.log.Debug().Msg("Received roster result without items")
 		case *BookmarkStorage:
@@ -2937,6 +2946,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 
 	nc.respondToIncomingXMPPReceipt(msg, isFromMe, fromMAM)
 	_ = nc.handleIncomingXMPPReceipt(msg, timestamp, bareFromJid, isMUC, isFromMe)
+	if nc.handleIncomingXMPPTyping(msg, bareFromJid, isMUC, isFromMe, fromMAM) {
+		return
+	}
 	var delayStamp string
 	var delay XMPPDelay
 	if msg.Get(&delay) {
@@ -2957,6 +2969,8 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		return
 	}
 
+	encryptKind, isEncrypted := encryptedXMPPKind(msg)
+
 	// Ignore empty bodies unless we have OOB
 	if stanza.StringValue(msg.Body) == "" {
 		var reactions XMPPReactions
@@ -2969,7 +2983,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		}
 		if attachment != nil {
 			msg.Body = stanza.StringPtr(attachment.URL)
-		} else {
+		} else if !hasXMPPRetraction(msg) && !isEncrypted {
 			nc.log.Debug().
 				Str("from", fromJidStr).
 				Str("type", string(msg.Type)).
@@ -2979,6 +2993,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				Msg("Skipping XMPP message with empty body")
 			return
 		}
+	}
+	if isEncrypted {
+		msg.Body = stanza.StringPtr(encryptedXMPPNotice(encryptKind))
 	}
 
 	portalID := MakePortalID(bareFromJid)
@@ -3057,6 +3074,12 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		msg.Body = stanza.StringPtr(stripMUCSenderPrefix(stanza.StringValue(msg.Body), senderID))
 	}
 	logJIDNormalization(nc.log, "message_sender", senderID)
+	if nc.handleIncomingXMPPCorrection(msg, timestamp, bareFromJid, senderID, isMUC, isFromMe, fromMAM) {
+		return
+	}
+	if nc.handleIncomingXMPPRetraction(msg, timestamp, bareFromJid, senderID, isMUC, isFromMe, fromMAM) {
+		return
+	}
 	if isMUC && !fromMAM {
 		if (nc.mucRooms == nil || !nc.mucRooms[bareFromJid]) && nc.isXMPPConnected() {
 			start := nc.historySyncStartForPortal(context.Background(), networkid.PortalKey{ID: portalID})
@@ -3100,6 +3123,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		msgID = idOverride
 	}
 	serverMsgID := nc.extractServerMessageID(msg)
+	originAliasID, stanzaAliasID, plainAliasID := xmppMessageAliases(msg)
 
 	evt := &simplevent.Message[string]{
 		EventMeta: simplevent.EventMeta{
@@ -3128,6 +3152,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			}
 
 			msgType := event.MsgText
+			if isEncrypted {
+				msgType = event.MsgNotice
+			}
 			body := data
 			var info *event.FileInfo
 			var mediaURL string
@@ -3144,10 +3171,10 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				if caption != "" {
 					body = caption
 				}
-			} else {
+			} else if !isEncrypted {
 				body = mergeXMPPSubjectAndBody(stanza.StringValue(msg.Subject), body)
 			}
-			if remoteURL == "" && (strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://")) {
+			if !isEncrypted && remoteURL == "" && (strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://")) {
 				remoteURL = data
 			}
 			if remoteURL != "" {
@@ -3246,10 +3273,15 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 				Parts: []*bridgev2.ConvertedMessagePart{{
 					Type:    event.EventMessage,
 					Content: content,
-					// Store the body so future tapbacks can find this message.
+					// Store the body so future tapbacks can find this message,
+					// and the XMPP identifiers so corrections and retractions
+					// can resolve this message later.
 					DBMetadata: &MessageMetadata{
 						Body:          content.Body,
 						HasAttachment: mediaURL != "" || encryptedFile != nil,
+						XMPPMessageID: plainAliasID,
+						OriginID:      originAliasID,
+						StanzaID:      stanzaAliasID,
 					},
 				}},
 			}, nil
@@ -3314,6 +3346,24 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 		ChatInfo: nil,
 	}
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
+
+	// XEP-0444 reactions reference the target by any of the sender-chosen,
+	// origin or room-assigned ids. Resolve all of them into the bridgev2
+	// message id before queueing the sync, otherwise the framework cannot
+	// find the message and drops the reaction.
+	portalKey := networkid.PortalKey{ID: portalID, Receiver: nc.login.ID}
+	resolveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	target, resolveErr := nc.resolveReactionTarget(resolveCtx, portalKey, reactions.ID)
+	cancel()
+	if resolveErr != nil {
+		nc.log.Warn().Err(resolveErr).Str("ref", reactions.ID).Msg("Failed to resolve XMPP reaction target")
+	}
+	if target == nil {
+		nc.log.Debug().Str("ref", reactions.ID).Str("from", msg.From).Msg("Skipping XMPP reaction with unresolved target")
+		return
+	}
+	targetID := target.ID
+
 	reactionList := reactions.All()
 	reactionItems := make([]*bridgev2.BackfillReaction, 0, len(reactionList))
 	sender := bridgev2.EventSender{
@@ -3336,7 +3386,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 			Sender:    sender,
 			Timestamp: timestamp,
 		},
-		TargetMessage: networkid.MessageID(reactions.ID),
+		TargetMessage: targetID,
 		Reactions: &bridgev2.ReactionSyncData{
 			Users: map[networkid.UserID]*bridgev2.ReactionSyncUser{
 				MakeUserID(senderID): &bridgev2.ReactionSyncUser{

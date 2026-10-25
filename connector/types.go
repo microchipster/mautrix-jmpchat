@@ -97,6 +97,14 @@ func (m *PortalMetadata) New() any {
 type MessageMetadata struct {
 	Body          string `json:"body,omitempty"`
 	HasAttachment bool   `json:"has_attachment,omitempty"`
+
+	// XMPP identifiers seen on the original stanza. They let edits, retractions
+	// and reactions resolve a stanza reference (<replace id>, <retract id>, ...)
+	// back to the bridged message, even when the reference names a different
+	// identifier than the one the bridge used as the message ID.
+	XMPPMessageID string `json:"xmpp_message_id,omitempty"`
+	OriginID      string `json:"origin_id,omitempty"`
+	StanzaID      string `json:"stanza_id,omitempty"`
 }
 
 // New creates a new instance for database registration.
