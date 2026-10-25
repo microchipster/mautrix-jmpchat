@@ -54,11 +54,21 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandListUsers)
 		proc.AddHandler(CommandListLogins)
 		proc.AddHandler(CommandSetContactName)
+		proc.AddHandler(CommandAddToRoster)
+		proc.AddHandler(CommandRemoveFromRoster)
+		proc.AddHandler(CommandSearchRoster)
+		proc.AddHandler(CommandSyncRoster)
+		proc.AddHandler(CommandAvatarProbe)
+		proc.AddHandler(CommandCardDAVLogin)
+		proc.AddHandler(CommandCardDAVLogout)
+		proc.AddHandler(CommandCardDAVStatus)
+		proc.AddHandler(CommandCardDAVSync)
 		proc.AddHandler(CommandAutoRename)
 		proc.AddHandler(matrixbridge.CommandDiscardMegolmSession)
 		proc.AddHandler(CommandMatrixEncryptionResync)
 		proc.AddHandler(CommandMatrixEncryptionReset)
 		proc.AddHandler(CommandJoinRoom)
+		proc.AddHandler(CommandMUCNick)
 		proc.AddHandler(CommandListDiscoveredRooms)
 		proc.AddHandler(CommandListRooms)
 		proc.AddHandler(CommandListUnnamedContacts)
@@ -171,7 +181,10 @@ func (c *MyConnector) CreateLogin(ctx context.Context, user *bridgev2.User, flow
 // GetConfig implements bridgev2.NetworkConnector.
 func (c *MyConnector) GetConfig() (string, any, configupgrade.Upgrader) {
 	if c.config == nil {
-		c.config = &SimpleConfig{ContactNameSuffix: defaultContactNameSuffix}
+		c.config = &SimpleConfig{
+			ContactNameSuffix: defaultContactNameSuffix,
+			CardDAV:           CardDAVConfig{DefaultCountryCode: defaultCardDAVCountryCode},
+		}
 	}
 	return "simple-config.yaml", c.config, nil
 }

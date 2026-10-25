@@ -252,7 +252,12 @@ func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 		XMPPOriginID{ID: stanzaID},
 	)
 	if msgType == stanza.MessageTypeChat {
-		m.Extensions = append(m.Extensions, XMPPReceipt{}, XMPPMarker{})
+		if nc.simpleConfig().sendDeliveryReceiptsEnabled() {
+			m.Extensions = append(m.Extensions, XMPPReceipt{})
+		}
+		if nc.simpleConfig().sendReadMarkersEnabled() {
+			m.Extensions = append(m.Extensions, XMPPMarker{})
+		}
 	}
 	if err := nc.sendXMPP(m); err != nil {
 		return fmt.Errorf("failed to send XMPP correction: %w", err)

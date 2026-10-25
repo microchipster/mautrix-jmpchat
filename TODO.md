@@ -174,34 +174,27 @@ Each item must keep our SPDX headers, test style, and terse management-room UX.
 
 ### WS2 - MUC robustness
 
-- **WS2.1 Join health watchdog** — confirm joins (timeout 60 s), retry with 30 s -> 10 min backoff, notice after repeated failures, XEP-0410 self-ping every 15 min.
-  - Reference: `muc_join_health.go`.
-- **WS2.2 Nick management** — precedence explicit `muc-nick` > bookmark nick > remembered 409 alternative > `muc-nick-default` > login localpart; on conflicts try `base_1.._3`, remember working alternative, notices; `muc-nick` command changes nick at once; failed explicit change reverts room display name.
-  - Reference: `muc_nick_change.go`, `muc_nick_conflict.go`.
-- **WS2.3 Nick sync** — room display name <-> MUC nick, Matrix->XMPP debounced 3 s, XMPP->Matrix via double puppet member displayname, echo detection.
-  - Reference: `muc_nick_sync.go`; toggle `muc_nick_sync`.
-- **WS2.4 Auto-rejoin on connect** — budget (<=200 rooms/connect), stagger (3 s + 500 ms), history since newest bridged message (<=7 d/100 stanzas else 20), skip Cheogram/left/DM portals.
-  - Reference: `muc_autorejoin.go`.
-- **WS2.5 Bookmarks XEP-0402 pipeline** — capability gate; read-modify-write only from explicit join/leave (`leave` keeps bookmark with autojoin off); merge preserves name/password/extensions and never overwrites a non-empty nick; live PEP events worker (autojoin on -> join/import, off/retract -> leave + mark-left + notice); connect-time import budget (50/session) + notices; one-time backfill for already-bridged rooms; `bookmarks-sync [push]` command. Optional: read-only XEP-0049 legacy import for servers without PEP.
-  - Reference: `xep0402_*.go`.
-- **WS2.6 MUC invites** — XEP-0045 mediated/XEP-0249 direct invite -> native Matrix invite; notice in the new room with inviter + reason; accepting joins, ignoring does nothing, bridge never auto-joins; invite password used for that join (memory only); rate-limit (10/hour).
-  - Reference: `xmpp_invite.go`, their README Status.
-- **WS2.7 Room topic/subject** — live subject changes update Matrix topic (bot-posted), subject-else-description rule on resync, subject-less clears topic; verify disco#info `muc#roominfo` parsing (their open item 3.5).
-  - Reference: `muc_presence.go`, their README Status.
-- **WS2.8 Group text model validation (design divergence)** — verify against the live gateway whether the correct outbound model is our MUC join + `type=groupchat` or their DM-portal `type=chat` to the combined comma JID (Cheogram Android itself treats group text as a plain contact and never joins a MUC). Their attribution ladder for inbound group MMS: stanza resource -> `<xmpp:JID>` body prefix -> first participant, reused for MAM. Decide: keep MUC, switch to chat-type, or hybrid; document.
+- **WS2.1 Join health watchdog** — done (phase 1, `connector/xmpp_muc_health.go`): joins confirmed via self-presence, retry backoff 30 s -> 10 min, management notice after 5 failed attempts, XEP-0410 self-ping (IQ get to our occupant JID) every 15 min with auto-rejoin on failure. Remaining: verify behaviour against a live room that rejects joins outright.
+- **WS2.2 Nick management** — done (phase 1, `connector/xmpp_muc_nick.go` + `muc-nick` command): precedence explicit `muc-nick` override (persisted in `LoginMetadata.MUCNickOverrides`) > bookmark nick > default localpart; on 409 conflicts try `base_1.._3`, remember the working alternative, management notices; `muc-nick <room> [<nick>|--clear]` changes the nick at once. Remaining (phase 2): `muc-nick-default` command, revert room display name on failed explicit change.
+- **WS2.3 Nick sync** — deferred to phase 2: needs a Matrix room-name change handler plus 3 s debounce and echo-detection maps; planned toggle `muc_nick_sync`.
+- **WS2.4 Auto-rejoin on connect** — done (phase 1): `scheduleMUCAutoRejoin` in `connector/xmpp_muc_health.go` runs after both connect hooks, skips left/already-joined rooms, caps at 200 rooms per connect with 3 s delay + 500 ms stagger. Remaining: history-since-newest-bridged-message refinement for rejoins.
+- **WS2.5 Bookmarks XEP-0402 pipeline** — done (phase 1, live PEP events in `connector/xmpp_bookmarks_pep.go`): autojoin on -> join/import via `handleBookmarkConferences(..., "bookmarks2_event")`; off/retract -> `leaveMUC` + bookmark state cleanup. Remaining (phase 2): publish-options capability gating, read-modify-write merge (preserve name/password/extensions, never overwrite a non-empty nick), connect-time import budget + notices, one-time backfill for already-bridged rooms, `bookmarks-sync [push]` command, optional read-only XEP-0049 legacy import.
+- **WS2.6 MUC invites** — deferred to phase 2: native Matrix invite flow (notice with inviter + reason, accepting joins, bridge never auto-joins, password memory, 10/hour rate limit).
+- **WS2.7 Room topic/subject** — done (phase 1, `connector/xmpp_muc.go`): subject-only groupchat stanzas update the Matrix room topic via `ChatInfoChange` (`extractMUCSubject` / `handleIncomingMUCSubject`). Remaining: disco#info `muc#roominfo` name/description on resync and subject-less clears topic.
+- **WS2.8 Group text model validation (design divergence)** — open: verify against the live gateway whether the correct outbound model is our MUC join + `type=groupchat` or their DM-portal `type=chat` to the combined comma JID (Cheogram Android itself treats group text as a plain contact and never joins a MUC). Their attribution ladder for inbound group MMS: stanza resource -> `<xmpp:JID>` body prefix -> first participant, reused for MAM. Decide: keep MUC, switch to chat-type, or hybrid; document.
   - Reference: `cheogram.go`, `xmpp_inbound.go:889-909`, `xmpp_client.go:2107-2115`.
 
 ### WS3 - Identity and contacts
 
-- **WS3.1 vcard-temp avatars (1:1)** — fetch via XEP-0054, presence-hash trigger (XEP-0153), 24 h refresh, <=1 MiB, png/jpeg/gif/webp only, stable `AvatarID` so unchanged avatars are not re-uploaded, permanent errors stamped; no avatars for Cheogram phone numbers.
+- **WS3.1 vcard-temp avatars (1:1)** — done phase 1 in `connector/xmpp_avatar.go` + tests in `connector/xmpp_avatar_test.go`: XEP-0153 presence photo-hash trigger, XEP-0054 vCard fetch (IQ get, base64 `BINVAL`, ≤1 MiB, png/jpeg/gif/webp only, `http.DetectContentType`), upload + re-upload dedupe via `bridgev2.Avatar`/`ghost.UpdateInfo`, stable `AvatarID` (`vcard:<hash>`) and last-hash cached in `GhostMetadata.AvatarHash` so unchanged avatars are not re-fetched. Cheogram phone numbers are skipped. Remaining phase 2: 24 h periodic refresh when the contact stays online without re-announcing, permanent stanza-error stamping.
   - Reference: `xep0054.go`, `avatar_probe.go`.
-- **WS3.2 MUC occupant avatars** — paced worker (4/s), caps (occupants/queue/MXC cache), contact-rule: reuse the 1:1 ghost's uploaded MXC instead of re-fetching; room-refusal breaker.
+- **WS3.2 MUC occupant avatars** — done phase 1: occupants with a real bare JID (non-anonymous rooms) reuse the 1:1 XEP-0153/vcard flow in `connector/xmpp_avatar.go`, hooked from the MUC presence branch in `connector/network_client.go`, so they share the ghost's uploaded avatar. Remaining phase 2: anonymous rooms via XEP-0084 occupant probing, paced worker (4/s), caps (occupants/queue/MXC cache), room-refusal breaker.
   - Reference: `xep0054_muc.go`.
-- **WS3.3 Avatar diagnostic** — `avatar-probe` command reporting vcard-temp/XEP-0084/disco results with timings.
+- **WS3.3 Avatar diagnostic** — done phase 1: `avatar-probe` command in `connector/xmpp_avatar_probe.go` reports vcard-temp (bytes/mime/timing), XEP-0084 metadata (id/bytes/dimensions), and disco#info avatar features with timings; tests in `connector/xmpp_avatar_probe_test.go`. Remaining phase 2: fetch/consume XEP-0084 data payloads as an avatar fallback.
   - Reference: `avatar_probe_command.go`.
-- **WS3.4 Roster management commands** — `add-to-roster`, `save-contact`, `remove-from-roster`, `search-roster`, `sync-roster` (refreshing ghost + room names); keep existing `list-users`/`list-contacts`/`list-contacted`/`list-unnamed-contacts`.
+- **WS3.4 Roster management commands** — done phase 1 in `connector/xmpp_roster_manage.go` + `connector/commands.go`: `add-to-roster` (alias `save-contact`) with optional display name (routes through `normalizeContactName` + `updateRosterContactName` + auto-named room refresh), `remove-from-roster`, `search-roster <query>` (case-insensitive over JIDs and resolved names), `sync-roster` (requests roster refresh). Tests in `connector/xmpp_roster_manage_test.go`. Remaining phase 2: `save-contact` should also write the server vCard, bulk mode.
   - Reference: `roster_contacts.go`, `save_contact.go`, `main.go:220-333`.
-- **WS3.5 CardDAV import** — commands `carddav-login`/`-logout`/`-status`/`-sync [apply]`; config `carddav.{allow_insecure_http,allow_private_hosts,default_country_code}`; read vCards TEL, add `+E164@cheogram.com` roster entries; limits (5000 contacts/sync, 500 adds/run, 5 adds/s, 32 MiB); SSRF guard incl. CGNAT; credentials in login Extra only.
+- **WS3.5 CardDAV import** — done phase 1 in `connector/carddav.go` + `connector/carddav_commands.go` + tests: commands `carddav-login <url> <user> <pass>`, `-logout`, `-status`, `-sync [apply]` (dry run by default); config `carddav.{allow_insecure_http,allow_private_hosts,default_country_code}`; fetch + parse vCards (FN, TEL incl. Apple `item1.TEL`, folded lines, 32 MiB cap), E.164 normalization (`tel:`, `00`, country code, formatting), add `+E164@cheogram.com` straight to the XMPP roster (`setRosterItemCore`, 500 adds/run, 200ms pacing), names flow into ghosts/room names via roster import; SSRF guard incl. CGNAT; credentials in login metadata only. Remaining phase 2: PROPFIND/REPORT addressbook discovery (phase 1 expects a direct `.vcf` export URL), multi-addressbook, tombstones for deliberately removed entries, CardDAV-name source (`CardDAVName`, per WS3.5a), SRV discovery, `phone.Normalize` parity cases, bulk mode.
   - Follow-ups: DNS SRV discovery, tombstones for deliberately removed roster entries, `phone.Normalize` (fixes `15551234567` -> `+115551234567` and rejected `(555) 123-4567`, honours country code), bulk roster mode.
   - Reference: `carddav_*.go`.
 - **WS3.5a Contact names, CardDAV takeover, and naming workflow (design locked)** — one resolver used by ghost info, DM room names and group initials, with strict source precedence: explicit `set-contact-name` > CardDAV (when configured and synced) > XMPP roster name > live ghost name > JID/phone label. Sources are stored separately (`GhostMetadata.CustomName` / new `CardDAVName` / `RemoteName`) so no flow ever overwrites another and clearing one falls back cleanly.
@@ -212,35 +205,35 @@ Each item must keep our SPDX headers, test style, and terse management-room UX.
   - UX rules: never silently overwrite explicit names; CardDAV renames only auto-named rooms (custom names untouched unless `--force-names`); one summary notice per sync; conflicts logged with both values and the winning source.
   - Migration: first CardDAV apply renames existing auto-named rooms; `--clear`/`carddav-clear` restores the previous precedence chain. Self is never injected into group initials; if the gateway lists your own number in a group JID it is named like any other participant.
   - Reference: `carddav_*.go`, `save_contact.go`, `naming.go`.
-- **WS3.6 Roster isolation** — roster commands and roster-derived data (ghost display names, DM/portal names) strictly isolated per bridged JID (login) and per Matrix user; no cross-account leakage/mixups when multiple accounts are bridged.
+- **WS3.6 Roster isolation** — audited phase 1: every roster-derived refresh path is already login-scoped (`refreshRosterNamedPortals`, `refreshAutoNamedPortalsMatching`, `refreshContactNamedPortals` all iterate `DB.UserPortal.GetAllForLogin(login.UserLogin)`), and all roster/cache state lives on the per-login `MyNetworkClient`. Caveat (phase 2): bridgev2 ghosts are network-global (`MakeUserID(jid)` has no receiver), so when the bridge runs multiple logins that see the same contact, the most recent roster/presence name write wins until per-login ghost IDs are designed (breaking change, needs migration).
   - Reference: their ROADMAP 2.1b / To-do #6.
-- **WS3.7 Presence/last-active** (also `#14`) — low priority; decide privacy defaults before any presence sync.
+- **WS3.7 Presence/last-active** (also `#14`) — deferred by design for now (privacy first): XMPP presence is consumed internally (MUC joins, avatar hash triggers) but never bridged to Matrix, and we do not publish Matrix presence back. Revisit only if there is a concrete user request and a privacy story.
 
 ### WS4 - Operations and reliability
 
-- **WS4.1 OpenTelemetry** — env-only activation (`OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP[_TRACES]_ENDPOINT`), protocol http/protobuf default; per-command spans, no argument capture; optional backends (e.g. Datadog) via standard env.
+- **WS4.1 OpenTelemetry** — deferred phase 2: requires new OpenTelemetry dependencies the bridge does not currently vendor. Design stays env-only activation (`OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP[_TRACES]_ENDPOINT`), protocol http/protobuf default; per-command spans, no argument capture; optional backends (e.g. Datadog) via standard env. Revisit when dependency additions are acceptable.
   - Reference: `pkg/telemetry/`, `main.go:34-56`.
-- **WS4.2 Multi-account UX** — `login password-server` flow (server as `host`, `host:port`, `tls://host:port`, `auto`); optional leading login JID on commands (never another user's login; never consume an argument that would leave the command short); "used account X" notice.
+- **WS4.2 Multi-account UX** — phase 1 done: `selectCommandLogin` (`connector/command_login.go`) lets chat commands (`start-chat`/`create`, `join-room`, `muc-nick`) take an optional leading login JID/name matching one of the user's logins, never consuming an argument the command needs; tests in `connector/command_login_test.go`. Remaining phase 2: `login password-server` flow (server as `host`, `host:port`, `tls://host:port`, `auto`) and the "used account X" notice.
   - Reference: `command_login.go`, `commands_login.go`.
-- **WS4.3 Connection hardening** — SRV lookup (`_xmpps-client`, `_xmpp-client`) + XEP-0368 direct TLS; per-login server override; certificate always verified against JID domain; private/loopback SRV/override targets need `network.allow_private_server_override` (SSRF guard incl. CGNAT).
+- **WS4.3 Connection hardening** — deferred phase 2: SRV lookup (`_xmpps-client`, `_xmpp-client`) + XEP-0368 direct TLS, per-login server override, with `network.allow_private_server_override` SSRF guard (incl. CGNAT; servername always verified against the JID domain). Needs a login-flow/config surface change; current dial behaviour unchanged.
   - Reference: `xmpp_dial.go`, `connector.go:26-42`.
-- **WS4.4 Keepalive and connection health** — idle ping after 90 s, 2 missed closes; self-ping own full JID every 3 min; answer server XEP-0199 pings (already); reconnect backoff 5 s -> x2 -> 5 min; short sessions keep and double backoff; auth failures -> permanent `bad_credentials` + management-room notice + stop until re-login.
+- **WS4.4 Keepalive and connection health** — phase 1 done: XEP-0199 runtime health ping every minute with 2 consecutive failures forcing reconnect (`startRuntimeHealth`/`RuntimeHealth`), XEP-0199 server pings answered, reconnect backoff 5 s doubling to 5 min, auth failures set permanent `bad_credentials` and wait for new credentials. Remaining phase 2: idle-only ping (90 s idle) and 3-minute self-ping of the own occupant JID.
   - Reference: `xmpp_conn_health.go`.
-- **WS4.5 XEP-0198 stream management** (deferred) — resume + re-send unacknowledged messages after short disconnects; today a message sent right before a drop can be lost silently.
-- **WS4.6 MAM catch-up and backfill** — archive-wide catch-up (single query per cycle with RSM `after` last seen id, routed by peer; O(1) IQs regardless of roster size) to close the Cheogram-number gap; newer-message ordering: cache the triggering message and queue it after backfill; make backfill window configurable (`backfill.history_days`); keep on-view backfill with cooldown.
+- **WS4.5 XEP-0198 stream management** — phase 1 present via patched-xmpp: stream resume is negotiated and used (`xmpp.IsStreamResumable`, resume-mode reconnect in `handleDisconnect`), and outbound sends are tracked with ack timeouts (`trackOutboundSend`/`scanPendingSendTimeouts`). Remaining phase 2: re-send unacknowledged pending messages when resume fails.
+- **WS4.6 MAM catch-up and backfill** — phase 1 present: automatic DM and MUC catch-up triggers after every connect (`triggerAutomaticDMCatchup`/`triggerAutomaticMUCCatchup`, `connector/history_sync.go`), on-demand backfill windows, and stale-history rejoin fallback. Remaining phase 2: archive-wide single-query catch-up (RSM `after` last-seen id, routed by peer; O(1) IQs regardless of roster size) to close the Cheogram-number gap, and configurable `backfill.history_days`.
   - Reference: `xmpp_mam.go`, their To-do #8, ROADMAP "Backfill message ordering".
-- **WS4.7 Config surface and polish** — wire or remove `default_server`/`default_port`/`resource_prefix`; add tuning keys for dial timeouts/backoff/MAM interval if operators need them; keep toggles `send_typing`, `send_read_markers`, `send_delivery_receipts`, `muc_read_markers`, `muc_nick_sync`; strip credentials/JIDs from logs; document E2BE build (`goolm`) and encryption config.
+- **WS4.7 Config surface and polish** — phase 1 done: signal toggles `send_typing`, `send_read_markers`, `send_delivery_receipts` are wired through `SimpleConfig` (*bool, default enabled; `connector/naming.go`) and gate outbound chat states (`connector/xmpp_typing.go`) and receipt/marker extensions (`connector/handle_matrix.go`, `connector/xmpp_corrections.go`); tests in `connector/xmpp_signal_toggles_test.go`. Remaining phase 2: wire or remove `default_server`/`default_port`/`resource_prefix`; add tuning keys for dial timeouts/backoff/MAM interval if operators need them; keep `muc_read_markers`/`muc_nick_sync` toggles in mind for WS2.3; strip credentials/JIDs from logs; document E2BE build (`goolm`) and encryption config.
   - Reference: their CODE_OPTIMIZATION.md CFG-1..CFG-4, F-2, C-1.
 
 ### WS5 - Calls
 
-- **WS5.1 SIP/MatrixRTC integration** — use `mrtc-sip-bridge` (their dependency, v0.3.0) behind a build tag; config `network.calls.enabled` + inline hostkit; per-login SIP account lifecycle; call host rings inside the Cheogram portal; requires `network.cheogram` and unencrypted portals.
+- **WS5.1 SIP/MatrixRTC integration** — deferred phase 2 (opt-in by design): use `mrtc-sip-bridge` behind a build tag; config `network.calls.enabled` + inline hostkit; per-login SIP account lifecycle; call host rings inside the Cheogram portal; requires `network.cheogram` and unencrypted portals. Enable only when a SIP account exists and there is real testing capacity (JMP/Snikket hosting alone is not enough).
   - Reference: `sipcalls*.go`, `sipcalls_host.go`.
-- **WS5.2 JMI notices** — XEP-0353 propose/retract/accept/reject/finish -> deterministic `m.notice` (`📞`/`📹`/`📴`, id `jmi:<sid>:<action>`) in the DM; works even without the calls build tag.
+- **WS5.2 JMI notices** — done: XEP-0353 propose/retract/accept/reject/finish (plus ringing/proceed) are bridged as deterministic `m.notice` call-state messages in the DM (`connector/xmpp_call.go`: `extractXMPPCallEvent`, session state machine, `formatCallNoticeForParty`), works without a calls build tag; ids are `call-<action>-<session>`/XMPP message ids rather than the reference bridge's `jmi:<sid>:<action>`.
   - Reference: `xmpp_jingle.go`.
-- **WS5.3 Dialpad surface** — `sip-login`/`-logout`/`-status`, `roster-only-calls`, `call`/`hangup`/`dtmf`/`widget`/`dialpad-link(s)`/`revoke`; dialpad can open chats and save contacts; call history follow-up.
+- **WS5.3 Dialpad surface** — deferred phase 2 (depends on WS5.1): `sip-login`/`-logout`/`-status`, `roster-only-calls`, `call`/`hangup`/`dtmf`/`widget`/`dialpad-link(s)`/`revoke`; dialpad can open chats and save contacts; call history follow-up.
   - Reference: `sipcalls_commands.go`, `sipcalls_widget*.go`; our `docs/CALL_BRIDGING_PLAN.md`, `docs/RUST_CHEOGRAM_CALL_CLIENT_SPEC.md`.
-- **WS5.4 Ports/docs** — publish SIP/RTP ports in container/docs; update playbook role config accordingly.
+- **WS5.4 Ports/docs** — deferred phase 2 with WS5.1: publish SIP/RTP ports in container/docs; update playbook role config accordingly.
 
 ## P1 - important phone-network polish
 
@@ -256,6 +249,8 @@ Backlog:
 - map Matrix typing notifications to XMPP chat states
 - parse inbound `composing`/`paused`/`active` chat states into Matrix typing events
 
+Status: done (WS1.1) — `connector/xmpp_typing.go` + tests, gated by `send_typing` config.
+
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xml/Namespace.java`
 - `connector/handle_matrix.go`
@@ -269,6 +264,8 @@ Why:
 Backlog:
 - parse location-style messages/URIs into Matrix location events or a stable fallback format
 - ensure outbound Matrix locations map to something useful on XMPP/gateway side
+
+Status: done phase 1 — `connector/xmpp_extras.go`: inbound `geo:` bodies become `m.location` events, outbound `m.location` sends the GeoURI as the message body (works through the gateway); richer outbound rendering may follow.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/ui/text/FixedURLSpan.java`
@@ -285,6 +282,8 @@ Backlog:
 - detect `cid:` / BOB-backed media and bridge it as Matrix media where practical
 - decide how stickers should map to Matrix sticker or image events
 - preserve custom emoji/image reactions where feasible
+
+Status: open (phase 2) — no `cid:`/BOB/inline-image degradation yet; sticker mapping still undecided. Related: P0 `#6` custom emoji/image reaction degradation.
 
 Evidence:
 - `cheogram-android/src/cheogram/java/com/cheogram/android/BobTransfer.java`
@@ -303,6 +302,8 @@ Backlog:
 - add retract/delete mapping for `urn:xmpp:message-retract:*`
 - decide how to represent moderated/deleted XMPP messages on Matrix
 
+Status: done (WS1.2/WS1.3) — `connector/xmpp_corrections.go`: outbound XEP-0308 corrections (Cheogram edits are sent as fresh `* ` messages), inbound corrections and XEP-0424/0425 retractions, SMS/MMS unsend attempts surface as a notice. Remaining phase 2: replay tombstone table, moderation authority checks, 3s MUC echo wait.
+
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/parser/MessageParser.java`
 - `cheogram-android/src/main/java/eu/siacs/conversations/ui/ConversationFragment.java`
@@ -318,6 +319,8 @@ Backlog:
 - formalize behavior for direct invites, mediated invites, and unknown senders
 - optionally expose a bridge setting/command for stranger invites
 
+Status: deferred (phase 2, see WS2.6) — direct/mediated invites currently bridge as messages; native Matrix invite flow with a rate limit is planned.
+
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/parser/MessageParser.java`
 - `cheogram-android/CHANGELOG.md`
@@ -332,6 +335,8 @@ Why:
 Backlog:
 - detect service-outage-status notifications
 - surface them in bridge status / management room notices
+
+Status: done phase 1 — `connector/xmpp_extras.go` routes XMPP headline messages with status text (e.g. gateway outage notices) to the management room as "Service status from …" notices instead of bridging them as chats. Deeper account-level outage state detection remains phase 2.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/XmppConnection.java`
@@ -351,6 +356,8 @@ Backlog:
 - sync MUC/group avatars into portal rooms
 - fetch and map display names/profile metadata from XMPP profile sources
 
+Status: done phase 1 (WS3.1/WS3.2) — vcard-temp 1:1 avatars (`connector/xmpp_avatar.go`) plus occupant contact-rule reuse for non-anonymous rooms; `avatar-probe` diagnostic in `connector/xmpp_avatar_probe.go`. Remaining phase 2: anonymous-room occupant avatars (XEP-0084), periodic 24 h refresh, group/portal avatars.
+
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/manager/AvatarManager.java`
 - `cheogram-android/src/main/java/eu/siacs/conversations/ui/PublishProfilePictureActivity.java`
@@ -368,6 +375,8 @@ Backlog:
 - expose status text or last-seen-style information if available
 - decide privacy defaults for presence sync
 
+Status: deferred by design (WS3.7) — privacy-first: XMPP presence is consumed internally (MUC joins, avatar hash triggers) but never bridged to Matrix and no Matrix presence is published. Revisit only on concrete request with a privacy story.
+
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/services/XmppConnectionService.java`
 - `connector/network_client.go`
@@ -381,6 +390,8 @@ Backlog:
 - sync room subject/topic into Matrix room topic/name updates
 - preserve channel/private-group distinctions where possible
 - evaluate join rules, visibility, and invite semantics for public rooms
+
+Status: done phase 1 (WS2.7) — `handleIncomingMUCSubject`/`extractMUCSubject` turn subject-only groupchat stanzas into portal topic updates (`ChatInfoChange`). Remaining phase 2: disco#info room metadata on resync, clearing topics on empty subjects.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/manager/MultiUserChatManager.java`
@@ -396,6 +407,8 @@ Backlog:
 - sync bookmark add/remove/autojoin state
 - map Matrix room state or bridge commands to native XMPP bookmark operations
 - support native bookmark variants consistently
+
+Status: done phase 1 (WS2.5) — `connector/xmpp_bookmarks.go` publishes XEP-0402 bookmarks on group creation/join; `connector/xmpp_bookmarks_pep.go` applies live PEP events (autojoin on → join/import, off/retract → leave + cleanup); `requestBookmarks`/`requestBookmarks2` fetch XEP-0402 and legacy private storage. Remaining phase 2: read-modify-write merge, publish-options capability gating, XEP-0049 legacy import, `bookmarks-sync` push command.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/manager/BookmarkManager.java`

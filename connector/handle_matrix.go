@@ -110,6 +110,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 	} else {
 		body = strings.TrimSpace(msg.Content.Body)
+		if body == "" && msg.Content.MsgType == event.MsgLocation {
+			body = strings.TrimSpace(msg.Content.GeoURI)
+		}
 		if body == "" && msg.Content.FormattedBody != "" {
 			body = strings.TrimSpace(htmlToPlainText(msg.Content.FormattedBody))
 		}
@@ -128,7 +131,12 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	extensions = append(extensions, nc.xmppMentionReferences(msg.Content.Mentions)...)
 	m.Body = stanza.StringPtr(body)
 	if !isMUC {
-		extensions = append(extensions, XMPPReceipt{}, XMPPMarker{})
+		if nc.simpleConfig().sendDeliveryReceiptsEnabled() {
+			extensions = append(extensions, XMPPReceipt{})
+		}
+		if nc.simpleConfig().sendReadMarkersEnabled() {
+			extensions = append(extensions, XMPPMarker{})
+		}
 	}
 	m.Extensions = append(m.Extensions, extensions...)
 

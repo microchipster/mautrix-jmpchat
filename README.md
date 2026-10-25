@@ -26,10 +26,17 @@ The codebase currently includes bridge logic for:
 - XMPP login using a JMP/Cheogram JID and password
 - per-user XMPP connections through `gosrc.io/xmpp`, with local patches in `patched-xmpp/`
 - Matrix portal rooms for DMs and Cheogram-style group chats
+- native `bridgev2` provisioning: `create-group`/`resolve-identifier` and contact listing work from clients that use bridge provisioning APIs
 - roster fetches, bookmarks/discovery, and MUC joins
 - MAM-based history sync/backfill
 - management-room commands for chat creation, sync, discovery, blocking, and reporting spam
 - Matrix -> XMPP handling for messages, reactions, and read receipts
+- typing indicators (XEP-0085), message corrections (XEP-0308), retractions (XEP-0424/0425), and XEP-0372 mentions both ways
+- encrypted XMPP payloads (OMEMO/OpenPGP) degrade to a notice instead of being dropped
+- vcard-temp avatars (XEP-0054) with XEP-0153 triggers, plus an `avatar-probe` diagnostic
+- MUC robustness: join health watchdog with XEP-0410 self-pings, nickname conflict handling and `muc-nick`, auto-rejoin, live XEP-0402 bookmark events, and room subject -> Matrix topic
+- roster management commands and CardDAV contact import (`carddav-*`)
+- `geo:` location mapping and gateway service-status headlines routed to the management room
 
 This is still an active bridge implementation, not a finished polished product. When behavior differs from Cheogram Android, Cheogram is the reference.
 
@@ -106,6 +113,17 @@ When the bridge is running and a user has a management room, the quick-help text
 - `list-logins [--verbose]`
 - `list-users`
 - `set-name <jid> <name>`
+- `set-contact-name <jid> <name|--clear>`
+- `muc-nick <room JID> [<nickname>|--clear]`
+- `add-to-roster <jid> [name]` / `save-contact` (alias)
+- `remove-from-roster <jid>`
+- `search-roster <query>`
+- `sync-roster`
+- `carddav-login <addressbook URL> <username> <password>`
+- `carddav-logout`
+- `carddav-status`
+- `carddav-sync [apply]`
+- `avatar-probe <jid>`
 
 Recent bridge-specific additions include:
 
@@ -234,6 +252,15 @@ At minimum, you will need to review and set:
 The generated `registration.yaml` must match the appservice values in `config.yaml`.
 
 For JMP/Cheogram usage, users log in with their XMPP JID and password, for example `user@cheogram.com`.
+
+Optional `network` config keys (bridge-generated `simple-config.yaml` or the playbook role config):
+
+- `send_typing` (default `true`): allow Matrix typing notifications to become XMPP chat states.
+- `send_read_markers` (default `true`): send XMPP displayed markers for read Matrix messages.
+- `send_delivery_receipts` (default `true`): request/answer XEP-0184 delivery receipts for DMs.
+- `carddav.allow_insecure_http` (default `false`), `carddav.allow_private_hosts` (default `false`), `carddav.default_country_code` (default `1`): CardDAV import behavior; credentials are stored per login and only `carddav-sync apply` writes roster entries.
+
+Cheogram gateway chats (phone numbers, group texts) never receive typing/receipt signals, since the SMS/MMS gateway cannot carry them.
 
 ## Using With matrix-docker-ansible-deploy
 

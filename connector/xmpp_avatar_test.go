@@ -1,0 +1,117 @@
+// SPDX-FileCopyrightText: 2026 Slavi Pantaleev
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package connector
+
+import (
+	"encoding/xml"
+	"testing"
+
+	"gosrc.io/xmpp/stanza"
+)
+
+func TestXMPPVCardUpdatePresenceDecode(t *testing.T) {
+	t.Parallel()
+	var pres stanza.Presence
+	err := xml.Unmarshal([]byte(`<presence from="alice@example.com/res" type="available">`+
+		`<x xmlns="vcard-temp:x:update"><photo>abc123</photo></x>`+
+		`</presence>`), &pres)
+	if err != nil {
+		t.Fatalf("failed to decode presence: %v", err)
+	}
+	var update XMPPVCardUpdate
+	if !pres.Get(&update) {
+		t.Fatalf("expected vcard update extension to be found")
+	}
+	if update.Photo != "abc123" {
+		t.Errorf("photo hash = %q, want %q", update.Photo, "abc123")
+	}
+}
+
+func TestVCardPhotoDecode(t *testing.T) {
+	t.Parallel()
+	var iq stanza.IQ
+	err := xml.Unmarshal([]byte(`<iq type="result" from="alice@example.com" id="v1">`+
+		`<vCard xmlns="vcard-temp">`+
+		`<PHOTO><TYPE>image/png</TYPE><BINVAL>aGVsbG8=</BINVAL></PHOTO>`+
+		`</vCard>`+
+		`</iq>`), &iq)
+	if err != nil {
+		t.Fatalf("failed to decode IQ: %v", err)
+	}
+	vcard, ok := iq.Payload.(*vcardTemp)
+	if !ok || vcard == nil {
+		t.Fatalf("expected *vcardTemp payload, got %T", iq.Payload)
+	}
+	if vcard.Photo == nil {
+		t.Fatalf("expected PHOTO to be decoded")
+	}
+	if vcard.Photo.Type != "image/png" {
+		t.Errorf("photo type = %q, want image/png", vcard.Photo.Type)
+	}
+	if vcard.Photo.Binval != "aGVsbG8=" {
+		t.Errorf("photo binval = %q, want aGVsbG8=", vcard.Photo.Binval)
+	}
+	if vcard.Namespace() != NSVCardTemp {
+		t.Errorf("namespace = %q, want %q", vcard.Namespace(), NSVCardTemp)
+	}
+}
+
+func TestVCardWithoutPhotoDecode(t *testing.T) {
+	t.Parallel()
+	var iq stanza.IQ
+	err := xml.Unmarshal([]byte(`<iq type="result" from="alice@example.com" id="v2">`+
+		`<vCard xmlns="vcard-temp"><FN>Alice</FN></vCard>`+
+		`</iq>`), &iq)
+	if err != nil {
+		t.Fatalf("failed to decode IQ: %v", err)
+	}
+	vcard, ok := iq.Payload.(*vcardTemp)
+	if !ok || vcard == nil {
+		t.Fatalf("expected *vcardTemp payload, got %T", iq.Payload)
+	}
+	if vcard.Photo != nil {
+		t.Errorf("expected no PHOTO, got %+v", vcard.Photo)
+	}
+}
+
+func TestAllowedVCardAvatarMime(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{
+		"image/png":                true,
+		"image/jpeg":               true,
+		"image/gif":                true,
+		"image/webp":               true,
+		"image/svg+xml":            false,
+		"application/octet-stream": false,
+		"text/plain":               false,
+		"":                         false,
+	}
+	for mime, want := range tests {
+		if got := allowedVCardAvatarMime(mime); got != want {
+			t.Errorf("allowedVCardAvatarMime(%q) = %v, want %v", mime, got, want)
+		}
+	}
+}
+
+func TestHandleVCardUpdatePresenceGuards(t *testing.T) {
+	t.Parallel()
+	nc := &MyNetworkClient{}
+	var pres stanza.Presence
+	_ = xml.Unmarshal([]byte(`<presence from="+15550101100@cheogram.com/res">`+
+		`<x xmlns="vcard-temp:x:update"><photo>abc</photo></x>`+
+		`</presence>`), &pres)
+	// No bridge configured: must be a no-op, including for cheogram numbers.
+	nc.handleVCardUpdatePresence("+15550101100@cheogram.com", pres)
+	nc.handleVCardUpdatePresence("", pres)
+}
+
+func TestFetchVCardPhotoNotConnected(t *testing.T) {
+	t.Parallel()
+	nc := &MyNetworkClient{}
+	_, _, err := nc.fetchVCardPhoto(t.Context(), "alice@example.com")
+	if err == nil {
+		t.Fatalf("expected error when not connected")
+	}
+}

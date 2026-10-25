@@ -102,6 +102,13 @@ type MyNetworkClient struct {
 	mucMemberSnapshot            map[string]string
 	mucNick                      map[string]string
 	mucPasswords                 map[string]string
+	mucLeft                      map[string]bool
+	mucNickAltIndex              map[string]int
+	mucNickPendingAlt            map[string]string
+	mucNickAltMu                 sync.Mutex
+	mucHealth                    map[string]*mucJoinHealthState
+	mucHealthStarted             bool
+	mucHealthMu                  sync.Mutex
 	mucPendingCreate             map[string]pendingMUCCreation
 	mucBackfillPending           map[string]time.Time
 	mucBackfillMu                sync.Mutex
@@ -159,7 +166,7 @@ const defaultMAMLookback = 30 * 24 * time.Hour
 
 const (
 	xmppReconnectInitialBackoff = 5 * time.Second
-	xmppReconnectMaxBackoff     = 2 * time.Minute
+	xmppReconnectMaxBackoff     = 5 * time.Minute
 	xmppHealthCheckInterval     = time.Minute
 )
 
@@ -591,7 +598,7 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 
 func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	if nickname == "" {
-		nickname = nc.defaultMUCNick()
+		nickname = nc.mucNickForRoom(roomJID, "")
 	}
 	fullJID := roomJID + "/" + nickname
 
@@ -648,6 +655,7 @@ func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
 	}
 
 	nc.log.Info().Str("room_jid", roomJID).Str("nick", nickname).Msg("Sent MUC join presence")
+	nc.noteMUCJoinAttempt(roomJID)
 	nc.maybeStartPendingMUCBackfill(roomJID)
 }
 
@@ -948,10 +956,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		}
 		nc.recordMUCBookmarkPortal(string(portalID))
 
-		nick := strings.TrimSpace(conf.Nick)
-		if nick == "" {
-			nick = nc.defaultMUCNick()
-		}
+		nick := nc.mucNickForRoom(roomJID, conf.Nick)
 		shouldJoin := conf.AutojoinEnabled()
 		if !shouldJoin && nc.log.GetLevel() <= zerolog.DebugLevel {
 			nc.log.Debug().Str("room_jid", roomJID).Str("source", source).Msg("Skipping bookmark join because autojoin is disabled")
@@ -1619,6 +1624,8 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		}
 		nc.triggerAutomaticDMCatchup()
 		nc.triggerAutomaticMUCCatchup()
+		nc.startMUCHealthLoop()
+		nc.scheduleMUCAutoRejoin()
 
 		// Initial Presence is sent automatically by the library
 
@@ -1665,6 +1672,8 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.sendBridgeState(status.StateConnected, "Reconnected to XMPP server", 0)
 		nc.triggerAutomaticDMCatchup()
 		nc.triggerAutomaticMUCCatchup()
+		nc.startMUCHealthLoop()
+		nc.scheduleMUCAutoRejoin()
 		return nil
 	}
 
@@ -2250,6 +2259,10 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 			if parts := strings.SplitN(pres.From, "/", 2); len(parts) == 2 {
 				resource = parts[1]
 			}
+			if pres.Type == stanza.PresenceTypeError {
+				nc.handleMUCPresenceError(bareFrom, resource, pres)
+				return
+			}
 			var mucUser MUCUserInvite
 			hasMUCUser := pres.Get(&mucUser)
 			isSelfPresence := nc.isSelfMUCPresence(bareFrom, resource, func() *MUCUserInvite {
@@ -2263,6 +2276,8 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 					nc.mucJoined = map[string]bool{}
 				}
 				nc.mucJoined[bareFrom] = true
+				nc.markMUCJoined(bareFrom)
+				nc.confirmMUCNick(bareFrom, resource)
 				nc.maybeStartPendingMUCBackfill(bareFrom)
 				if pending, ok := nc.popPendingMUCCreation(bareFrom); ok {
 					go func(roomJID string, pending pendingMUCCreation) {
@@ -2277,8 +2292,8 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 						}
 					}(bareFrom, pending)
 				}
-			} else if pres.Type == stanza.PresenceTypeUnavailable && isSelfPresence && nc.mucJoined != nil {
-				delete(nc.mucJoined, bareFrom)
+			} else if pres.Type == stanza.PresenceTypeUnavailable && isSelfPresence {
+				nc.markMUCUnjoined(bareFrom)
 			}
 			if nc.mucOccupants == nil {
 				nc.mucOccupants = map[string]map[string]string{}
@@ -2314,6 +2329,12 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 						}
 					}
 					applyMUCOccupantPresence(occupants, pres.From, memberJID, false)
+					// Contact rule: when the occupant maps to a real bare JID
+					// (non-anonymous room), reuse the 1:1 avatar flow so the
+					// ghost shares the same uploaded avatar.
+					if memberJID != "" && !strings.Contains(memberJID, "/") {
+						nc.handleVCardUpdatePresence(memberJID, pres)
+					}
 				}
 			}
 
@@ -2349,6 +2370,9 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 			}
 			nc.bridge.QueueRemoteEvent(nc.login, change)
 		}
+	}
+	if bareFrom != "" {
+		nc.handleVCardUpdatePresence(bareFrom, pres)
 	}
 }
 
@@ -2938,6 +2962,13 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		return
 	}
 
+	if nc.handleBookmarkPEP(msg) {
+		return
+	}
+	if nc.handleIncomingHeadlineMessage(msg, bareFromJid) {
+		return
+	}
+
 	isMUC := msg.Type == stanza.MessageTypeGroupchat
 	// Always treat multi-recipient numbers on Cheogram as MUCs even if typed as chat
 	if strings.Contains(bareFromJid, ",") && strings.HasSuffix(bareFromJid, "@cheogram.com") {
@@ -2947,6 +2978,9 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	nc.respondToIncomingXMPPReceipt(msg, isFromMe, fromMAM)
 	_ = nc.handleIncomingXMPPReceipt(msg, timestamp, bareFromJid, isMUC, isFromMe)
 	if nc.handleIncomingXMPPTyping(msg, bareFromJid, isMUC, isFromMe, fromMAM) {
+		return
+	}
+	if isMUC && nc.handleIncomingMUCSubject(msg, bareFromJid) {
 		return
 	}
 	var delayStamp string
@@ -3240,6 +3274,12 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			content := &event.MessageEventContent{
 				MsgType: msgType,
 				Body:    body,
+			}
+			if content.MsgType == event.MsgText {
+				if geo := normalizeGeoURI(body); geo != "" {
+					content.MsgType = event.MsgLocation
+					content.GeoURI = geo
+				}
 			}
 			if mediaURL != "" || encryptedFile != nil {
 				if body == "" && fileName != "" {

@@ -227,7 +227,7 @@ func formatPingStatus(login *bridgev2.UserLogin, state loginBridgeStateSummaryRe
 
 var CommandStartChat = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
-		login := ce.User.GetDefaultLogin()
+		login, args := selectCommandLogin(ce)
 		if login == nil {
 			ce.Reply("No login found")
 			return
@@ -237,13 +237,12 @@ var CommandStartChat = &commands.FullHandler{
 			ce.Reply("Network client not available")
 			return
 		}
-		if len(ce.Args) == 0 {
+		if len(args) == 0 {
 			ce.Reply("Usage: create <phone or JID> [<phone or JID> ...]")
 			return
 		}
 
 		name := ""
-		args := ce.Args
 		if len(args) >= 2 && args[0] == "--name" {
 			name = args[1]
 			args = args[2:]
@@ -645,7 +644,7 @@ var CommandReportContact = &commands.FullHandler{
 
 var CommandJoinRoom = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
-		login := ce.User.GetDefaultLogin()
+		login, args := selectCommandLogin(ce)
 		if login == nil {
 			ce.Reply("No login found")
 			return
@@ -655,7 +654,7 @@ var CommandJoinRoom = &commands.FullHandler{
 			ce.Reply("Network client not available")
 			return
 		}
-		roomJID, full, lookback, err := parseJoinRoomArgs(ce.Args)
+		roomJID, full, lookback, err := parseJoinRoomArgs(args)
 		if err != nil {
 			ce.Reply("%v", err)
 			return
@@ -692,6 +691,58 @@ var CommandJoinRoom = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Join a room by JID and backfill (use: join-room <room_jid> [full|<duration>]). Example: join-room +15550102100,+15550102200,+15550102300@cheogram.com",
+	},
+	RequiresLogin: true,
+}
+
+var CommandMUCNick = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login, args := selectCommandLogin(ce)
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if len(args) == 0 {
+			ce.Reply("Usage: muc-nick <room JID> <nickname>\nUse `muc-nick <room JID> --clear` to go back to the default nickname.")
+			return
+		}
+		roomJID := CanonicalBareJID(UnescapeJID(strings.TrimSpace(args[0])))
+		if roomJID == "" || !strings.Contains(roomJID, "@") {
+			ce.Reply("Please provide a room JID, e.g. `room@conference.example.com`.")
+			return
+		}
+		if len(args) >= 2 && args[1] == "--clear" {
+			if err := client.setMUCNickOverride(ce.Ctx, roomJID, ""); err != nil {
+				ce.Reply("Failed to clear the nickname override: %v", err)
+				return
+			}
+			nick := client.defaultMUCNick()
+			client.sendMUCNickChange(roomJID, nick)
+			ce.Reply("Cleared the nickname override for %s; using `%s`.", roomJID, nick)
+			return
+		}
+		nick := strings.Join(args[1:], " ")
+		nick = strings.Join(strings.Fields(nick), "")
+		if nick == "" {
+			ce.Reply("Please provide a nickname (or use `--clear`).")
+			return
+		}
+		if err := client.setMUCNickOverride(ce.Ctx, roomJID, nick); err != nil {
+			ce.Reply("Failed to save the nickname override: %v", err)
+			return
+		}
+		client.sendMUCNickChange(roomJID, nick)
+		ce.Reply("Room %s will now use the nickname `%s`.", roomJID, nick)
+	},
+	Name: "muc-nick",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Set the nickname used in a MUC room (use: muc-nick <room_jid> [<nickname>|--clear])",
 	},
 	RequiresLogin: true,
 }
@@ -1109,6 +1160,141 @@ var CommandSetContactName = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Set a custom display name for a user (--clear removes it)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandAddToRoster = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		if len(ce.Args) == 0 {
+			ce.Reply("Usage: add-to-roster <phone or JID> [display name]")
+			return
+		}
+		jid := normalizeJID(ce.Args[0])
+		if jid == "" {
+			ce.Reply("Invalid JID")
+			return
+		}
+		name := normalizeContactName(strings.Join(ce.Args[1:], " "))
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if err := client.setRosterItem(ce.Ctx, jid, name); err != nil {
+			ce.Reply("Failed to update roster entry for %s: %v", jid, err)
+			return
+		}
+		if name == "" {
+			ce.Reply("Added %s to the roster", jid)
+		} else {
+			ce.Reply("Added %s to the roster as %s", jid, name)
+		}
+	},
+	Name:    "add-to-roster",
+	Aliases: []string{"save-contact"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Add a contact to the XMPP roster (optionally with a display name)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandRemoveFromRoster = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		if len(ce.Args) == 0 {
+			ce.Reply("Usage: remove-from-roster <phone or JID>")
+			return
+		}
+		jid := normalizeJID(ce.Args[0])
+		if jid == "" {
+			ce.Reply("Invalid JID")
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if err := client.removeRosterItem(ce.Ctx, jid); err != nil {
+			ce.Reply("Failed to remove roster entry for %s: %v", jid, err)
+			return
+		}
+		ce.Reply("Removed %s from the roster", jid)
+	},
+	Name: "remove-from-roster",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Remove a contact from the XMPP roster",
+	},
+	RequiresLogin: true,
+}
+
+var CommandSearchRoster = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		if len(ce.Args) == 0 {
+			ce.Reply("Usage: search-roster <query>")
+			return
+		}
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		query := strings.Join(ce.Args, " ")
+		matches := client.searchRoster(ce.Ctx, query)
+		if len(matches) == 0 {
+			ce.Reply("No roster contacts match %q", query)
+			return
+		}
+		ce.Reply(strings.Join(matches, "\n"))
+	},
+	Name: "search-roster",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Search XMPP roster contacts by name or JID",
+	},
+	RequiresLogin: true,
+}
+
+var CommandSyncRoster = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if !client.isXMPPConnected() {
+			ce.Reply("Not connected to the XMPP server")
+			return
+		}
+		client.requestRoster()
+		ce.Reply("Requested a roster refresh; room names will update when the server responds")
+	},
+	Name: "sync-roster",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Refresh the XMPP roster and update contact/room names",
 	},
 	RequiresLogin: true,
 }

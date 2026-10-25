@@ -220,3 +220,36 @@ func (nc *MyNetworkClient) inviteToMUC(roomJID string, jid string, reason string
 	})
 	return nc.sendXMPP(msg)
 }
+
+// extractMUCSubject returns a non-empty room subject from a stanza.
+func extractMUCSubject(msg stanza.Message) (string, bool) {
+	subject := strings.TrimSpace(stanza.StringValue(msg.Subject))
+	if subject == "" {
+		return "", false
+	}
+	return subject, true
+}
+
+// handleIncomingMUCSubject turns a body-less groupchat subject change into a
+// Matrix room topic update instead of bridging it as an empty message.
+func (nc *MyNetworkClient) handleIncomingMUCSubject(msg stanza.Message, bareFromJid string) bool {
+	if strings.TrimSpace(stanza.StringValue(msg.Body)) != "" {
+		return false
+	}
+	subject, ok := extractMUCSubject(msg)
+	if !ok {
+		return false
+	}
+	nc.log.Info().Str("room_jid", bareFromJid).Str("subject", subject).Msg("Received MUC subject update")
+	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.ChatInfoChange{
+		EventMeta: simplevent.EventMeta{
+			Type:      bridgev2.RemoteEventChatInfoChange,
+			PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
+			Timestamp: time.Now(),
+		},
+		ChatInfoChange: &bridgev2.ChatInfoChange{
+			ChatInfo: &bridgev2.ChatInfo{Topic: &subject},
+		},
+	})
+	return true
+}

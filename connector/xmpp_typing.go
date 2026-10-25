@@ -33,6 +33,9 @@ func (nc *MyNetworkClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2
 	if !nc.isXMPPConnected() {
 		return nil
 	}
+	if !nc.simpleConfig().sendTypingEnabled() {
+		return nil
+	}
 
 	jid := UnescapeJID(string(msg.Portal.ID))
 	if !strings.Contains(jid, "@") {

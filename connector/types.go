@@ -16,7 +16,9 @@ type LoginMetadata struct {
 	DeviceID            string                        `json:"device_id,omitempty"`
 	Scopes              []string                      `json:"scopes,omitempty"`
 	LastSyncAt          *time.Time                    `json:"last_sync_at,omitempty"`
+	MUCNickOverrides    map[string]string             `json:"muc_nick_overrides,omitempty"`
 	PendingGatewayForms map[string]PendingGatewayForm `json:"pending_gateway_forms,omitempty"`
+	CardDAV             *CardDAVCredentials           `json:"carddav,omitempty"`
 }
 
 type PendingGatewayForm struct {
@@ -59,6 +61,9 @@ type GhostMetadata struct {
 	RemoteName   string `json:"remote_name,omitempty"`
 	AvatarURL    string `json:"avatar_url,omitempty"`
 	CustomName   string `json:"custom_name,omitempty"`
+	// AvatarHash tracks the last XEP-0153 vCard photo hash we fetched, so
+	// unchanged avatars are not re-fetched or re-uploaded.
+	AvatarHash string `json:"avatar_hash,omitempty"`
 }
 
 // New creates a new instance for database registration.

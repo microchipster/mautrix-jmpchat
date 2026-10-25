@@ -16,10 +16,33 @@ import (
 )
 
 const defaultContactNameSuffix = "jmp"
+const defaultCardDAVCountryCode = "1"
 
 // SimpleConfig stores connector-specific network configuration.
 type SimpleConfig struct {
-	ContactNameSuffix string `yaml:"contact_name_suffix,omitempty"`
+	ContactNameSuffix    string        `yaml:"contact_name_suffix,omitempty"`
+	CardDAV              CardDAVConfig `yaml:"carddav,omitempty"`
+	SendTyping           *bool         `yaml:"send_typing,omitempty"`
+	SendReadMarkers      *bool         `yaml:"send_read_markers,omitempty"`
+	SendDeliveryReceipts *bool         `yaml:"send_delivery_receipts,omitempty"`
+}
+
+// sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.
+// The default is enabled.
+func (c *SimpleConfig) sendTypingEnabled() bool {
+	return c == nil || c.SendTyping == nil || *c.SendTyping
+}
+
+// sendReadMarkersEnabled reports whether outgoing XEP-0333 displayed markers
+// (markable hints) are attached to messages. The default is enabled.
+func (c *SimpleConfig) sendReadMarkersEnabled() bool {
+	return c == nil || c.SendReadMarkers == nil || *c.SendReadMarkers
+}
+
+// sendDeliveryReceiptsEnabled reports whether XEP-0184 receipts are requested
+// for outgoing direct messages. The default is enabled.
+func (c *SimpleConfig) sendDeliveryReceiptsEnabled() bool {
+	return c == nil || c.SendDeliveryReceipts == nil || *c.SendDeliveryReceipts
 }
 
 func (c *SimpleConfig) UnmarshalYAML(unmarshal func(any) error) error {
@@ -44,12 +67,18 @@ func (c *SimpleConfig) UnmarshalYAML(unmarshal func(any) error) error {
 		} else {
 			config.ContactNameSuffix = value
 		}
+		if config.CardDAV.DefaultCountryCode == "" {
+			config.CardDAV.DefaultCountryCode = defaultCardDAVCountryCode
+		}
 		*c = SimpleConfig(config)
 		return nil
 	}
 
 	if err := unmarshal(&config); err != nil {
 		return err
+	}
+	if config.CardDAV.DefaultCountryCode == "" {
+		config.CardDAV.DefaultCountryCode = defaultCardDAVCountryCode
 	}
 	*c = SimpleConfig(config)
 	return nil
@@ -67,6 +96,14 @@ func (nc *MyNetworkClient) contactNameSuffix() string {
 		return defaultContactNameSuffix
 	}
 	return nc.connector.contactNameSuffix()
+}
+
+// simpleConfig returns the connector's network configuration, if available.
+func (nc *MyNetworkClient) simpleConfig() *SimpleConfig {
+	if nc == nil || nc.connector == nil {
+		return nil
+	}
+	return nc.connector.config
 }
 
 func appendContactNameSuffix(name, suffix string) string {
