@@ -14,36 +14,40 @@ import (
 
 // setGhostCardDAVName records a CardDAV-sourced display name on the ghost.
 // The name is kept in its own field so it never overwrites explicit custom
-// names or XMPP roster names, and so it can be cleared independently.
-func (nc *MyNetworkClient) setGhostCardDAVName(ctx context.Context, jid, name string) {
+// names or XMPP roster names, and so it can be cleared independently. It
+// returns true when an explicit custom name takes precedence over the CardDAV
+// name (the CardDAV name is still stored, but does not win the lookup).
+func (nc *MyNetworkClient) setGhostCardDAVName(ctx context.Context, jid, name string) bool {
 	if nc == nil || nc.bridge == nil {
-		return
+		return false
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return
+		return false
 	}
 	jid = CanonicalBareJID(jid)
 	if jid == "" {
-		return
+		return false
 	}
 	ghost, err := nc.bridge.GetGhostByID(ctx, MakeUserID(jid))
 	if err != nil {
 		nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to load ghost for CardDAV name")
-		return
+		return false
 	}
 	meta, _ := ghost.Metadata.(*GhostMetadata)
 	if meta == nil {
 		meta = &GhostMetadata{}
 	}
+	conflict := strings.TrimSpace(meta.CustomName) != "" && meta.CustomName != name
 	if strings.TrimSpace(meta.CardDAVName) == name {
-		return
+		return conflict
 	}
 	meta.CardDAVName = name
 	ghost.Metadata = meta
 	if err := nc.bridge.DB.Ghost.Update(ctx, ghost.Ghost); err != nil {
 		nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to save CardDAV name")
 	}
+	return conflict
 }
 
 // parseContactNameSource maps command-line source names to internal

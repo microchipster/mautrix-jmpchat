@@ -38,7 +38,7 @@ var CommandSync = &commands.FullHandler{
 			ce.Reply("Network client not available")
 			return
 		}
-		full, lookback, err := parseSyncArgs(ce.Args)
+		full, lookback, err := parseSyncArgs(ce.Args, client.historyLookback())
 		if err != nil {
 			ce.Reply("%v", err)
 			return
@@ -654,7 +654,7 @@ var CommandJoinRoom = &commands.FullHandler{
 			ce.Reply("Network client not available")
 			return
 		}
-		roomJID, full, lookback, err := parseJoinRoomArgs(args)
+		roomJID, full, lookback, err := parseJoinRoomArgs(args, client.historyLookback())
 		if err != nil {
 			ce.Reply("%v", err)
 			return
@@ -743,6 +743,89 @@ var CommandMUCNick = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
 		Description: "Set the nickname used in a MUC room (use: muc-nick <room_jid> [<nickname>|--clear])",
+	},
+	RequiresLogin: true,
+}
+
+var CommandMUCNickDefault = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login, args := selectCommandLogin(ce)
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if len(args) == 0 {
+			ce.Reply("Default MUC nickname: `%s`\nUsage: muc-nick-default <nickname> (or `muc-nick-default --clear`).", client.defaultMUCNick())
+			return
+		}
+		if args[0] == "--clear" {
+			if err := client.setMUCDefaultNick(ce.Ctx, ""); err != nil {
+				ce.Reply("Failed to clear the default MUC nickname: %v", err)
+				return
+			}
+			ce.Reply("Cleared the default MUC nickname; now using `%s`.", client.defaultMUCNick())
+			return
+		}
+		nick := strings.Join(strings.Fields(strings.Join(args, " ")), "")
+		if nick == "" {
+			ce.Reply("Please provide a nickname (or use `--clear`).")
+			return
+		}
+		if err := client.setMUCDefaultNick(ce.Ctx, nick); err != nil {
+			ce.Reply("Failed to save the default MUC nickname: %v", err)
+			return
+		}
+		ce.Reply("Default MUC nickname set to `%s`. Rooms without their own nickname will use it on the next join.", nick)
+	},
+	Name: "muc-nick-default",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Set the account-wide fallback MUC nickname (use: muc-nick-default <nickname>|--clear)",
+	},
+	RequiresLogin: true,
+}
+
+var CommandBookmarksSync = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login, args := selectCommandLogin(ce)
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if len(args) == 0 {
+			rooms := client.bookmarkSnapshot()
+			if len(rooms) == 0 {
+				ce.Reply("No bookmarked MUC rooms are known yet.")
+				return
+			}
+			ce.Reply("Bookmarked MUC rooms (%d):\n%s", len(rooms), strings.Join(rooms, "\n"))
+			return
+		}
+		if strings.EqualFold(args[0], "push") {
+			if !client.isXMPPConnected() {
+				ce.Reply("Not connected to the XMPP server; try again after the bridge reconnects.")
+				return
+			}
+			pushed := client.pushBookmarks()
+			ce.Reply("Pushed %d XEP-0402 bookmark(s).", pushed)
+			return
+		}
+		ce.Reply("Usage: bookmarks-sync [push]\nWithout `push`, lists the bookmarked MUC rooms known to this login.")
+	},
+	Name: "bookmarks-sync",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "List bookmarked MUC rooms, or push them to the server (use: bookmarks-sync [push])",
 	},
 	RequiresLogin: true,
 }
@@ -1581,9 +1664,12 @@ func sendNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) {
 	_, _ = bot.SendMessage(context.Background(), roomID, event.EventMessage, &event.Content{Parsed: content}, nil)
 }
 
-func parseSyncArgs(args []string) (bool, time.Duration, error) {
+func parseSyncArgs(args []string, fallback time.Duration) (bool, time.Duration, error) {
+	if fallback <= 0 {
+		fallback = defaultMAMLookback
+	}
 	if len(args) == 0 {
-		return false, defaultMAMLookback, nil
+		return false, fallback, nil
 	}
 	if len(args) > 1 {
 		return false, 0, fmt.Errorf("Usage: sync [full|<duration>] (e.g. sync 30d, sync full)")
@@ -1614,7 +1700,10 @@ func parseLookbackDuration(arg string) (time.Duration, error) {
 	return time.ParseDuration(arg)
 }
 
-func parseJoinRoomArgs(args []string) (string, bool, time.Duration, error) {
+func parseJoinRoomArgs(args []string, fallback time.Duration) (string, bool, time.Duration, error) {
+	if fallback <= 0 {
+		fallback = defaultMAMLookback
+	}
 	if len(args) == 0 {
 		return "", false, 0, fmt.Errorf("Usage: join-room <room_jid> [full|<duration>]")
 	}
@@ -1626,7 +1715,7 @@ func parseJoinRoomArgs(args []string) (string, bool, time.Duration, error) {
 		return "", false, 0, fmt.Errorf("Invalid room JID (contains spaces)")
 	}
 	if len(args) == 1 {
-		return roomJID, false, defaultMAMLookback, nil
+		return roomJID, false, fallback, nil
 	}
 	if len(args) > 2 {
 		return "", false, 0, fmt.Errorf("Usage: join-room <room_jid> [full|<duration>]")

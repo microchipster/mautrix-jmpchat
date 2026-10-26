@@ -9,10 +9,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -128,6 +130,7 @@ type MyNetworkClient struct {
 	dmBackfillPending            map[string]time.Time
 	rosterItems                  map[string]bool
 	bookmarkedRooms              map[string]bool
+	bookmarkedRoomNames          map[string]string
 	fullSyncRequested            bool
 	fullSyncCreateEmpty          bool
 	fullSyncRosterPending        bool
@@ -163,6 +166,8 @@ type MyNetworkClient struct {
 	lastBridgeState              status.BridgeStateEvent
 	lastServerActivity           atomic.Int64
 	lastSelfPing                 atomic.Int64
+	vcardRefreshOnce             sync.Once
+	mucInviteLimiter             mucInviteLimiter
 }
 
 const defaultMAMLookback = 30 * 24 * time.Hour
@@ -185,6 +190,10 @@ type pendingXMPPSend struct {
 	portalRoomID  id.RoomID
 	matrixEventID string
 	started       time.Time
+	// packet is the exact stanza that was handed to the transport. It is
+	// kept so an unacknowledged message can be re-sent when a reconnect
+	// could not resume the old stream.
+	packet stanza.Packet
 }
 
 func xmppReconnectBackoff(attempt int) time.Duration {
@@ -260,6 +269,9 @@ func (nc *MyNetworkClient) isCurrentConnectionLocked(client *xmpp.Client, genera
 func (nc *MyNetworkClient) defaultMUCNick() string {
 	meta, ok := nc.login.Metadata.(*LoginMetadata)
 	if ok && meta != nil {
+		if nick := strings.TrimSpace(meta.DefaultMUCNick); nick != "" {
+			return nick
+		}
 		if parts := strings.Split(meta.RemoteUserID, "@"); len(parts) > 0 && parts[0] != "" {
 			return parts[0]
 		}
@@ -275,6 +287,9 @@ func bareJID(jid string) string {
 }
 
 func (nc *MyNetworkClient) ownBareJID() string {
+	if nc.login == nil {
+		return ""
+	}
 	if meta, ok := nc.login.Metadata.(*LoginMetadata); ok && meta != nil {
 		return bareJID(meta.RemoteUserID)
 	}
@@ -932,6 +947,12 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		if nc.bookmarkedRooms != nil {
 			alreadyBookmarked = nc.bookmarkedRooms[roomJID]
 			nc.bookmarkedRooms[roomJID] = true
+			if name := strings.TrimSpace(conf.Name); name != "" {
+				if nc.bookmarkedRoomNames == nil {
+					nc.bookmarkedRoomNames = map[string]string{}
+				}
+				nc.bookmarkedRoomNames[roomJID] = name
+			}
 		}
 		if alreadyBookmarked {
 			if nc.log.GetLevel() <= zerolog.DebugLevel {
@@ -1449,6 +1470,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	// Rebuild bookmark deduplication state from this connection's server
 	// responses. Keeping it across reconnects would hide newly added bookmarks.
 	nc.bookmarkedRooms = map[string]bool{}
+	nc.bookmarkedRoomNames = map[string]string{}
 	if nc.callSessions == nil {
 		nc.callSessions = map[string]*xmppCallSessionState{}
 	}
@@ -1472,6 +1494,12 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Insecure:               false,
 		StreamManagementEnable: true,
 		StreamManagementResume: true,
+	}
+	if simple := nc.simpleConfig(); simple != nil {
+		config.Jid = xmppJIDWithResource(meta.RemoteUserID, simple.ResourcePrefix)
+		if addr := xmppServerAddress(simple.DefaultServer, simple.DefaultPort); addr != "" {
+			config.Address = addr
+		}
 	}
 
 	nc.xmppRouter = xmpp.NewRouter()
@@ -1640,6 +1668,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.triggerAutomaticMUCCatchup()
 		nc.startMUCHealthLoop()
 		nc.scheduleMUCAutoRejoin()
+		nc.resendPendingSends()
 
 		// Initial Presence is sent automatically by the library
 
@@ -1713,6 +1742,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		return
 	}
 	nc.startRuntimeHealth(client)
+	nc.startVCardAvatarRefreshLoop()
 }
 
 func (nc *MyNetworkClient) sendBridgeState(stateEvent status.BridgeStateEvent, message string, ttl int) {
@@ -1789,6 +1819,17 @@ func (nc *MyNetworkClient) connectionSnapshot() (client *xmpp.Client, connected 
 // message the user sent. This gives users explicit feedback when no
 // acknowledgment arrives.
 func (nc *MyNetworkClient) trackOutboundSend(stanzaID, targetJID string, portalRoomID id.RoomID, matrixEventID string) {
+	nc.trackOutboundPacket(stanzaID, targetJID, portalRoomID, matrixEventID, nil)
+}
+
+// trackOutboundStanza records an outbound XMPP message stanza along with the
+// packet itself, so it can be re-sent when a reconnect fails and the stream
+// cannot be resumed (messages on the old stream would otherwise be lost).
+func (nc *MyNetworkClient) trackOutboundStanza(stanzaID, targetJID string, portalRoomID id.RoomID, matrixEventID string, packet stanza.Packet) {
+	nc.trackOutboundPacket(stanzaID, targetJID, portalRoomID, matrixEventID, packet)
+}
+
+func (nc *MyNetworkClient) trackOutboundPacket(stanzaID, targetJID string, portalRoomID id.RoomID, matrixEventID string, packet stanza.Packet) {
 	if stanzaID == "" || targetJID == "" {
 		return
 	}
@@ -1802,11 +1843,13 @@ func (nc *MyNetworkClient) trackOutboundSend(stanzaID, targetJID string, portalR
 		portalRoomID:  portalRoomID,
 		matrixEventID: matrixEventID,
 		started:       time.Now(),
+		packet:        packet,
 	}
 	nc.log.Debug().
 		Str("stanza_id", stanzaID).
 		Str("to", targetJID).
 		Str("matrix_event_id", matrixEventID).
+		Bool("resendable", packet != nil).
 		Msg("Tracking outbound XMPP message awaiting acknowledgment")
 }
 
@@ -1896,6 +1939,45 @@ func (nc *MyNetworkClient) resolveOutboundError(stanzaID, fromJID string, errMsg
 	}
 	nc.notifyManagement(notice)
 	return true
+}
+
+// resendPendingSends re-sends tracked outbound messages that were never
+// acknowledged. It is called after a fresh (non-resumed) XMPP connection is
+// established, because stanzas sent on a dropped stream may have been lost.
+// Messages without a stored packet are left to the timeout scanner.
+func (nc *MyNetworkClient) resendPendingSends() {
+	type resendItem struct {
+		stanzaID string
+		packet   stanza.Packet
+	}
+	nc.pendingSendsMu.Lock()
+	var pending []resendItem
+	for stanzaID, p := range nc.pendingSends {
+		if p.packet != nil {
+			pending = append(pending, resendItem{stanzaID: stanzaID, packet: p.packet})
+		}
+	}
+	nc.pendingSendsMu.Unlock()
+	if len(pending) == 0 {
+		return
+	}
+	resent := 0
+	for _, item := range pending {
+		if err := nc.sendXMPP(item.packet); err != nil {
+			nc.log.Warn().Err(err).Str("stanza_id", item.stanzaID).Msg("Failed to re-send unacknowledged XMPP message")
+			continue
+		}
+		nc.pendingSendsMu.Lock()
+		if current, ok := nc.pendingSends[item.stanzaID]; ok {
+			current.started = time.Now()
+		}
+		nc.pendingSendsMu.Unlock()
+		resent++
+	}
+	if resent > 0 {
+		nc.log.Info().Int("resent", resent).Msg("Re-sent unacknowledged XMPP messages after reconnect")
+		nc.notifyManagement(fmt.Sprintf("Re-sent %d unacknowledged message(s) after reconnecting to the XMPP server.", resent))
+	}
 }
 
 // scanPendingSendTimeouts removes tracked outbound messages that have not been
@@ -2141,6 +2223,42 @@ func (nc *MyNetworkClient) selfPingOwnJID(client *xmpp.Client) {
 	}
 }
 
+// xmppJIDWithResource appends a resource prefix to a bare JID, replacing any
+// existing resource.
+func xmppJIDWithResource(jid, resourcePrefix string) string {
+	jid = strings.TrimSpace(jid)
+	prefix := strings.TrimSpace(resourcePrefix)
+	if jid == "" || prefix == "" {
+		return jid
+	}
+	bare := strings.SplitN(jid, "/", 2)[0]
+	return bare + "/" + prefix
+}
+
+// xmppServerAddress builds an explicit server address for the XMPP client.
+// An empty server keeps SRV/domain discovery; a server without a port gets
+// the default 5222 port or the configured one.
+func xmppServerAddress(server string, port int) string {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(server); err == nil {
+		if port > 0 {
+			return net.JoinHostPort(host, strconv.Itoa(port))
+		}
+		return server
+	}
+	host := strings.Trim(server, "[]")
+	if port > 0 {
+		return net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	if strings.Contains(server, ":") {
+		return "[" + host + "]:5222"
+	}
+	return server + ":5222"
+}
+
 func serverDomainFromJID(jid string) string {
 	jid = strings.TrimSpace(jid)
 	if jid == "" {
@@ -2285,6 +2403,7 @@ func (nc *MyNetworkClient) handleDisconnect(client *xmpp.Client, generation uint
 				return
 			}
 			nc.startRuntimeHealth(resumeClient)
+			nc.startVCardAvatarRefreshLoop()
 		}(client)
 		return
 	}
@@ -2902,6 +3021,9 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			roomJID = strings.TrimSpace(mucInvite.Invite.From)
 		}
 		if roomJID != "" {
+			if !nc.allowMUCInvite(roomJID, mucInvite.Invite.From, mucInvite.Invite.Reason) {
+				return
+			}
 			portalID := MakePortalID(roomJID)
 			resync := &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
@@ -2921,6 +3043,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			portalKey := networkid.PortalKey{ID: MakePortalID(roomJID)}
 			nc.scheduleMUCBackfill(roomJID, nc.historySyncStartForPortal(context.Background(), portalKey))
 			nc.joinMUC(roomJID, "", mucInvite.Password)
+			nc.notifyManagement(fmt.Sprintf("Joined MUC room %s after an invite from %s.", roomJID, mucInvite.Invite.From))
 			if stanza.StringValue(msg.Body) == "" {
 				return
 			}
@@ -2931,6 +3054,9 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	if msg.Get(&directInvite) && directInvite.JID != "" {
 		roomJID := strings.TrimSpace(directInvite.JID)
 		if roomJID != "" {
+			if !nc.allowMUCInvite(roomJID, directInvite.From, directInvite.Reason) {
+				return
+			}
 			portalID := MakePortalID(roomJID)
 			resync := &simplevent.ChatResync{
 				EventMeta: simplevent.EventMeta{
@@ -2950,6 +3076,7 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			portalKey := networkid.PortalKey{ID: MakePortalID(roomJID)}
 			nc.scheduleMUCBackfill(roomJID, nc.historySyncStartForPortal(context.Background(), portalKey))
 			nc.joinMUC(roomJID, "", directInvite.Password)
+			nc.notifyManagement(fmt.Sprintf("Joined MUC room %s after an invite from %s.", roomJID, directInvite.From))
 			if stanza.StringValue(msg.Body) == "" {
 				return
 			}
@@ -3628,7 +3755,16 @@ func (nc *MyNetworkClient) resolveMUCSenderID(msg stanza.Message, roomJID string
 	if msg.Get(&occ) && occ.ID != "" {
 		return roomJID + "/occ-" + occ.ID
 	}
-	if strings.Contains(msg.From, "/") {
+	if idx := strings.Index(msg.From, "/"); idx != -1 {
+		resource := msg.From[idx+1:]
+		if isCheogramGroupRoomJID(roomJID) && resource != "" {
+			// Cheogram group texts attribute the sender through the stanza
+			// resource, which is the participant's phone JID (or bare digits).
+			if strings.Contains(resource, "@") {
+				return CanonicalBareJID(resource)
+			}
+			return CanonicalBareJID(resource + "@cheogram.com")
+		}
 		return msg.From
 	}
 	return ""

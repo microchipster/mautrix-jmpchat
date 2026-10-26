@@ -315,6 +315,7 @@ type cardDAVSyncResult struct {
 	Candidates int
 	Added      int
 	Skipped    int
+	Conflicts  int
 	DryRun     bool
 }
 
@@ -366,7 +367,13 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 				nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to add CardDAV contact to roster")
 				continue
 			}
-			nc.setGhostCardDAVName(ctx, jid, contact.Name)
+			if conflict := nc.setGhostCardDAVName(ctx, jid, contact.Name); conflict {
+				result.Conflicts++
+				nc.log.Debug().
+					Str("jid", jid).
+					Str("carddav_name", contact.Name).
+					Msg("CardDAV name stored but an explicit set-contact-name entry takes precedence")
+			}
 			existing[jid] = true
 			result.Added++
 			time.Sleep(cardDAVSyncAddInterval)

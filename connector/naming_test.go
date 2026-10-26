@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 	"maunium.net/go/mautrix/bridgev2"
@@ -353,5 +354,33 @@ func TestPortalLooksAutoNamedApostropheName(t *testing.T) {
 	portal.Name = "OSR (jmp)"
 	if !portalLooksAutoNamed(portal, "jmp") {
 		t.Fatal("expected initials name to be treated as auto-named")
+	}
+}
+
+func TestHistoryLookback(t *testing.T) {
+	t.Parallel()
+
+	var nilClient *MyNetworkClient
+	if got := nilClient.historyLookback(); got != defaultMAMLookback {
+		t.Fatalf("nil client historyLookback() = %v, want %v", got, defaultMAMLookback)
+	}
+
+	defaultClient := &MyNetworkClient{connector: &MyConnector{config: &SimpleConfig{}}}
+	if got := defaultClient.historyLookback(); got != defaultMAMLookback {
+		t.Fatalf("unset history_days historyLookback() = %v, want %v", got, defaultMAMLookback)
+	}
+
+	configuredClient := &MyNetworkClient{connector: &MyConnector{config: &SimpleConfig{HistoryDays: 7}}}
+	if got := configuredClient.historyLookback(); got != 7*24*time.Hour {
+		t.Fatalf("history_days=7 historyLookback() = %v, want 168h", got)
+	}
+
+	raw := "history_days: 365\n"
+	var config SimpleConfig
+	if err := yaml.Unmarshal([]byte(raw), &config); err != nil {
+		t.Fatalf("yaml.Unmarshal() error: %v", err)
+	}
+	if config.HistoryDays != 365 {
+		t.Fatalf("HistoryDays = %d, want 365", config.HistoryDays)
 	}
 }

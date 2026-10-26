@@ -17,6 +17,7 @@ type LoginMetadata struct {
 	Scopes              []string                      `json:"scopes,omitempty"`
 	LastSyncAt          *time.Time                    `json:"last_sync_at,omitempty"`
 	MUCNickOverrides    map[string]string             `json:"muc_nick_overrides,omitempty"`
+	DefaultMUCNick      string                        `json:"default_muc_nick,omitempty"`
 	PendingGatewayForms map[string]PendingGatewayForm `json:"pending_gateway_forms,omitempty"`
 	CardDAV             *CardDAVCredentials           `json:"carddav,omitempty"`
 }
@@ -65,6 +66,12 @@ type GhostMetadata struct {
 	// AvatarHash tracks the last XEP-0153 vCard photo hash we fetched, so
 	// unchanged avatars are not re-fetched or re-uploaded.
 	AvatarHash string `json:"avatar_hash,omitempty"`
+	// AvatarFetchedAt records when the avatar was last fetched, so avatars
+	// without a repeated presence announcement are refreshed daily.
+	AvatarFetchedAt *time.Time `json:"avatar_fetched_at,omitempty"`
+	// AvatarFetchErrorHash stamps a photo hash whose vCard fetch failed with a
+	// permanent stanza error, so it is not retried until the hash changes.
+	AvatarFetchErrorHash string `json:"avatar_fetch_error_hash,omitempty"`
 }
 
 // New creates a new instance for database registration.

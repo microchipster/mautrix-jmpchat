@@ -171,3 +171,33 @@ func TestIsPrivateCardDAVIP(t *testing.T) {
 		})
 	}
 }
+
+func TestParseCardDAVSyncArgs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		args  []string
+		apply bool
+		force bool
+		ok    bool
+	}{
+		{nil, true, false, true},
+		{[]string{}, true, false, true},
+		{[]string{"apply"}, true, false, true},
+		{[]string{"--apply"}, true, false, true},
+		{[]string{"dry"}, false, false, true},
+		{[]string{"dry-run"}, false, false, true},
+		{[]string{"--dry-run"}, false, false, true},
+		{[]string{"--no-apply"}, false, false, true},
+		{[]string{"--force-names"}, true, true, true},
+		{[]string{"--no-apply", "--force-names"}, false, true, true},
+		{[]string{"APPLY", "Force-Names"}, true, true, true},
+		{[]string{"--bogus"}, false, false, false},
+		{[]string{"apply", "extra"}, false, false, false},
+	}
+	for _, tc := range cases {
+		apply, force, ok := parseCardDAVSyncArgs(tc.args)
+		if apply != tc.apply || force != tc.force || ok != tc.ok {
+			t.Errorf("parseCardDAVSyncArgs(%v) = (%v, %v, %v), want (%v, %v, %v)", tc.args, apply, force, ok, tc.apply, tc.force, tc.ok)
+		}
+	}
+}

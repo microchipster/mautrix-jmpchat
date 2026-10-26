@@ -62,6 +62,12 @@ func (nc *MyNetworkClient) initiateGroupChat(ctx context.Context, name string, p
 	if nc.bookmarkedRooms != nil {
 		nc.bookmarkedRooms[roomJID] = true
 	}
+	if name != "" {
+		if nc.bookmarkedRoomNames == nil {
+			nc.bookmarkedRoomNames = map[string]string{}
+		}
+		nc.bookmarkedRoomNames[roomJID] = name
+	}
 	if err := nc.publishBookmark2(BookmarkConference{
 		JID:      roomJID,
 		Name:     name,

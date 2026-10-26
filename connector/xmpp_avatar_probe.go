@@ -6,6 +6,7 @@ package connector
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -36,6 +37,29 @@ type avatarInfo struct {
 	Bytes  int    `xml:"bytes,attr,omitempty"`
 	Height int    `xml:"height,attr,omitempty"`
 	Width  int    `xml:"width,attr,omitempty"`
+}
+
+type avatarData struct {
+	XMLName xml.Name `xml:"urn:xmpp:avatar:data data"`
+	Data    string   `xml:",chardata"`
+}
+
+// parseAvatarData decodes a XEP-0084 avatar data payload and returns the
+// decoded byte count. Whitespace inside the base64 payload is ignored.
+func parseAvatarData(raw []byte) (int, bool) {
+	var parsed avatarData
+	if err := xml.Unmarshal(raw, &parsed); err != nil {
+		return 0, false
+	}
+	encoded := stripASCIIWhitespace(strings.TrimSpace(parsed.Data))
+	if encoded == "" {
+		return 0, false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) == 0 {
+		return 0, false
+	}
+	return len(decoded), true
 }
 
 // parseAvatarMetadata decodes an XEP-0084 metadata element.
@@ -132,6 +156,46 @@ func (nc *MyNetworkClient) probeXEP0084Metadata(ctx context.Context, jid string)
 	}
 }
 
+// probeXEP0084Data fetches the XEP-0084 avatar data node and reports its size.
+func (nc *MyNetworkClient) probeXEP0084Data(ctx context.Context, jid string) string {
+	start := time.Now()
+	iq, err := stanza.NewIQ(stanza.Attrs{Type: stanza.IQTypeGet, To: jid, Id: fmt.Sprintf("avatar_data_%d", time.Now().UnixNano())})
+	if err != nil {
+		return fmt.Sprintf("XEP-0084 data: error building request: %v", err)
+	}
+	iq.Payload = &stanza.PubSubGeneric{Items: &stanza.Items{Node: NSAvatarData}}
+	ch, err := nc.xmppClient.SendIQ(ctx, iq)
+	if err != nil {
+		return fmt.Sprintf("XEP-0084 data: error sending request: %v", err)
+	}
+	select {
+	case resp := <-ch:
+		elapsed := time.Since(start).Round(time.Millisecond)
+		if resp.Type != stanza.IQTypeResult {
+			return fmt.Sprintf("XEP-0084 data: %s response in %s", resp.Type, elapsed)
+		}
+		items, ok := resp.Payload.(*stanza.PubSubGeneric)
+		if !ok || items.Items == nil || len(items.Items.List) == 0 {
+			return fmt.Sprintf("XEP-0084 data: no data (%s)", elapsed)
+		}
+		for _, item := range items.Items.List {
+			if item.Any == nil {
+				continue
+			}
+			raw, err := xml.Marshal(item.Any)
+			if err != nil {
+				continue
+			}
+			if size, ok := parseAvatarData(raw); ok {
+				return fmt.Sprintf("XEP-0084 data: ok (%d bytes) in %s", size, elapsed)
+			}
+		}
+		return fmt.Sprintf("XEP-0084 data: no data (%s)", elapsed)
+	case <-ctx.Done():
+		return fmt.Sprintf("XEP-0084 data: timed out after %s", time.Since(start).Round(time.Millisecond))
+	}
+}
+
 // probeDiscoInfo queries disco#info and reports identities/features and avatar support.
 func (nc *MyNetworkClient) probeDiscoInfo(ctx context.Context, jid string) string {
 	start := time.Now()
@@ -201,6 +265,7 @@ var CommandAvatarProbe = &commands.FullHandler{
 			fmt.Sprintf("Avatar probe for %s:", jid),
 			client.probeVCardTemp(ctx, jid),
 			client.probeXEP0084Metadata(ctx, jid),
+			client.probeXEP0084Data(ctx, jid),
 			client.probeDiscoInfo(ctx, jid),
 		}
 		ce.Reply(strings.Join(lines, "\n"))
@@ -208,7 +273,7 @@ var CommandAvatarProbe = &commands.FullHandler{
 	Name: "avatar-probe",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Probe avatar sources (vcard-temp, XEP-0084, disco#info) for a contact",
+		Description: "Probe avatar sources (vcard-temp, XEP-0084 metadata+data, disco#info) for a contact",
 	},
 	RequiresLogin: true,
 }

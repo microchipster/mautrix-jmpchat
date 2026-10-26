@@ -51,7 +51,7 @@ var CommandCardDAVLogin = &commands.FullHandler{
 			ce.Reply("Failed to store CardDAV credentials: %v", err)
 			return
 		}
-		ce.Reply("CardDAV credentials stored for %s. Run `carddav-sync` to preview, or `carddav-sync apply` to import contacts into the roster.", creds.URL)
+		ce.Reply("CardDAV credentials stored for %s. Run `carddav-sync` to import contacts into the roster, or `carddav-sync --no-apply` to preview first.", creds.URL)
 	},
 	Name: "carddav-login",
 	Help: commands.HelpMeta{
@@ -124,40 +124,82 @@ var CommandCardDAVStatus = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+// parseCardDAVSyncArgs interprets carddav-sync flags. Importing is the default
+// (the first successful import acts as the takeover), --no-apply/dry-run
+// switches to a preview, and --force-names also refreshes rooms whose names
+// were customized by hand.
+func parseCardDAVSyncArgs(args []string) (apply, force, ok bool) {
+	apply = true
+	for _, arg := range args {
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "":
+		case "apply", "--apply":
+			apply = true
+		case "dry", "dry-run", "--dry-run", "--no-apply":
+			apply = false
+		case "force-names", "--force-names":
+			force = true
+		default:
+			return false, false, false
+		}
+	}
+	return apply, force, true
+}
+
 var CommandCardDAVSync = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		client := cardDAVClientFromEvent(ce)
 		if client == nil {
 			return
 		}
-		apply := false
-		if len(ce.Args) > 0 {
-			switch strings.ToLower(ce.Args[0]) {
-			case "apply", "--apply":
-				apply = true
-			case "dry", "dry-run", "--dry-run":
-			default:
-				ce.Reply("Usage: carddav-sync [apply]")
-				return
-			}
+		apply, force, ok := parseCardDAVSyncArgs(ce.Args)
+		if !ok {
+			ce.Reply("Usage: carddav-sync [--no-apply] [--force-names]")
+			return
 		}
+		creds := client.cardDAVCredentials()
+		firstApply := apply && (creds == nil || creds.LastSyncAt == nil)
 		result, err := client.syncCardDAV(ce.Ctx, apply)
 		if err != nil {
 			ce.Reply("CardDAV sync failed: %v", err)
 			return
 		}
 		if result.DryRun {
-			ce.Reply("CardDAV dry run: %d contacts, %d phone numbers, %d already in roster, %d would be added. Run `carddav-sync apply` to import them.",
+			ce.Reply("CardDAV dry run: %d contacts, %d phone numbers, %d already in roster, %d would be added. Run `carddav-sync` to import them.",
 				result.Contacts, result.Numbers, result.Skipped, result.Candidates)
 			return
 		}
-		ce.Reply("CardDAV sync: %d contacts, %d phone numbers, %d already in roster, %d added.",
-			result.Contacts, result.Numbers, result.Skipped, result.Added)
+		lines := []string{fmt.Sprintf("CardDAV sync: %d contacts, %d phone numbers, %d already in roster, %d added.",
+			result.Contacts, result.Numbers, result.Skipped, result.Added)}
+		if result.Conflicts > 0 {
+			lines = append(lines, fmt.Sprintf("%d contact(s) keep an explicit name from `set-contact-name`; use `clear-contact-names --source explicit` to let CardDAV names win.", result.Conflicts))
+		}
+		if firstApply {
+			lines = append(lines, "CardDAV names now take precedence over roster names for auto-named rooms. Explicit `set-contact-name` entries are never overwritten; `carddav-clear` removes CardDAV names again.")
+		}
+		if force {
+			login := ce.User.GetDefaultLogin()
+			if login == nil {
+				ce.Reply("No login found")
+				return
+			}
+			suffix := defaultContactNameSuffix
+			if client.contactNameSuffix() != "" {
+				suffix = client.contactNameSuffix()
+			}
+			refreshed, refreshErr := refreshAllPortalNames(ce.Ctx, ce.Bridge, login, suffix)
+			if refreshErr != nil {
+				lines = append(lines, fmt.Sprintf("Forced room rename failed: %v", refreshErr))
+			} else {
+				lines = append(lines, fmt.Sprintf("Forced refresh queued room renames for %d room(s), including ones renamed by hand.", refreshed))
+			}
+		}
+		ce.Reply("%s", strings.Join(lines, "\n"))
 	},
 	Name: "carddav-sync",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "Import phone numbers from the configured CardDAV addressbook into the roster",
+		Description: "Import phone numbers and names from the configured CardDAV addressbook (--no-apply previews, --force-names also renames customized rooms)",
 	},
 	RequiresLogin: true,
 }

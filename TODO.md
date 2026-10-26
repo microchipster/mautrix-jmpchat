@@ -55,6 +55,8 @@ Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/ui/ConversationsActivity.java`
 - `connector/commands.go`
 
+Status: done phase 1 — phone-number creation/join flows work through the management-room `create`/`start-chat` commands and the native bridgev2 provisioning endpoints (`create-group`, `resolve-identifier`); `jabber:iq:gateway` discovery and prompts are covered by `gateway-actions` (`connector/xmpp_gateway.go`: `discoverGatewayActions`, `requestGatewayPrompt`, `SupportsGatewayIQ`); contact-add flows exist as `add-to-roster`/`save-contact` plus the CardDAV import, and gateway/service registration flows are reachable through `gateway-actions`, `gateway-form` and `gateway-submit`. Remaining phase 2: interactive gateway-prompt resolution when an identifier is not already a JID (auto-query `jabber:iq:gateway` for foreign gateways), richer form UX, and surfacing gateway prompts for unknown contacts as guided notices.
+
 ### 2. Rich media messages with captions, subjects, and cleaner metadata
 
 Why:
@@ -145,6 +147,8 @@ Evidence:
 - `cheogram-android/CHANGELOG.md`
 - `connector/handle_matrix.go`
 
+Status: done — reaction removal is expressed as a full-set replacement for that sender (`currentMatrixReactionSet` + `sendXMPPReactionSet`, `HandleMatrixReactionRemove`); targets resolve by bridgev2 id first and then via persisted XMPP alias metadata (`resolveReactionTarget`, WS1.5), covering MUC and private-message reactions; image-based custom-emoji reactions (`mxc://`) are stored in Matrix but deliberately not sent to XMPP (`xmppReactionSupported`/`filterXMPPReactions`, tests `connector/xmpp_reaction_filter_test.go`), and an all-unsupported set is never sent so remote reactions are not wiped.
+
 ## Workstreams adopted from jmpchat-matrix-bridge
 
 Reference implementation: `jmpchat-matrix-bridge/pkg/connector/` (file names below are entry points in that repo).
@@ -178,22 +182,22 @@ Each item must keep our SPDX headers, test style, and terse management-room UX.
 ### WS2 - MUC robustness
 
 - **WS2.1 Join health watchdog** — done (phase 1, `connector/xmpp_muc_health.go`): joins confirmed via self-presence, retry backoff 30 s -> 10 min, management notice after 5 failed attempts, XEP-0410 self-ping (IQ get to our occupant JID) every 15 min with auto-rejoin on failure. Remaining: verify behaviour against a live room that rejects joins outright.
-- **WS2.2 Nick management** — done (phase 1, `connector/xmpp_muc_nick.go` + `muc-nick` command): precedence explicit `muc-nick` override (persisted in `LoginMetadata.MUCNickOverrides`) > bookmark nick > default localpart; on 409 conflicts try `base_1.._3`, remember the working alternative, management notices; `muc-nick <room> [<nick>|--clear]` changes the nick at once. Remaining (phase 2): `muc-nick-default` command, revert room display name on failed explicit change.
+- **WS2.2 Nick management** — done (phase 1+2, `connector/xmpp_muc_nick.go` + `muc-nick`/`muc-nick-default` commands): precedence explicit `muc-nick` override (persisted in `LoginMetadata.MUCNickOverrides`) > bookmark nick > account default (`LoginMetadata.DefaultMUCNick` from `muc-nick-default`, else JID localpart); on 409 conflicts try `base_1.._3`, remember the working alternative, management notices. Remaining (phase 2): revert room display name on failed explicit change.
 - **WS2.3 Nick sync** — done phase 1: `RoomNameHandlingNetworkAPI`/`RoomTopicHandlingNetworkAPI` handled in `connector/xmpp_room_meta.go`; renaming a MUC portal room persists the name (`NameSet`/`NameIsCustom`) and, with `muc_nick_sync` enabled (default true), applies nickname-like names as the occupant nick (override persisted via `setMUCNickOverride`); Matrix topic changes are forwarded as MUC subject changes (XEP-0045) and recorded on the portal. Remaining phase 2: reverse nick -> room name sync with debounce/echo maps, global-name guard, notices for invalid names.
 - **WS2.4 Auto-rejoin on connect** — done (phase 1): `scheduleMUCAutoRejoin` in `connector/xmpp_muc_health.go` runs after both connect hooks, skips left/already-joined rooms, caps at 200 rooms per connect with 3 s delay + 500 ms stagger. Remaining: history-since-newest-bridged-message refinement for rejoins.
-- **WS2.5 Bookmarks XEP-0402 pipeline** — done (phase 1, live PEP events in `connector/xmpp_bookmarks_pep.go`): autojoin on -> join/import via `handleBookmarkConferences(..., "bookmarks2_event")`; off/retract -> `leaveMUC` + bookmark state cleanup. Remaining (phase 2): publish-options capability gating, read-modify-write merge (preserve name/password/extensions, never overwrite a non-empty nick), connect-time import budget + notices, one-time backfill for already-bridged rooms, `bookmarks-sync [push]` command, optional read-only XEP-0049 legacy import.
-- **WS2.6 MUC invites** — deferred to phase 2: native Matrix invite flow (notice with inviter + reason, accepting joins, bridge never auto-joins, password memory, 10/hour rate limit).
+- **WS2.5 Bookmarks XEP-0402 pipeline** — done (phase 1+2): live PEP events in `connector/xmpp_bookmarks_pep.go` (autojoin on -> join/import via `handleBookmarkConferences(..., "bookmarks2_event")`; off/retract -> `leaveMUC` + bookmark state cleanup); leaving a bookmarked room now rewrites the bookmark with `autojoin=false` (so a reconnect does not silently rejoin) and clears local state; `bookmarks-sync [push]` lists known bookmarks and republishes them with the remembered name/nick (`bookmarkSnapshot`/`pushBookmarks` in `connector/xmpp_bookmarks.go`, tests in `connector/xmpp_bookmarks_test.go`). Remaining (phase 3): publish-options capability gating, read-modify-write merge (preserve name/password/extensions, never overwrite a non-empty nick), connect-time import budget + notices, one-time backfill for already-bridged rooms, optional read-only XEP-0049 legacy import.
+- **WS2.6 MUC invites** — done phase 1: direct (XEP-0249) and mediated (XEP-0045) invites still create the portal and join the room, but now go through a rolling rate limit of 10 invites/hour per login (`connector/xmpp_muc_invites.go`, `mucInviteLimiter`); invites beyond the limit are ignored with a warning log and a management-room notice. Successful joins post a "Joined MUC room … after an invite from …" notice. Tests: `connector/xmpp_muc_invites_test.go`. Remaining phase 2: optional "never auto-join, surface a native Matrix invite instead" mode and per-invite accept semantics (needs a Matrix-membership handler), password memory across rejoins.
 - **WS2.7 Room topic/subject** — done (phase 1, `connector/xmpp_muc.go`): subject-only groupchat stanzas update the Matrix room topic via `ChatInfoChange` (`extractMUCSubject` / `handleIncomingMUCSubject`). Remaining: disco#info `muc#roominfo` name/description on resync and subject-less clears topic.
-- **WS2.8 Group text model validation (design divergence)** — open: verify against the live gateway whether the correct outbound model is our MUC join + `type=groupchat` or their DM-portal `type=chat` to the combined comma JID (Cheogram Android itself treats group text as a plain contact and never joins a MUC). Their attribution ladder for inbound group MMS: stanza resource -> `<xmpp:JID>` body prefix -> first participant, reused for MAM. Decide: keep MUC, switch to chat-type, or hybrid; document.
+- **WS2.8 Group text model validation (design divergence)** — documented (phase 1) + attribution parity fix. Evidence gathered: Cheogram Android never joins a MUC for group texts (the comma JID is created as a plain contact, `StartConversationActivity.java:956-969`) and sends chat-type messages because the conversation stays `MODE_SINGLE` (`generator/MessageGenerator.java:53-67`); the sibling bridge uses the same DM-portal model (`type=chat` to the combined JID, no join), and JMP's FAQ lists group texts as beta without protocol detail. We keep our MUC-style model (join presence + `type=groupchat` + best-effort `muc#owner` config/invites) because it works against the deployed gateway, gives occupant/member tracking, and the first message is the real gateway trigger under either model; switching to chat-type needs live gateway validation first. Inbound attribution parity is now explicit: `resolveMUCSenderID` falls back to the stanza resource for Cheogram group rooms and converts it into a phone JID (`+1416…@cheogram.com` or bare digits) instead of collapsing to the room JID, matching their resource → `<xmpp:JID>` body prefix → phone prefix → own-JID ladder (`connector/network_client.go`, test `TestResolveMUCSenderIDCheogramGroupResource`). Remaining: live round-trip validation against the JMP gateway before considering any outbound model change.
   - Reference: `cheogram.go`, `xmpp_inbound.go:889-909`, `xmpp_client.go:2107-2115`.
 
 ### WS3 - Identity and contacts
 
-- **WS3.1 vcard-temp avatars (1:1)** — done phase 1 in `connector/xmpp_avatar.go` + tests in `connector/xmpp_avatar_test.go`: XEP-0153 presence photo-hash trigger, XEP-0054 vCard fetch (IQ get, base64 `BINVAL`, ≤1 MiB, png/jpeg/gif/webp only, `http.DetectContentType`), upload + re-upload dedupe via `bridgev2.Avatar`/`ghost.UpdateInfo`, stable `AvatarID` (`vcard:<hash>`) and last-hash cached in `GhostMetadata.AvatarHash` so unchanged avatars are not re-fetched. Cheogram phone numbers are skipped. Remaining phase 2: 24 h periodic refresh when the contact stays online without re-announcing, permanent stanza-error stamping.
+- **WS3.1 vcard-temp avatars (1:1)** — done phase 1 in `connector/xmpp_avatar.go` + tests in `connector/xmpp_avatar_test.go`: XEP-0153 presence photo-hash trigger, XEP-0054 vCard fetch (IQ get, base64 `BINVAL`, ≤1 MiB, png/jpeg/gif/webp only, `http.DetectContentType`), upload + re-upload dedupe via `bridgev2.Avatar`/`ghost.UpdateInfo`, stable `AvatarID` (`vcard:<hash>`) and last-hash cached in `GhostMetadata.AvatarHash` so unchanged avatars are not re-fetched. Cheogram phone numbers are skipped. Also done (phase 2): 24 h periodic refresh when the contact stays online without re-announcing and permanent stanza-error stamping — `startVCardAvatarRefreshLoop`/`refreshStaleVCardAvatars` (500 ms staggered, `GhostMetadata.AvatarFetchedAt`) re-fetch stale roster avatars daily, and permanent stanza errors are stamped (`permanentVCardError`, `GhostMetadata.AvatarFetchErrorHash`) so a failing photo hash is not retried until it changes. Tests: `TestVCardAvatarNeedsRefresh`, `TestIsPermanentVCardError`. Remaining phase 3: group/portal avatars.
   - Reference: `xep0054.go`, `avatar_probe.go`.
 - **WS3.2 MUC occupant avatars** — done phase 1: occupants with a real bare JID (non-anonymous rooms) reuse the 1:1 XEP-0153/vcard flow in `connector/xmpp_avatar.go`, hooked from the MUC presence branch in `connector/network_client.go`, so they share the ghost's uploaded avatar. Remaining phase 2: anonymous rooms via XEP-0084 occupant probing, paced worker (4/s), caps (occupants/queue/MXC cache), room-refusal breaker.
   - Reference: `xep0054_muc.go`.
-- **WS3.3 Avatar diagnostic** — done phase 1: `avatar-probe` command in `connector/xmpp_avatar_probe.go` reports vcard-temp (bytes/mime/timing), XEP-0084 metadata (id/bytes/dimensions), and disco#info avatar features with timings; tests in `connector/xmpp_avatar_probe_test.go`. Remaining phase 2: fetch/consume XEP-0084 data payloads as an avatar fallback.
+- **WS3.3 Avatar diagnostic** — done phase 1+2: `avatar-probe` command in `connector/xmpp_avatar_probe.go` reports vcard-temp (bytes/mime/timing), XEP-0084 metadata (id/bytes/dimensions), XEP-0084 data payload size (base64 decoded, whitespace tolerant via `parseAvatarData`), and disco#info avatar features with timings; tests in `connector/xmpp_avatar_probe_test.go`. Remaining phase 3: use XEP-0084 data as an actual avatar source (not just diagnostics) if the gateway ever exposes it.
   - Reference: `avatar_probe_command.go`.
 - **WS3.4 Roster management commands** — done phase 1 in `connector/xmpp_roster_manage.go` + `connector/commands.go`: `add-to-roster` (alias `save-contact`) with optional display name (routes through `normalizeContactName` + `updateRosterContactName` + auto-named room refresh), `remove-from-roster`, `search-roster <query>` (case-insensitive over JIDs and resolved names), `sync-roster` (requests roster refresh). Tests in `connector/xmpp_roster_manage_test.go`. Remaining phase 2: `save-contact` should also write the server vCard, bulk mode.
   - Reference: `roster_contacts.go`, `save_contact.go`, `main.go:220-333`.
@@ -207,7 +211,7 @@ Each item must keep our SPDX headers, test style, and terse management-room UX.
   - Event-driven naming: the same resolver runs on inbound messages / new portals / group texts, so chats are named as they arrive, not only at sync time; every source update triggers the existing auto-named room refresh (`refreshAutoNamedPortals` / `refreshContactNamedPortals`).
   - UX rules: never silently overwrite explicit names; CardDAV renames only auto-named rooms (custom names untouched unless `--force-names`); one summary notice per sync; conflicts logged with both values and the winning source.
   - Migration: first CardDAV apply renames existing auto-named rooms; `--clear`/`carddav-clear` restores the previous precedence chain. Self is never injected into group initials; if the gateway lists your own number in a group JID it is named like any other participant.
-  - Status (phase 1, done): `GhostMetadata.CardDAVName` stores CardDAV-sourced names separately; `resolveGhostDisplayName` (`connector/naming.go`) enforces the precedence CustomName > CardDAVName > RemoteName > ghost name > JID label; `carddav-sync apply` writes CardDAV names while importing (`setGhostCardDAVName`, `connector/contact_names.go`); `carddav-clear` and `clear-contact-names [--source explicit|carddav|roster] [<jid>]` clear sources and re-run auto naming; `carddav-status` shows per-source name counts. Remaining: takeover notice + `--no-apply` opt-out on first apply, conflict logging with winning source, `--force-names` override for custom-named rooms.
+  - Status (phase 1+2, done): `GhostMetadata.CardDAVName` stores CardDAV-sourced names separately; `resolveGhostDisplayName` (`connector/naming.go`) enforces the precedence CustomName > CardDAVName > RemoteName > ghost name > JID label; `carddav-sync` imports and writes CardDAV names by default (`setGhostCardDAVName`, `connector/contact_names.go`) with a first-apply takeover notice, `--no-apply` previews instead, and `--force-names` re-runs naming even for hand-customized rooms (`refreshAllPortalNames`); conflicts with explicit names are counted and logged with the winning source; `carddav-clear` and `clear-contact-names [--source explicit|carddav|roster] [<jid>]` clear sources and re-run auto naming; `carddav-status` shows per-source name counts. Tests: `TestParseCardDAVSyncArgs`, `TestResolveGhostDisplayName`, `TestParseContactNameSource`.
   - Reference: `carddav_*.go`, `save_contact.go`, `naming.go`.
 - **WS3.6 Roster isolation** — audited phase 1: every roster-derived refresh path is already login-scoped (`refreshRosterNamedPortals`, `refreshAutoNamedPortalsMatching`, `refreshContactNamedPortals` all iterate `DB.UserPortal.GetAllForLogin(login.UserLogin)`), and all roster/cache state lives on the per-login `MyNetworkClient`. Caveat (phase 2): bridgev2 ghosts are network-global (`MakeUserID(jid)` has no receiver), so when the bridge runs multiple logins that see the same contact, the most recent roster/presence name write wins until per-login ghost IDs are designed (breaking change, needs migration).
   - Reference: their ROADMAP 2.1b / To-do #6.
@@ -223,10 +227,10 @@ Each item must keep our SPDX headers, test style, and terse management-room UX.
   - Reference: `xmpp_dial.go`, `connector.go:26-42`.
 - **WS4.4 Keepalive and connection health** — done phase 1+2: XEP-0199 runtime health ping every minute with 2 consecutive failures forcing reconnect (`startRuntimeHealth`/`RuntimeHealth`), but pings only fire when the stream was idle for 90 s (`recordServerActivity`/`serverIdleFor`, patched into the router handlers and `sendXMPP`); a 3-minute self-ping to our own full JID (`selfPingOwnJID`, XEP-0410 style half-open detection, auto-answered by the patched router) runs on the same loop; reconnect backoff 5 s doubling to 5 min, auth failures set permanent `bad_credentials` and wait for new credentials. Tests in `connector/xmpp_health_test.go`.
   - Reference: `xmpp_conn_health.go`.
-- **WS4.5 XEP-0198 stream management** — phase 1 present via patched-xmpp: stream resume is negotiated and used (`xmpp.IsStreamResumable`, resume-mode reconnect in `handleDisconnect`), and outbound sends are tracked with ack timeouts (`trackOutboundSend`/`scanPendingSendTimeouts`). Remaining phase 2: re-send unacknowledged pending messages when resume fails.
-- **WS4.6 MAM catch-up and backfill** — phase 1 present: automatic DM and MUC catch-up triggers after every connect (`triggerAutomaticDMCatchup`/`triggerAutomaticMUCCatchup`, `connector/history_sync.go`), on-demand backfill windows, and stale-history rejoin fallback. Remaining phase 2: archive-wide single-query catch-up (RSM `after` last-seen id, routed by peer; O(1) IQs regardless of roster size) to close the Cheogram-number gap, and configurable `backfill.history_days`.
+- **WS4.5 XEP-0198 stream management** — done phase 1+2: stream resume is negotiated and used (`xmpp.IsStreamResumable`, resume-mode reconnect in `handleDisconnect`), outbound sends are tracked with ack timeouts (`trackOutboundSend`/`scanPendingSendTimeouts`), and message stanzas also store the exact packet (`trackOutboundStanza`); after a fresh (non-resumed) connect the bridge re-sends unacknowledged messages and notifies the management room (`resendPendingSends`, wired into the fresh-connect hook). Tests in `connector/network_client_test.go`.
+- **WS4.6 MAM catch-up and backfill** — phase 1+2 present: automatic DM and MUC catch-up triggers after every connect (`triggerAutomaticDMCatchup`/`triggerAutomaticMUCCatchup`, `connector/history_sync.go`), on-demand backfill windows, and stale-history rejoin fallback. DM catch-up is already archive-wide: `scheduleDMBackfill("*")` → `backfillAccountDMs` pages the whole archive from the login-level `LastSyncAt` overlap and routes each item by peer, so numbers that texted while the bridge was offline still produce portals even if they are not in the roster. The default lookback is configurable via `history_days` (`SimpleConfig`, default 30 days; `historyLookback`, honoured by `sync` and `join-room` when no explicit duration is given, tests `TestHistoryLookback`/`TestParseSyncArgsWithFallback`/`TestParseJoinRoomArgsWithFallback`). Remaining optional polish: an RSM `after`-cursor variant instead of the timestamp window.
   - Reference: `xmpp_mam.go`, their To-do #8, ROADMAP "Backfill message ordering".
-- **WS4.7 Config surface and polish** — phase 1 done: signal toggles `send_typing`, `send_read_markers`, `send_delivery_receipts` are wired through `SimpleConfig` (*bool, default enabled; `connector/naming.go`) and gate outbound chat states (`connector/xmpp_typing.go`) and receipt/marker extensions (`connector/handle_matrix.go`, `connector/xmpp_corrections.go`); tests in `connector/xmpp_signal_toggles_test.go`. Remaining phase 2: wire or remove `default_server`/`default_port`/`resource_prefix`; add tuning keys for dial timeouts/backoff/MAM interval if operators need them; keep `muc_read_markers`/`muc_nick_sync` toggles in mind for WS2.3; strip credentials/JIDs from logs; document E2BE build (`goolm`) and encryption config.
+- **WS4.7 Config surface and polish** — phase 1+2 done: signal toggles `send_typing`, `send_read_markers`, `send_delivery_receipts` are wired through `SimpleConfig` (*bool, default enabled; `connector/naming.go`) and gate outbound chat states (`connector/xmpp_typing.go`) and receipt/marker extensions (`connector/handle_matrix.go`, `connector/xmpp_corrections.go`); tests in `connector/xmpp_signal_toggles_test.go`. `default_server`, `default_port`, and `resource_prefix` are now wired into the connection config (`xmppServerAddress`/`xmppJIDWithResource`, tests in `connector/xmpp_dial_test.go`). Remaining phase 2: tuning keys for dial timeouts/backoff/MAM interval if operators need them; strip credentials/JIDs from logs; document E2BE build (`goolm`) and encryption config.
   - Reference: their CODE_OPTIMIZATION.md CFG-1..CFG-4, F-2, C-1.
 
 ### WS5 - Calls
@@ -287,7 +291,7 @@ Backlog:
 - decide how stickers should map to Matrix sticker or image events
 - preserve custom emoji/image reactions where feasible
 
-Status: done phase 1 — inbound XEP-0231 BOB payloads (`connector/xmpp_bob.go`) upload as Matrix media (image png/jpeg/gif/webp, 5 MiB cap) and body-only `cid:` references degrade to a filename placeholder; image-based custom emoji reactions (`mxc://`) are stored in Matrix but not sent to XMPP (see P0 `#6`). Remaining: sticker mapping, non-image BOB types, decrypt-free `cid:` resolution decoupled from the carrying message.
+Status: done phase 1 — inbound XEP-0231 BOB payloads (`connector/xmpp_bob.go`) upload as Matrix media (png/jpeg/gif/webp and any other mime as a file, 5 MiB cap) and body-only `cid:` references degrade to a filename placeholder; image-based custom emoji reactions (`mxc://`) are stored in Matrix but not sent to XMPP (see P0 `#6`). Sticker decision: no dedicated sticker mapping — gateway traffic exposes no sticker type, so sticker-like images arrive as BOB/OOB media and already bridge through the normal image/file path. Remaining: decrypt-free `cid:` resolution decoupled from the carrying message.
 
 Evidence:
 - `cheogram-android/src/cheogram/java/com/cheogram/android/BobTransfer.java`
@@ -323,7 +327,7 @@ Backlog:
 - formalize behavior for direct invites, mediated invites, and unknown senders
 - optionally expose a bridge setting/command for stranger invites
 
-Status: deferred (phase 2, see WS2.6) — direct/mediated invites currently bridge as messages; native Matrix invite flow with a rate limit is planned.
+Status: done phase 1 (WS2.6) — direct/mediated MUC invites create the portal and join the room, rate-limited to 10 invites/hour per login with management-room notices (`connector/xmpp_muc_invites.go`, tests `connector/xmpp_muc_invites_test.go`). Remaining phase 2: optional never-auto-join mode surfacing a native Matrix invite, password memory across rejoins.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/parser/MessageParser.java`
@@ -360,7 +364,7 @@ Backlog:
 - sync MUC/group avatars into portal rooms
 - fetch and map display names/profile metadata from XMPP profile sources
 
-Status: done phase 1 (WS3.1/WS3.2) — vcard-temp 1:1 avatars (`connector/xmpp_avatar.go`) plus occupant contact-rule reuse for non-anonymous rooms; `avatar-probe` diagnostic in `connector/xmpp_avatar_probe.go`. Remaining phase 2: anonymous-room occupant avatars (XEP-0084), periodic 24 h refresh, group/portal avatars.
+Status: done phase 1 (WS3.1/WS3.2) — vcard-temp 1:1 avatars (`connector/xmpp_avatar.go`) plus occupant contact-rule reuse for non-anonymous rooms; `avatar-probe` diagnostic in `connector/xmpp_avatar_probe.go`. Remaining phase 2: anonymous-room occupant avatars (XEP-0084), group/portal avatars.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/manager/AvatarManager.java`
@@ -412,7 +416,7 @@ Backlog:
 - map Matrix room state or bridge commands to native XMPP bookmark operations
 - support native bookmark variants consistently
 
-Status: done phase 1 (WS2.5) — `connector/xmpp_bookmarks.go` publishes XEP-0402 bookmarks on group creation/join; `connector/xmpp_bookmarks_pep.go` applies live PEP events (autojoin on → join/import, off/retract → leave + cleanup); `requestBookmarks`/`requestBookmarks2` fetch XEP-0402 and legacy private storage. Remaining phase 2: read-modify-write merge, publish-options capability gating, XEP-0049 legacy import, `bookmarks-sync` push command.
+Status: done phase 1+2 (WS2.5) — `connector/xmpp_bookmarks.go` publishes XEP-0402 bookmarks on group creation/join and (with `bookmarks-sync [push]`) republishes known bookmarks; `connector/xmpp_bookmarks_pep.go` applies live PEP events (autojoin on → join/import, off/retract → leave + cleanup, leaving marks autojoin off); `requestBookmarks`/`requestBookmarks2` fetch XEP-0402 and legacy private storage. Remaining phase 3: read-modify-write merge, publish-options capability gating, XEP-0049 legacy import.
 
 Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/manager/BookmarkManager.java`
@@ -438,6 +442,8 @@ Evidence:
 - `cheogram-android/src/cheogram/java/com/cheogram/android/WebxdcUpdate.java`
 - `cheogram-android/src/main/java/eu/siacs/conversations/parser/MessageParser.java`
 
+Status: deferred (P3) — no webxdc detection yet; unknown payloads ride the normal body/media path and degrade to text or a notice. Revisit only if gateway traffic starts carrying webxdc in practice.
+
 ### 18. Calls and Jingle
 
 Why:
@@ -454,6 +460,8 @@ Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/jingle/JingleRtpConnection.java`
 - `cheogram-android/CHANGELOG.md`
 
+Status: WS5 — call-state Jingle messages already bridge as `m.notice` (WS5.2). SIP/MatrixRTC remains opt-in and deferred (WS5.1/WS5.3/WS5.4) until a SIP account and testing capacity exist; raw Jingle stays out of scope.
+
 ### 19. Advanced file transfer modes beyond HTTP upload
 
 Why:
@@ -468,6 +476,8 @@ Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/jingle/JingleFileTransferConnection.java`
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/jingle/transports/WebRTCDataChannelTransport.java`
 - `cheogram-android/CHANGELOG.md`
+
+Status: satisfied phase 1 — XEP-0363 outbound upload plus XEP-0066 OOB inbound download cover the gateway paths; download/upload failures keep a readable link fallback, so P2P/Jingle-only transfers are not required. Revisit only if the gateway starts sending Jingle file transfers.
 
 ### 20. Registration, onboarding, and account-management extras
 
@@ -485,6 +495,8 @@ Evidence:
 - `cheogram-android/CHANGELOG.md`
 - `connector/login.go`
 
+Status: out of scope by design — JMP account creation stays on the JMP website; the bridge offers `password`/`password-server` login flows (`connector/login.go`), gateway-side registration and account commands through `gateway-actions`/`gateway-form`/`gateway-submit`, and contact adds via `add-to-roster`/`save-contact`/CardDAV. CAPTCHA/invite-token onboarding is a JMP product concern, not bridge scope.
+
 ### 21. OMEMO (XEP-0384)
 
 Why:
@@ -496,6 +508,8 @@ Backlog:
 
 Evidence:
 - their ROADMAP Phase 4 / To-do #5; `xmpp_subject_encrypted.go`
+
+Status: deferred — no OMEMO decryption/encryption is implemented. Encrypted payloads (OMEMO, OpenPGP, XEP-0380 EME, `aesgcm://`) degrade to a fixed `m.notice` with ids preserved (WS1.8, `connector/xmpp_encrypted.go`) so replies/corrections/retractions still map; key-transport messages surface as the same notice instead of being dropped.
 
 ## Suggested implementation order
 

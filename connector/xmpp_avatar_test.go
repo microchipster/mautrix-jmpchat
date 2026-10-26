@@ -6,10 +6,53 @@ package connector
 
 import (
 	"encoding/xml"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"gosrc.io/xmpp/stanza"
 )
+
+func TestVCardAvatarNeedsRefresh(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	recent := now.Add(-time.Hour)
+	stale := now.Add(-25 * time.Hour)
+	cases := map[string]struct {
+		meta *GhostMetadata
+		want bool
+	}{
+		"nil meta":               {nil, false},
+		"no hash":                {&GhostMetadata{}, false},
+		"never fetched":          {&GhostMetadata{AvatarHash: "abc"}, true},
+		"fetched recently":       {&GhostMetadata{AvatarHash: "abc", AvatarFetchedAt: &recent}, false},
+		"fetched long ago":       {&GhostMetadata{AvatarHash: "abc", AvatarFetchedAt: &stale}, true},
+		"hash without timestamp": {&GhostMetadata{AvatarHash: "abc", AvatarFetchedAt: nil}, true},
+	}
+	for name, tc := range cases {
+		if got := vcardAvatarNeedsRefresh(tc.meta, now); got != tc.want {
+			t.Errorf("%s: vcardAvatarNeedsRefresh = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestIsPermanentVCardError(t *testing.T) {
+	t.Parallel()
+	permanent := permanentVCardError{fmt.Errorf("vCard request failed: error")}
+	if !isPermanentVCardError(permanent) {
+		t.Error("permanentVCardError should be detected")
+	}
+	if !isPermanentVCardError(fmt.Errorf("wrapped: %w", permanent)) {
+		t.Error("wrapped permanentVCardError should be detected")
+	}
+	if isPermanentVCardError(errors.New("plain error")) {
+		t.Error("plain error should not be treated as permanent")
+	}
+	if isPermanentVCardError(nil) {
+		t.Error("nil should not be treated as permanent")
+	}
+}
 
 func TestXMPPVCardUpdatePresenceDecode(t *testing.T) {
 	t.Parallel()

@@ -798,3 +798,38 @@ func TestRoomNoticesEscapeNames(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSyncArgsWithFallback(t *testing.T) {
+	t.Parallel()
+
+	custom := 7 * 24 * time.Hour
+	full, lookback, err := parseSyncArgs(nil, custom)
+	if err != nil || full || lookback != custom {
+		t.Fatalf("parseSyncArgs(nil, custom) = (%v, %v, %v), want (false, %v, nil)", full, lookback, err, custom)
+	}
+	if _, lookback, err = parseSyncArgs(nil, 0); err != nil || lookback != defaultMAMLookback {
+		t.Fatalf("parseSyncArgs(nil, 0) lookback = %v (err %v), want default %v", lookback, err, defaultMAMLookback)
+	}
+	if full, _, err = parseSyncArgs([]string{"full"}, custom); err != nil || !full {
+		t.Fatalf("parseSyncArgs(full) = (%v, %v), want full sync", full, err)
+	}
+	if _, lookback, err = parseSyncArgs([]string{"12h"}, custom); err != nil || lookback != 12*time.Hour {
+		t.Fatalf("parseSyncArgs(12h) lookback = %v (err %v), want 12h", lookback, err)
+	}
+}
+
+func TestParseJoinRoomArgsWithFallback(t *testing.T) {
+	t.Parallel()
+
+	custom := 3 * 24 * time.Hour
+	roomJID, full, lookback, err := parseJoinRoomArgs([]string{"room@conference.example.com"}, custom)
+	if err != nil || full || roomJID != "room@conference.example.com" || lookback != custom {
+		t.Fatalf("parseJoinRoomArgs(default) = (%q, %v, %v, %v), want custom fallback", roomJID, full, lookback, err)
+	}
+	if _, _, lookback, err = parseJoinRoomArgs([]string{"room@conference.example.com"}, 0); err != nil || lookback != defaultMAMLookback {
+		t.Fatalf("parseJoinRoomArgs(zero fallback) lookback = %v (err %v), want default %v", lookback, err, defaultMAMLookback)
+	}
+	if _, full, _, err = parseJoinRoomArgs([]string{"room@conference.example.com", "full"}, custom); err != nil || !full {
+		t.Fatalf("parseJoinRoomArgs(full) = (%v, %v), want full", full, err)
+	}
+}

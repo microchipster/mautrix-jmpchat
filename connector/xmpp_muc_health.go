@@ -269,6 +269,27 @@ func (nc *MyNetworkClient) leaveMUC(roomJID string) {
 		nc.mucLeft = map[string]bool{}
 	}
 	nc.mucLeft[roomJID] = true
+	// Remember the leave persistently: a bookmarked room that is left on
+	// purpose gets its XEP-0402 bookmark rewritten with autojoin off so a
+	// reconnect does not silently rejoin it.
+	if nc.bookmarkedRooms != nil && nc.bookmarkedRooms[roomJID] {
+		name := ""
+		if nc.bookmarkedRoomNames != nil {
+			name = nc.bookmarkedRoomNames[roomJID]
+		}
+		if err := nc.publishBookmark2(BookmarkConference{
+			JID:      roomJID,
+			Name:     name,
+			Autojoin: "false",
+			Nick:     nick,
+		}); err != nil {
+			nc.log.Warn().Err(err).Str("room_jid", roomJID).Msg("Failed to mark bookmark as autojoin off after leaving room")
+		}
+		delete(nc.bookmarkedRooms, roomJID)
+		if nc.bookmarkedRoomNames != nil {
+			delete(nc.bookmarkedRoomNames, roomJID)
+		}
+	}
 	nc.log.Info().Str("room_jid", roomJID).Msg("Left MUC room")
 }
 

@@ -349,3 +349,79 @@ func TestExtractPrefixedSender(t *testing.T) {
 		t.Fatal("expected extractPrefixedSender to return false for un-prefixed message")
 	}
 }
+
+func TestResolveMUCSenderIDCheogramGroupResource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		from    string
+		roomJID string
+		want    string
+	}{
+		{
+			name:    "cheogram group resource with phone JID",
+			from:    "+15550101100,+15550101200@cheogram.com/+15550101200@cheogram.com",
+			roomJID: "+15550101100,+15550101200@cheogram.com",
+			want:    "+15550101200@cheogram.com",
+		},
+		{
+			name:    "cheogram group resource with bare digits",
+			from:    "+15550101100,+15550101200@cheogram.com/5550101200",
+			roomJID: "+15550101100,+15550101200@cheogram.com",
+			want:    "+15550101200@cheogram.com",
+		},
+		{
+			name:    "regular MUC resource is kept",
+			from:    "room@conference.example.com/alice",
+			roomJID: "room@conference.example.com",
+			want:    "room@conference.example.com/alice",
+		},
+		{
+			name:    "no resource",
+			from:    "+15550101100@cheogram.com",
+			roomJID: "+15550101100@cheogram.com",
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nc := &MyNetworkClient{}
+			msg := stanza.NewMessage(stanza.Attrs{From: tt.from, Type: stanza.MessageTypeGroupchat})
+			if got := nc.resolveMUCSenderID(msg, tt.roomJID); got != tt.want {
+				t.Errorf("resolveMUCSenderID(%q, %q) = %q, want %q", tt.from, tt.roomJID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResendPendingSendsKeepsTrackedPackets(t *testing.T) {
+	t.Parallel()
+	nc := &MyNetworkClient{}
+	msg := stanza.NewMessage(stanza.Attrs{To: "+15551234567@cheogram.com", Type: stanza.MessageTypeChat, Id: "stanza-1"})
+	nc.trackOutboundStanza("stanza-1", "+15551234567@cheogram.com", id.RoomID("!room:example.com"), "evt-1", msg)
+	nc.trackOutboundSend("stanza-2", "+15559876543@cheogram.com", id.RoomID("!room:example.com"), "evt-2")
+
+	nc.pendingSendsMu.Lock()
+	withPacket := nc.pendingSends["stanza-1"]
+	withoutPacket := nc.pendingSends["stanza-2"]
+	nc.pendingSendsMu.Unlock()
+	if withPacket == nil || withPacket.packet == nil {
+		t.Fatal("trackOutboundStanza should store the resendable packet")
+	}
+	if withoutPacket == nil || withoutPacket.packet != nil {
+		t.Fatal("trackOutboundSend should not store a packet")
+	}
+
+	// The re-send must fail softly without a connection and keep the entries
+	// tracked so the acknowledgment timeout can still fire.
+	nc.resendPendingSends()
+	nc.pendingSendsMu.Lock()
+	_, ok1 := nc.pendingSends["stanza-1"]
+	_, ok2 := nc.pendingSends["stanza-2"]
+	nc.pendingSendsMu.Unlock()
+	if !ok1 || !ok2 {
+		t.Fatal("unacknowledged sends should stay tracked when the re-send fails")
+	}
+}

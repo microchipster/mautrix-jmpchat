@@ -33,7 +33,7 @@ The codebase currently includes bridge logic for:
 - Matrix -> XMPP handling for messages, reactions, and read receipts
 - typing indicators (XEP-0085), message corrections (XEP-0308), retractions (XEP-0424/0425), and XEP-0372 mentions both ways
 - encrypted XMPP payloads (OMEMO/OpenPGP) degrade to a notice instead of being dropped
-- vcard-temp avatars (XEP-0054) with XEP-0153 triggers, plus an `avatar-probe` diagnostic
+- vcard-temp avatars (XEP-0054) with XEP-0153 triggers, refreshed daily for contacts that stay online, plus an `avatar-probe` diagnostic
 - MUC robustness: join health watchdog with XEP-0410 self-pings, nickname conflict handling and `muc-nick`, auto-rejoin, live XEP-0402 bookmark events, and room subject <-> Matrix topic sync in both directions
 - roster management commands and CardDAV contact import (`carddav-*`)
 - `geo:` location mapping and gateway service-status headlines routed to the management room
@@ -116,6 +116,8 @@ When the bridge is running and a user has a management room, the quick-help text
 - `set-name <jid> <name>`
 - `set-contact-name <jid> <name|--clear>`
 - `muc-nick <room JID> [<nickname>|--clear]`
+- `muc-nick-default <nickname>|--clear`
+- `bookmarks-sync [push]`
 - `add-to-roster <jid> [name]` / `save-contact` (alias)
 - `remove-from-roster <jid>`
 - `search-roster <query>`
@@ -123,7 +125,7 @@ When the bridge is running and a user has a management room, the quick-help text
 - `carddav-login <addressbook URL> <username> <password>`
 - `carddav-logout`
 - `carddav-status`
-- `carddav-sync [apply]`
+- `carddav-sync [--no-apply] [--force-names]`
 - `carddav-clear` — remove CardDAV-sourced contact names and refresh auto-named rooms
 - `clear-contact-names [--source explicit|carddav|roster] [<phone or JID>]` — clear names from one source (or all sources) and refresh auto-named rooms
 - `avatar-probe <jid>`
@@ -261,8 +263,10 @@ Optional `network` config keys (bridge-generated `simple-config.yaml` or the pla
 - `send_typing` (default `true`): allow Matrix typing notifications to become XMPP chat states.
 - `send_read_markers` (default `true`): send XMPP displayed markers for read Matrix messages.
 - `send_delivery_receipts` (default `true`): request/answer XEP-0184 delivery receipts for DMs.
-- `carddav.allow_insecure_http` (default `false`), `carddav.allow_private_hosts` (default `false`), `carddav.default_country_code` (default `1`): CardDAV import behavior; credentials are stored per login and only `carddav-sync apply` writes roster entries.
+- `carddav.allow_insecure_http` (default `false`), `carddav.allow_private_hosts` (default `false`), `carddav.default_country_code` (default `1`): CardDAV import behavior; credentials are stored per login and only `carddav-sync` writes roster entries (`--no-apply` previews, `--force-names` also renames rooms customized by hand).
 - `muc_nick_sync` (default `true`): renaming a MUC portal room in Matrix also changes your nickname in the XMPP room (nickname-like names only).
+- `default_server` / `default_port` (default: SRV/domain discovery, port 5222) and `resource_prefix` (default empty): pin the XMPP connection target and resource for environments without working SRV records.
+- `history_days` (default 30): how far back MAM backfills reach by default (`sync` / `join-room` without an explicit duration).
 
 Cheogram gateway chats (phone numbers, group texts) never receive typing/receipt signals, since the SMS/MMS gateway cannot carry them.
 

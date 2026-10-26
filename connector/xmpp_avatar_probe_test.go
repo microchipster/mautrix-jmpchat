@@ -72,3 +72,27 @@ func TestProbeVCardTempNotConnected(t *testing.T) {
 		t.Errorf("probeVCardTemp() = %q, want error prefix", got)
 	}
 }
+
+func TestParseAvatarData(t *testing.T) {
+	t.Parallel()
+
+	size, ok := parseAvatarData([]byte(`<data xmlns="urn:xmpp:avatar:data">aGVsbG8=</data>`))
+	if !ok || size != 5 {
+		t.Fatalf("parseAvatarData(valid) = (%d, %v), want (5, true)", size, ok)
+	}
+
+	size, ok = parseAvatarData([]byte("<data xmlns=\"urn:xmpp:avatar:data\"> aGVs\n bG8= </data>"))
+	if !ok || size != 5 {
+		t.Fatalf("parseAvatarData(whitespace) = (%d, %v), want (5, true)", size, ok)
+	}
+
+	if _, ok = parseAvatarData([]byte("<data xmlns=\"urn:xmpp:avatar:data\"></data>")); ok {
+		t.Fatal("parseAvatarData(empty) should not succeed")
+	}
+	if _, ok = parseAvatarData([]byte("<data xmlns=\"urn:xmpp:avatar:data\">not base64!!</data>")); ok {
+		t.Fatal("parseAvatarData(invalid base64) should not succeed")
+	}
+	if _, ok = parseAvatarData([]byte(`<metadata xmlns="urn:xmpp:avatar:metadata"/>`)); ok {
+		t.Fatal("parseAvatarData(non-data payload) should not succeed")
+	}
+}

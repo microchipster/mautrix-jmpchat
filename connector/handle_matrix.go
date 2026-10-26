@@ -163,7 +163,7 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	if !isMUC {
-		nc.trackOutboundSend(m.Id, jid, msg.Portal.MXID, string(msg.Event.ID))
+		nc.trackOutboundStanza(m.Id, jid, msg.Portal.MXID, string(msg.Event.ID), m)
 	}
 
 	log.Info().

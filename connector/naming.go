@@ -26,6 +26,10 @@ type SimpleConfig struct {
 	SendReadMarkers      *bool         `yaml:"send_read_markers,omitempty"`
 	SendDeliveryReceipts *bool         `yaml:"send_delivery_receipts,omitempty"`
 	MUCNickSync          *bool         `yaml:"muc_nick_sync,omitempty"`
+	DefaultServer        string        `yaml:"default_server,omitempty"`
+	DefaultPort          int           `yaml:"default_port,omitempty"`
+	ResourcePrefix       string        `yaml:"resource_prefix,omitempty"`
+	HistoryDays          int           `yaml:"history_days,omitempty"`
 }
 
 // sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.
@@ -111,6 +115,16 @@ func (nc *MyNetworkClient) simpleConfig() *SimpleConfig {
 		return nil
 	}
 	return nc.connector.config
+}
+
+// historyLookback returns how far back MAM backfills should reach by default.
+// It honours the optional history_days config key and falls back to the
+// built-in default when it is not set.
+func (nc *MyNetworkClient) historyLookback() time.Duration {
+	if config := nc.simpleConfig(); config != nil && config.HistoryDays > 0 {
+		return time.Duration(config.HistoryDays) * 24 * time.Hour
+	}
+	return defaultMAMLookback
 }
 
 func appendContactNameSuffix(name, suffix string) string {
@@ -511,6 +525,13 @@ func refreshContactNamedPortals(ctx context.Context, bridge *bridgev2.Bridge, lo
 		return portalMatchesContact(portal, contactJID)
 	})
 	return err
+}
+
+// refreshAllPortalNames regenerates portal names from contact data even for
+// rooms whose names were customized by hand. Used by carddav-sync with
+// --force-names; returns how many rooms were queued for renaming.
+func refreshAllPortalNames(ctx context.Context, bridge *bridgev2.Bridge, login *bridgev2.UserLogin, suffix string) (int, error) {
+	return refreshAutoNamedPortalsMatching(ctx, bridge, login, suffix, func(*bridgev2.Portal) bool { return true })
 }
 
 func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridge, login *bridgev2.UserLogin, suffix string, match func(*bridgev2.Portal) bool) (int, error) {

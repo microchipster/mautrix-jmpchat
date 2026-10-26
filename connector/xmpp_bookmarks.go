@@ -3,6 +3,7 @@ package connector
 import (
 	"encoding/xml"
 	"fmt"
+	"sort"
 	"strings"
 
 	"gosrc.io/xmpp/stanza"
@@ -58,6 +59,46 @@ type BookmarkConference2 struct {
 	Autojoin string   `xml:"autojoin,attr,omitempty"`
 	Nick     string   `xml:"nick,omitempty"`
 	Password string   `xml:"password,omitempty"`
+}
+
+// bookmarkSnapshot returns the sorted list of room JIDs that are currently
+// treated as bookmarked for this connection.
+func (nc *MyNetworkClient) bookmarkSnapshot() []string {
+	if nc.bookmarkedRooms == nil {
+		return nil
+	}
+	rooms := make([]string, 0, len(nc.bookmarkedRooms))
+	for jid := range nc.bookmarkedRooms {
+		if jid = strings.TrimSpace(jid); jid != "" {
+			rooms = append(rooms, jid)
+		}
+	}
+	sort.Strings(rooms)
+	return rooms
+}
+
+// pushBookmarks republishes every known bookmark as a XEP-0402 entry,
+// keeping the remembered name and nickname. Returns how many publishes
+// succeeded.
+func (nc *MyNetworkClient) pushBookmarks() int {
+	pushed := 0
+	for _, jid := range nc.bookmarkSnapshot() {
+		name := ""
+		if nc.bookmarkedRoomNames != nil {
+			name = nc.bookmarkedRoomNames[jid]
+		}
+		if err := nc.publishBookmark2(BookmarkConference{
+			JID:      jid,
+			Name:     name,
+			Autojoin: "true",
+			Nick:     nc.mucNickOr(jid),
+		}); err != nil {
+			nc.log.Warn().Err(err).Str("room_jid", jid).Msg("Failed to push bookmark")
+			continue
+		}
+		pushed++
+	}
+	return pushed
 }
 
 func (nc *MyNetworkClient) publishBookmark2(conf BookmarkConference) error {

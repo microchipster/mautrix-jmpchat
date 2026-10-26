@@ -149,3 +149,29 @@ func TestExtractMUCSubject(t *testing.T) {
 		t.Errorf("extractMUCSubject() without subject = %q, %v, want empty, false", subject, ok)
 	}
 }
+
+func TestDefaultMUCNickPrecedence(t *testing.T) {
+	t.Parallel()
+	newClient := func(meta *LoginMetadata) *MyNetworkClient {
+		return &MyNetworkClient{
+			login: &bridgev2.UserLogin{
+				UserLogin: &database.UserLogin{Metadata: meta},
+			},
+		}
+	}
+
+	withDefault := newClient(&LoginMetadata{RemoteUserID: "alice@example.com", DefaultMUCNick: "Alice"})
+	if nick := withDefault.defaultMUCNick(); nick != "Alice" {
+		t.Errorf("explicit default nick should win, got %q", nick)
+	}
+
+	fromJID := newClient(&LoginMetadata{RemoteUserID: "alice@example.com"})
+	if nick := fromJID.defaultMUCNick(); nick != "alice" {
+		t.Errorf("JID localpart should be the fallback, got %q", nick)
+	}
+
+	empty := newClient(&LoginMetadata{DefaultMUCNick: "   "})
+	if nick := empty.defaultMUCNick(); nick != "matrix" {
+		t.Errorf("blank default should fall back to matrix, got %q", nick)
+	}
+}

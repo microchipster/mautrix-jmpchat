@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,9 +25,44 @@ const (
 	// NSVCardUpdate is the presence-based vCard update namespace (XEP-0153).
 	NSVCardUpdate = "vcard-temp:x:update"
 
-	maxVCardAvatarSize = 1 << 20 // 1 MiB
-	vcardFetchTimeout  = 30 * time.Second
+	maxVCardAvatarSize         = 1 << 20 // 1 MiB
+	vcardFetchTimeout          = 30 * time.Second
+	vcardAvatarRefreshInterval = 24 * time.Hour
+	vcardAvatarRefreshInitial  = time.Minute
+	vcardAvatarRefreshStagger  = 500 * time.Millisecond
 )
+
+// permanentVCardError marks vCard fetch failures that will not succeed on
+// retry with the same photo hash (for example a stanza error response).
+type permanentVCardError struct {
+	err error
+}
+
+func (p permanentVCardError) Error() string {
+	return p.err.Error()
+}
+
+func (p permanentVCardError) Unwrap() error {
+	return p.err
+}
+
+// isPermanentVCardError reports whether a vCard fetch error should be stamped.
+func isPermanentVCardError(err error) bool {
+	var permanent permanentVCardError
+	return errors.As(err, &permanent)
+}
+
+// vcardAvatarNeedsRefresh reports whether the stored avatar should be fetched
+// again because the daily refresh interval elapsed (or it was never fetched).
+func vcardAvatarNeedsRefresh(meta *GhostMetadata, now time.Time) bool {
+	if meta == nil || meta.AvatarHash == "" {
+		return false
+	}
+	if meta.AvatarFetchedAt == nil {
+		return true
+	}
+	return now.Sub(*meta.AvatarFetchedAt) >= vcardAvatarRefreshInterval
+}
 
 // XMPPVCardUpdate is the vcard-temp:x:update presence extension carrying the
 // SHA1 hash of the user's vCard photo.
@@ -98,6 +134,13 @@ func (nc *MyNetworkClient) handleVCardUpdatePresence(bareFromJID string, pres st
 func (nc *MyNetworkClient) refreshVCardAvatar(jid, hash string) {
 	ctx, cancel := context.WithTimeout(context.Background(), vcardFetchTimeout)
 	defer cancel()
+	nc.refreshVCardAvatarContext(ctx, jid, hash, false)
+}
+
+// refreshVCardAvatarContext fetches a vCard photo. When force is set the
+// same-hash dedupe is bypassed so the daily refresh can pick up changes that
+// were never announced via presence.
+func (nc *MyNetworkClient) refreshVCardAvatarContext(ctx context.Context, jid, hash string, force bool) {
 	if !nc.isXMPPConnected() {
 		return
 	}
@@ -110,11 +153,25 @@ func (nc *MyNetworkClient) refreshVCardAvatar(jid, hash string) {
 	if meta == nil {
 		meta = &GhostMetadata{}
 	}
-	if meta.AvatarHash == hash && ghost.AvatarMXC != "" {
+	if !force && meta.AvatarHash == hash && ghost.AvatarMXC != "" {
+		return
+	}
+	if meta.AvatarFetchErrorHash == hash {
 		return
 	}
 	photo, _, err := nc.fetchVCardPhoto(ctx, jid)
 	if err != nil {
+		if isPermanentVCardError(err) {
+			if meta.AvatarFetchErrorHash != hash {
+				meta.AvatarFetchErrorHash = hash
+				ghost.Metadata = meta
+				if dbErr := nc.bridge.DB.Ghost.Update(ctx, ghost.Ghost); dbErr != nil {
+					nc.log.Warn().Err(dbErr).Str("jid", jid).Msg("Failed to save stamped vCard fetch error")
+				}
+			}
+			nc.log.Debug().Err(err).Str("jid", jid).Msg("Stamped permanent vCard fetch error")
+			return
+		}
 		nc.log.Debug().Err(err).Str("jid", jid).Msg("Failed to fetch vCard avatar")
 		return
 	}
@@ -130,13 +187,63 @@ func (nc *MyNetworkClient) refreshVCardAvatar(jid, hash string) {
 			return photo, nil
 		},
 	}})
+	now := time.Now()
 	meta.AvatarHash = hash
+	meta.AvatarFetchedAt = &now
+	meta.AvatarFetchErrorHash = ""
 	ghost.Metadata = meta
 	if err := nc.bridge.DB.Ghost.Update(ctx, ghost.Ghost); err != nil {
 		nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to save vCard avatar metadata")
 		return
 	}
 	nc.log.Info().Str("jid", jid).Msg("Updated XMPP contact avatar")
+}
+
+// startVCardAvatarRefreshLoop starts the daily avatar refresh worker once per
+// login, so avatars of contacts that never re-announce their hash stay fresh.
+func (nc *MyNetworkClient) startVCardAvatarRefreshLoop() {
+	nc.vcardRefreshOnce.Do(func() {
+		go func() {
+			time.Sleep(vcardAvatarRefreshInitial)
+			for {
+				nc.refreshStaleVCardAvatars()
+				time.Sleep(vcardAvatarRefreshInterval)
+			}
+		}()
+	})
+}
+
+// refreshStaleVCardAvatars re-fetches roster contacts whose avatar was not
+// fetched within the refresh interval.
+func (nc *MyNetworkClient) refreshStaleVCardAvatars() {
+	if nc.bridge == nil || nc.login == nil || !nc.isXMPPConnected() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	now := time.Now()
+	for _, jid := range nc.rosterContactList() {
+		if ctx.Err() != nil {
+			return
+		}
+		if strings.HasSuffix(strings.ToLower(jid), "@cheogram.com") {
+			continue
+		}
+		ghost, err := nc.bridge.GetGhostByID(ctx, MakeUserID(jid))
+		if err != nil {
+			continue
+		}
+		meta, _ := ghost.Metadata.(*GhostMetadata)
+		if !vcardAvatarNeedsRefresh(meta, now) {
+			continue
+		}
+		nc.refreshVCardAvatarContext(ctx, jid, meta.AvatarHash, true)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(vcardAvatarRefreshStagger):
+		}
+	}
 }
 
 // fetchVCardPhoto requests the vCard of a contact and decodes its PHOTO into
@@ -160,7 +267,7 @@ func (nc *MyNetworkClient) fetchVCardPhoto(ctx context.Context, jid string) ([]b
 			return nil, "", fmt.Errorf("vCard response channel closed")
 		}
 		if resp.Type != stanza.IQTypeResult {
-			return nil, "", fmt.Errorf("vCard request failed: %s", resp.Type)
+			return nil, "", permanentVCardError{fmt.Errorf("vCard request failed: %s", resp.Type)}
 		}
 		vcard, ok := resp.Payload.(*vcardTemp)
 		if !ok || vcard.Photo == nil {

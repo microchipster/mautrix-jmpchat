@@ -235,7 +235,7 @@ func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 			return fmt.Errorf("failed to send XMPP edit fallback message: %w", err)
 		}
 		if !portalUsesGroupChat(msg.Portal) {
-			nc.trackOutboundSend(stanzaID, jid, msg.Portal.MXID, string(msg.Event.ID))
+			nc.trackOutboundStanza(stanzaID, jid, msg.Portal.MXID, string(msg.Event.ID), m)
 		}
 		return nil
 	}
@@ -263,7 +263,7 @@ func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 		return fmt.Errorf("failed to send XMPP correction: %w", err)
 	}
 	if msgType == stanza.MessageTypeChat {
-		nc.trackOutboundSend(stanzaID, jid, msg.Portal.MXID, string(msg.Event.ID))
+		nc.trackOutboundStanza(stanzaID, jid, msg.Portal.MXID, string(msg.Event.ID), m)
 	}
 	return nil
 }
@@ -313,7 +313,7 @@ func (nc *MyNetworkClient) HandleMatrixMessageRemove(ctx context.Context, msg *b
 		return fmt.Errorf("failed to send XMPP retraction: %w", err)
 	}
 	if msgType == stanza.MessageTypeChat {
-		nc.trackOutboundSend(stanzaID, jid, msg.Portal.MXID, string(msg.Event.ID))
+		nc.trackOutboundStanza(stanzaID, jid, msg.Portal.MXID, string(msg.Event.ID), m)
 	}
 	return nil
 }

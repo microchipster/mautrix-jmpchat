@@ -102,6 +102,21 @@ func (nc *MyNetworkClient) setMUCNickOverride(ctx context.Context, roomJID, nick
 	return nc.login.Save(ctx)
 }
 
+// setMUCDefaultNick persists (or clears, when nick is empty) the account-wide
+// fallback nickname used in rooms without an override or bookmark nickname.
+func (nc *MyNetworkClient) setMUCDefaultNick(ctx context.Context, nick string) error {
+	if nc.login == nil {
+		return fmt.Errorf("login is not available")
+	}
+	meta, _ := nc.login.Metadata.(*LoginMetadata)
+	if meta == nil {
+		meta = &LoginMetadata{}
+	}
+	meta.DefaultMUCNick = strings.TrimSpace(nick)
+	nc.login.Metadata = meta
+	return nc.login.Save(ctx)
+}
+
 // sendMUCNickChange updates the remembered nickname and asks the MUC service
 // to change our occupant nickname in the room.
 func (nc *MyNetworkClient) sendMUCNickChange(roomJID, nick string) {

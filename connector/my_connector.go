@@ -71,6 +71,8 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		proc.AddHandler(CommandMatrixEncryptionReset)
 		proc.AddHandler(CommandJoinRoom)
 		proc.AddHandler(CommandMUCNick)
+		proc.AddHandler(CommandMUCNickDefault)
+		proc.AddHandler(CommandBookmarksSync)
 		proc.AddHandler(CommandListDiscoveredRooms)
 		proc.AddHandler(CommandListRooms)
 		proc.AddHandler(CommandListUnnamedContacts)
