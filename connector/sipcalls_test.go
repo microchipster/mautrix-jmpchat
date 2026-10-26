@@ -202,16 +202,16 @@ func TestDecideCallRoom(t *testing.T) {
 
 func TestCallRoomNameAndTopic(t *testing.T) {
 	t.Parallel()
-	if got := callRoomName("Alice O'Brien", "+15551234567"); got != "Calls: Alice O'Brien (+15551234567)" {
+	if got := callRoomName("Alice O'Brien", "+15551234567"); got != "📞 Alice O'Brien (+15551234567)" {
 		t.Fatalf("unexpected call room name: %q", got)
 	}
-	if got := callRoomName("", "+15551234567"); got != "Calls: +15551234567" {
+	if got := callRoomName("", "+15551234567"); got != "📞 +15551234567" {
 		t.Fatalf("unexpected call room name for empty display name: %q", got)
 	}
-	if got := callRoomName("+15551234567", "+15551234567"); got != "Calls: +15551234567" {
+	if got := callRoomName("+15551234567", "+15551234567"); got != "📞 +15551234567" {
 		t.Fatalf("number used as display name must not be duplicated: %q", got)
 	}
-	if got := callRoomName("  ", "+15551234567"); got != "Calls: +15551234567" {
+	if got := callRoomName("  ", "+15551234567"); got != "📞 +15551234567" {
 		t.Fatalf("blank display name must fall back: %q", got)
 	}
 	topic := callRoomTopic("+15551234567")
@@ -325,5 +325,18 @@ func TestCallsConfigWidgetToHostkit(t *testing.T) {
 	}
 	if pwa.NotifyOnEnroll == nil || *pwa.NotifyOnEnroll != false {
 		t.Fatalf("PWA NotifyOnEnroll not mapped: %+v", pwa.NotifyOnEnroll)
+	}
+}
+
+func TestCallsConfigAutoCreateCallRoomDefault(t *testing.T) {
+	t.Parallel()
+	if (CallsConfig{}).IsAutoCreateCallRoom() == false {
+		t.Fatal("AutoCreateCallRoom should default to enabled")
+	}
+	if (CallsConfig{AutoCreateCallRoom: ptr.Ptr(false)}).IsAutoCreateCallRoom() {
+		t.Fatal("explicit false should disable auto-creation")
+	}
+	if !(CallsConfig{AutoCreateCallRoom: ptr.Ptr(true)}).IsAutoCreateCallRoom() {
+		t.Fatal("explicit true should enable auto-creation")
 	}
 }

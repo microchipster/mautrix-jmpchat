@@ -35,9 +35,10 @@ type CallsConfig struct {
 	AllowSelfDial          bool     `yaml:"allow_self_dial,omitempty"`
 	DTMFRedactCommand      *bool    `yaml:"dtmf_redact_command,omitempty"`
 	// AutoCreateCallRoom creates a dedicated unencrypted call room on demand when a call cannot
-	// ring in the portal room because it is encrypted. Off by default: with it off the bridge
-	// refuses to ring and points to the `call-room` command instead.
-	AutoCreateCallRoom bool `yaml:"auto_create_call_room,omitempty"`
+	// ring in the portal room because it is encrypted. The zero value (unset) means enabled:
+	// the bridge creates the call room and points you at it. Set `false` to refuse to ring and
+	// point to the `call-room` command instead.
+	AutoCreateCallRoom *bool `yaml:"auto_create_call_room,omitempty"`
 
 	// Widget configures the optional Dialpad widget/PWA served by the bridge.
 	Widget CallsWidgetConfig `yaml:"widget,omitempty"`
@@ -47,6 +48,13 @@ type CallsConfig struct {
 // value (unset) means enabled; only an explicit `false` disables it.
 func (c CallsConfig) IsEnabled() bool {
 	return c.Enabled == nil || *c.Enabled
+}
+
+// IsAutoCreateCallRoom reports whether a call room should be created lazily
+// when a call arrives for an encrypted portal. The zero value (unset) means
+// enabled; only an explicit `false` restores the refuse-and-point behavior.
+func (c CallsConfig) IsAutoCreateCallRoom() bool {
+	return c.AutoCreateCallRoom == nil || *c.AutoCreateCallRoom
 }
 
 // CallsWidgetConfig mirrors hostkit.WidgetConfig for the `network.calls.widget` section.

@@ -474,7 +474,7 @@ Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/jingle/JingleRtpConnection.java`
 - `cheogram-android/CHANGELOG.md`
 
-Status: WS5 — call-state Jingle messages bridge as `m.notice` (WS5.2, done). SIP/MatrixRTC calling is implemented behind the opt-in `sipcalls` build tag (WS5.1/WS5.3 done incl. call rooms, Dialpad widget, roster-only calls and call history; WS5.4 docs done): see the Workstreams section; live validation with a real SIP account + SFU is the remaining step. Raw Jingle stays out of scope.
+Status: WS5 — call-state Jingle messages bridge as `m.notice` (WS5.2, done). SIP/MatrixRTC calling ships in the standard image and is available by default (WS5.1/WS5.3 done incl. call rooms, Dialpad widget, roster-only calls and call history; WS5.4 docs done): see the Workstreams section; `network.calls.enabled: false` disables the SIP runtime entirely and each account opts in with `sip-login`. Encrypted portal rooms use the interim call-room model: `calls.auto_create_call_room` now defaults to `true`, call rooms are named `📞 <contact>`, hidden from `list-rooms`, and mirror their notices into the portal; the planned follow-up for ringing directly in encrypted rooms is the audio-only SFrame/E2EE spike in `docs/SFRAME_CALLS_SPIKE.md`. Live validation with a real SIP account + SFU is the remaining step. Raw Jingle stays out of scope.
 
 ### 19. Advanced file transfer modes beyond HTTP upload
 

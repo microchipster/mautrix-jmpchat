@@ -9,6 +9,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"html"
 	"strings"
 
 	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
@@ -70,9 +71,9 @@ func decideCallRoom(portalEncrypted bool, callRoom id.RoomID) callRoomDecision {
 func callRoomName(displayName, number string) string {
 	displayName = strings.TrimSpace(displayName)
 	if displayName == "" || displayName == number {
-		return "Calls: " + number
+		return "📞 " + number
 	}
-	return fmt.Sprintf("Calls: %s (%s)", displayName, number)
+	return fmt.Sprintf("📞 %s (%s)", displayName, number)
 }
 
 // callRoomTopic is the fixed topic of dedicated call rooms.
@@ -128,7 +129,7 @@ func (h *callHost) ResolveCallRoom(ctx context.Context, login core.LoginRef, e16
 		h.x.setCallRoomIndex(callRoom, portal.PortalKey)
 		return h.roomForRoom(ctx, ul, e164, callRoom, false)
 	case callRoomRefuse:
-		if !h.x.cfg.AutoCreateCallRoom {
+		if !h.x.cfg.IsAutoCreateCallRoom() {
 			h.x.notifyManagement(ul.ID, fmt.Sprintf("Call from %s could not ring: the portal room is encrypted. Run `%s call-room %s` to create an unencrypted call room.", e164, h.x.commandPrefix(), e164))
 			return nil, fmt.Errorf("the portal room for %s is encrypted; run `%s call-room %s` to create an unencrypted call room", e164, h.x.commandPrefix(), e164)
 		}
@@ -310,6 +311,8 @@ func (x *callsExt) createCallRoomForPortal(ctx context.Context, ul *bridgev2.Use
 }
 
 // SendCallNotice posts a plain text notice in the call room as the number's ghost.
+// When the call room is a linked room for an encrypted portal, the notice is
+// also mirrored into the portal room so the call is visible where the chat lives.
 func (h *callHost) SendCallNotice(ctx context.Context, room *core.CallRoom, text string) error {
 	if room == nil || room.Ghost == nil {
 		return fmt.Errorf("no call room for the notice")
@@ -318,7 +321,37 @@ func (h *callHost) SendCallNotice(ctx context.Context, room *core.CallRoom, text
 		"msgtype": string(event.MsgNotice),
 		"body":    text,
 	})
+	h.mirrorCallNotice(ctx, room, text)
 	return err
+}
+
+// mirrorCallNotice posts the same notice (with a link to the call room) into
+// the linked portal room when the call room is not the portal room itself.
+// It is best-effort: failures are logged and never affect the call.
+func (h *callHost) mirrorCallNotice(ctx context.Context, room *core.CallRoom, text string) {
+	if h == nil || h.x == nil || h.x.br == nil {
+		return
+	}
+	key, ok := h.x.cachedCallRoomPortal(room.RoomID)
+	if !ok {
+		return
+	}
+	portal, err := h.x.br.GetExistingPortalByKey(ctx, key)
+	if err != nil || portal == nil || portal.MXID == "" || portal.MXID == room.RoomID {
+		return
+	}
+	url := room.RoomID.URI().MatrixToURL()
+	_, err = h.x.br.Bot.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{
+		Parsed: &event.MessageEventContent{
+			MsgType:       event.MsgNotice,
+			Body:          text + "\n" + url,
+			Format:        event.FormatHTML,
+			FormattedBody: html.EscapeString(text) + "<br/><a href=\"" + url + "\">Open the call room</a>",
+		},
+	}, nil)
+	if err != nil {
+		h.x.log.Debug().Err(err).Str("portal_mxid", string(portal.MXID)).Msg("Failed to mirror the call notice into the portal room")
+	}
 }
 
 // OwnerMXID returns the Matrix user that owns the login ("" when unknown).

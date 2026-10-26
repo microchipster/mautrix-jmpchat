@@ -885,8 +885,12 @@ var CommandListRooms = &commands.FullHandler{
 			ce.Reply("Failed to list rooms: %v", err)
 			return
 		}
+		callRooms := callRoomIDs(ce, login)
 		lines := make([]string, 0, len(candidates)+2)
 		for _, room := range candidates {
+			if callRooms[room.roomID] {
+				continue
+			}
 			kind := "dm"
 			if room.portal != nil && room.portal.RoomType != database.RoomTypeDM && room.portal.RoomType != database.RoomTypeSpace {
 				kind = "group"
@@ -3939,4 +3943,27 @@ func deleteAllPortals(ce *commands.Event, login *bridgev2.UserLogin) error {
 		BlockingCleanup:  true,
 	})
 	return nil
+}
+
+// callRoomIDs returns the Matrix room IDs that are linked unencrypted call
+// rooms of this login, so plain room listings can hide them.
+func callRoomIDs(ce *commands.Event, login *bridgev2.UserLogin) map[id.RoomID]bool {
+	set := map[id.RoomID]bool{}
+	if ce == nil || ce.Bridge == nil || login == nil {
+		return set
+	}
+	rows, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
+	if err != nil {
+		return set
+	}
+	for _, row := range rows {
+		portal, err := ce.Bridge.GetExistingPortalByKey(ce.Ctx, row.Portal)
+		if err != nil || portal == nil {
+			continue
+		}
+		if meta, ok := portal.Metadata.(*PortalMetadata); ok && meta.CallRoomMXID != "" {
+			set[meta.CallRoomMXID] = true
+		}
+	}
+	return set
 }
