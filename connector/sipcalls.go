@@ -145,9 +145,9 @@ func (x *callsExt) postInit(br *bridgev2.Bridge, proc *commands.Processor) {
 	if x.c != nil && x.c.config != nil {
 		x.cfg = x.c.config.Calls
 	}
-	x.enabled = x.cfg.Enabled
+	x.enabled = x.cfg.IsEnabled()
 	if !x.enabled {
-		x.log.Info().Msg("SIP calls are disabled (network.calls.enabled is not set)")
+		x.log.Info().Msg("SIP calls are disabled (network.calls.enabled is false)")
 		return
 	}
 	hk := x.cfg.toHostkit()
@@ -186,7 +186,13 @@ func (x *callsExt) start(ctx context.Context) error {
 	netCfg.KeyPrefix = "network.calls."
 	rt, err := sipaccount.NewRuntime(ctx, netCfg, x.log)
 	if err != nil {
-		return fmt.Errorf("start SIP runtime: %w", err)
+		if x.cfg.Enabled != nil && *x.cfg.Enabled {
+			return fmt.Errorf("start SIP runtime: %w", err)
+		}
+		// Calling is available by default, so a runtime failure must not stop
+		// the whole bridge from starting.
+		x.log.Error().Err(err).Msg("Failed to start the SIP runtime; calls are disabled for this session")
+		return nil
 	}
 	mgr, _ := hostkit.NewCallStack(x.br, &x.hkCfg, hostkit.CallStackDeps{
 		Host:        x.callHost(),

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
+	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -22,7 +23,7 @@ func TestCallsConfigToHostkit(t *testing.T) {
 	t.Parallel()
 	redact := true
 	cfg := CallsConfig{
-		Enabled:                true,
+		Enabled:                ptr.Ptr(true),
 		SIPBindIP:              "192.0.2.10",
 		SIPPortMin:             5080,
 		SIPPortMax:             5089,
@@ -76,9 +77,22 @@ func TestCallsConfigToHostkit(t *testing.T) {
 	}
 }
 
+func TestCallsConfigEnabledDefault(t *testing.T) {
+	t.Parallel()
+	if (CallsConfig{}).IsEnabled() != true {
+		t.Fatal("calling should be enabled by default (unset enabled)")
+	}
+	if (CallsConfig{Enabled: ptr.Ptr(false)}).IsEnabled() {
+		t.Fatal("explicit enabled: false should disable calling")
+	}
+	if !(CallsConfig{Enabled: ptr.Ptr(true)}).IsEnabled() {
+		t.Fatal("explicit enabled: true should enable calling")
+	}
+}
+
 func TestCallsConfigDefaultsValidate(t *testing.T) {
 	t.Parallel()
-	hk := CallsConfig{Enabled: true}.toHostkit()
+	hk := CallsConfig{Enabled: ptr.Ptr(true)}.toHostkit()
 	hk.ApplyDefaults()
 	if hk.SIPPortMin == 0 || hk.RTPPortMin == 0 || hk.RingTimeoutSeconds == 0 || hk.DefaultCountryCode == "" {
 		t.Fatalf("expected the library defaults to be applied: %#v", hk)

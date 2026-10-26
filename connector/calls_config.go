@@ -9,8 +9,11 @@ package connector
 // config parses everywhere; the `sipcalls` build converts it to hostkit.Config
 // (connector/sipcalls_config.go). Field names and defaults follow the library.
 type CallsConfig struct {
-	// Enabled turns the SIP calling support on. Off by default; the extension stays inert.
-	Enabled bool `yaml:"enabled"`
+	// Enabled turns the SIP calling support on. The image always ships the
+	// feature and it defaults to on; unset means "available" (accounts still
+	// opt in individually with `sip-login`). Set `false` to disable the SIP
+	// runtime entirely.
+	Enabled *bool `yaml:"enabled,omitempty"`
 
 	SIPBindIP              string   `yaml:"sip_bind_ip,omitempty"`
 	SIPPortMin             int      `yaml:"sip_port_min,omitempty"`
@@ -38,6 +41,12 @@ type CallsConfig struct {
 
 	// Widget configures the optional Dialpad widget/PWA served by the bridge.
 	Widget CallsWidgetConfig `yaml:"widget,omitempty"`
+}
+
+// IsEnabled reports whether the SIP calling runtime should start. The zero
+// value (unset) means enabled; only an explicit `false` disables it.
+func (c CallsConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // CallsWidgetConfig mirrors hostkit.WidgetConfig for the `network.calls.widget` section.
