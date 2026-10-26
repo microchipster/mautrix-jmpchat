@@ -141,3 +141,24 @@ func MakeUserID(jid string) networkid.UserID {
 func MakePortalID(jid string) networkid.PortalID {
 	return networkid.PortalID(EscapeJID(CanonicalBareJID(jid)))
 }
+
+// e164FromCheogramJID extracts an E.164 phone number from a Cheogram phone JID
+// ("+15551234567@cheogram.com", possibly carrying phone-context parameters). Short codes and
+// comma-separated group JIDs are rejected; the boolean reports whether the input was usable.
+func e164FromCheogramJID(jid string) (string, bool) {
+	canonical := CanonicalBareJID(UnescapeJID(strings.TrimSpace(jid)))
+	if canonical == "" || !strings.HasSuffix(canonical, "@cheogram.com") {
+		return "", false
+	}
+	local := strings.TrimSuffix(canonical, "@cheogram.com")
+	local = stripPhoneURIParameters(local)
+	if !strings.HasPrefix(local, "+") || len(local) < 2 {
+		return "", false
+	}
+	for _, r := range local[1:] {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return local, true
+}

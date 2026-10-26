@@ -20,6 +20,18 @@ type LoginMetadata struct {
 	DefaultMUCNick      string                        `json:"default_muc_nick,omitempty"`
 	PendingGatewayForms map[string]PendingGatewayForm `json:"pending_gateway_forms,omitempty"`
 	CardDAV             *CardDAVCredentials           `json:"carddav,omitempty"`
+	SIPCalls            *SIPCallCredentials           `json:"sip_calls,omitempty"`
+}
+
+// SIPCallCredentials is the SIP account of a login, used by the optional `sipcalls` build.
+// The password is stored in plain text in the bridge database, like the XMPP password.
+type SIPCallCredentials struct {
+	Username      string `json:"username,omitempty"`
+	Password      string `json:"password,omitempty"`
+	Registrar     string `json:"registrar,omitempty"`      // "host:port", normalized
+	Domain        string `json:"domain,omitempty"`         // reserved: SIP domain if different from registrar host
+	Transport     string `json:"transport,omitempty"`      // "udp" | "tcp"
+	DisplayNumber string `json:"display_number,omitempty"` // E.164 of the account's own number
 }
 
 type PendingGatewayForm struct {
@@ -93,6 +105,7 @@ type PortalMetadata struct {
 	Tags                []string            `json:"tags,omitempty"`
 	Notes               map[string]string   `json:"notes,omitempty"`
 	IsMUC               bool                `json:"is_muc,omitempty"`
+	CallRoomMXID        id.RoomID           `json:"call_room_mxid,omitempty"` // Optional unencrypted room used for calls when the portal room is encrypted
 }
 
 // New creates a new instance for database registration.

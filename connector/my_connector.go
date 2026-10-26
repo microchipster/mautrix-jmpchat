@@ -3,10 +3,12 @@ package connector
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/configupgrade"
+	"go.opentelemetry.io/otel/attribute"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -23,6 +25,13 @@ type MyConnector struct {
 	log    zerolog.Logger
 	bridge *bridgev2.Bridge
 	config *SimpleConfig
+
+	// tel is the optional OpenTelemetry tracer provider (nil when tracing is disabled).
+	tel *telemetry
+
+	// extn is the optional build-tag extension (SIP calls in the sipcalls build).
+	extn     connectorExtension
+	extnOnce sync.Once
 }
 
 // NewMyConnector creates a new instance of MyConnector.
@@ -43,59 +52,73 @@ func (c *MyConnector) Init(br *bridgev2.Bridge) {
 		c.log.Info().Msg("Enabled personal_filtering_spaces by default")
 	}
 	if proc, ok := c.bridge.Commands.(*commands.Processor); ok {
-		proc.AddHandler(CommandPing)
-		proc.AddHandler(CommandSync)
-		proc.AddHandler(CommandSyncStatus)
-		proc.AddHandler(CommandStartChat)
-		proc.AddHandler(CommandListContacts)
-		proc.AddHandler(CommandListContacted)
-		proc.AddHandler(CommandBlockContact)
-		proc.AddHandler(CommandReportContact)
-		proc.AddHandler(CommandListUsers)
-		proc.AddHandler(CommandListLogins)
-		proc.AddHandler(CommandSetContactName)
-		proc.AddHandler(CommandAddToRoster)
-		proc.AddHandler(CommandRemoveFromRoster)
-		proc.AddHandler(CommandSearchRoster)
-		proc.AddHandler(CommandSyncRoster)
-		proc.AddHandler(CommandAvatarProbe)
-		proc.AddHandler(CommandCardDAVLogin)
-		proc.AddHandler(CommandCardDAVLogout)
-		proc.AddHandler(CommandCardDAVStatus)
-		proc.AddHandler(CommandCardDAVSync)
-		proc.AddHandler(CommandCardDAVClear)
-		proc.AddHandler(CommandClearContactNames)
-		proc.AddHandler(CommandAutoRename)
-		proc.AddHandler(matrixbridge.CommandDiscardMegolmSession)
-		proc.AddHandler(CommandMatrixEncryptionResync)
-		proc.AddHandler(CommandMatrixEncryptionReset)
-		proc.AddHandler(CommandJoinRoom)
-		proc.AddHandler(CommandMUCNick)
-		proc.AddHandler(CommandMUCNickDefault)
-		proc.AddHandler(CommandBookmarksSync)
-		proc.AddHandler(CommandListDiscoveredRooms)
-		proc.AddHandler(CommandListRooms)
-		proc.AddHandler(CommandListUnnamedContacts)
-		proc.AddHandler(CommandGatewayActions)
-		proc.AddHandler(CommandGatewayForm)
-		proc.AddHandler(CommandGatewaySubmit)
-		proc.AddHandler(CommandDeleteAllPortals)
-		proc.AddHandler(CommandPruneRooms)
-		proc.AddHandler(CommandPruneDuplicates)
-		proc.AddHandler(CommandDeleteRoom)
-		proc.AddHandler(CommandRebindRoom)
-		proc.AddHandler(CommandRebindAll)
-		proc.AddHandler(CommandReplaceRoom)
-		proc.AddHandler(CommandReplaceAll)
-		proc.AddHandler(CommandRebindSpace)
-		proc.AddHandler(CommandResyncSpace)
-		proc.AddHandler(CommandPruneSpaces)
-		proc.AddHandler(CommandDeleteSpace)
-		proc.AddHandler(CommandLogout)
+		for _, handler := range myCommandHandlers() {
+			proc.AddHandler(handler)
+		}
+		c.extensionRegisterCommands(proc)
 		c.log.Info().Msg("Registered custom commands")
 	} else {
 		c.log.Warn().Msg("Command processor not available for custom commands")
 	}
+}
+
+// myCommandHandlers returns the custom management-room handlers, each wrapped in a telemetry span.
+func myCommandHandlers() []*commands.FullHandler {
+	handlers := []*commands.FullHandler{
+		CommandPing,
+		CommandSync,
+		CommandSyncStatus,
+		CommandStartChat,
+		CommandListContacts,
+		CommandListContacted,
+		CommandBlockContact,
+		CommandReportContact,
+		CommandListUsers,
+		CommandListLogins,
+		CommandSetContactName,
+		CommandAddToRoster,
+		CommandRemoveFromRoster,
+		CommandSearchRoster,
+		CommandSyncRoster,
+		CommandAvatarProbe,
+		CommandCardDAVLogin,
+		CommandCardDAVLogout,
+		CommandCardDAVStatus,
+		CommandCardDAVSync,
+		CommandCardDAVClear,
+		CommandClearContactNames,
+		CommandAutoRename,
+		matrixbridge.CommandDiscardMegolmSession,
+		CommandMatrixEncryptionResync,
+		CommandMatrixEncryptionReset,
+		CommandJoinRoom,
+		CommandMUCNick,
+		CommandMUCNickDefault,
+		CommandBookmarksSync,
+		CommandListDiscoveredRooms,
+		CommandListRooms,
+		CommandListUnnamedContacts,
+		CommandGatewayActions,
+		CommandGatewayForm,
+		CommandGatewaySubmit,
+		CommandDeleteAllPortals,
+		CommandPruneRooms,
+		CommandPruneDuplicates,
+		CommandDeleteRoom,
+		CommandRebindRoom,
+		CommandRebindAll,
+		CommandReplaceRoom,
+		CommandReplaceAll,
+		CommandRebindSpace,
+		CommandResyncSpace,
+		CommandPruneSpaces,
+		CommandDeleteSpace,
+		CommandLogout,
+	}
+	for i, handler := range handlers {
+		handlers[i] = commandSpanHandler(handler)
+	}
+	return handlers
 }
 
 // GetName implements bridgev2.NetworkConnector.
@@ -206,11 +229,26 @@ func (c *MyConnector) Start(ctx context.Context) error {
 		return nil
 	}
 
+	tel, err := initTelemetry(ctx, c.log)
+	if err != nil {
+		c.log.Warn().Err(err).Msg("OpenTelemetry tracing disabled: initialization failed")
+	} else {
+		c.tel = tel
+	}
+	ctx, span := c.startSpan(ctx, "bridge.start")
+	defer span.End()
+
+	if err := c.extensionStart(ctx); err != nil {
+		c.log.Error().Err(err).Msg("Failed to start connector extension")
+		return fmt.Errorf("start connector extension: %w", err)
+	}
+
 	userIDs, err := c.bridge.DB.UserLogin.GetAllUserIDsWithLogins(ctx)
 	if err != nil {
 		c.log.Error().Err(err).Msg("Failed to inspect stored JMP.chat logins at startup")
 		return nil
 	}
+	span.SetAttributes(attribute.Int("xmpp.login_count", len(userIDs)))
 	c.log.Warn().Int("login_count", len(userIDs)).Msg("JMP.chat startup login inventory")
 	if len(userIDs) == 0 {
 		c.log.Warn().Msg("No stored JMP.chat logins found; no XMPP connection will be started")
@@ -221,6 +259,12 @@ func (c *MyConnector) Start(ctx context.Context) error {
 // Stop implements bridgev2.NetworkConnector.
 func (c *MyConnector) Stop() {
 	c.log.Info().Msg("MyConnector Stop called")
+	c.extensionStop()
+	if c.tel != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		c.tel.shutdown(ctx)
+	}
 }
 
 // LoadUserLogin implements bridgev2.NetworkConnector.
@@ -239,6 +283,8 @@ func (c *MyConnector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLog
 	}
 
 	login.Client = client
+
+	c.extensionLoginLoaded(login, client)
 
 	c.log.Info().
 		Str("user_id", string(login.ID)).

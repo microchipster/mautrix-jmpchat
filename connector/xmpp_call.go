@@ -378,6 +378,10 @@ func (nc *MyNetworkClient) handleIncomingXMPPCall(msg stanza.Message, timestamp 
 	if isMUC {
 		return false
 	}
+	if !isFromMe && nc.extensionSuppressCallNotice(bareFromJid) {
+		// The SIP calls extension rings this call itself; do not also post JMI notices.
+		return true
+	}
 	call := extractXMPPCallEvent(msg)
 	if call == nil {
 		return false

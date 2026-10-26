@@ -38,6 +38,7 @@ The codebase currently includes bridge logic for:
 - roster management commands and CardDAV contact import (`carddav-*`)
 - `geo:` location mapping and gateway service-status headlines routed to the management room
 - inline media: XEP-0231 BOB payloads become Matrix media, `cid:`-only bodies degrade to a filename placeholder, and image-based custom emoji reactions are stored in Matrix without being sent to XMPP
+- optional 1:1 calling behind the `sipcalls` build tag: `sip-login`/`sip-logout`/`sip-status` register a JMP SIP account per login, incoming calls ring in the Cheogram room, and `call`/`hangup`/`dtmf` place calls through MatrixRTC (Element Call/LiveKit); when the portal room is encrypted, link a dedicated unencrypted call room with `call-room <number>`; off by default, see Configuration Notes
 
 This is still an active bridge implementation, not a finished polished product. When behavior differs from Cheogram Android, Cheogram is the reference.
 
@@ -129,6 +130,9 @@ When the bridge is running and a user has a management room, the quick-help text
 - `carddav-clear` — remove CardDAV-sourced contact names and refresh auto-named rooms
 - `clear-contact-names [--source explicit|carddav|roster] [<phone or JID>]` — clear names from one source (or all sources) and refresh auto-named rooms
 - `avatar-probe <jid>`
+- `sip-login` / `sip-logout` / `sip-status` — manage the SIP calling account (only when the bridge is built with `sipcalls` and `calls.enabled` is true)
+- `call <number>` / `hangup` / `dtmf <digits>` — place, end and control calls (registered by the calls library when SIP calling is enabled)
+- `call-room <phone number> [--force]` / `call-room` / `call-room --remove <phone number>` — create, list or unlink a dedicated unencrypted room used for calls with a number (needed when the portal room is encrypted, so encrypted chat rooms keep their E2EE while calls still ring)
 
 Recent bridge-specific additions include:
 
@@ -223,6 +227,18 @@ mise exec -- go test ./connector
 The container image is built around `/usr/bin/mautrix-jmpchat` and `docker-run.sh`.
 The `Dockerfile` hardcodes the Go patch release for reproducible image builds; keep it in sync with `.mise.toml` when updating Go.
 
+### Build tags (calling support)
+
+The `Dockerfile` accepts an optional `MAUTRIX_JMPCHAT_BUILD_TAGS` build argument. It defaults to
+`sipcalls nolibopusfile`, which compiles the optional SIP/MatrixRTC calling support and the
+libopus-backed audio codecs (`-tags "sipcalls nolibopusfile"`, with `libopus` installed in the
+builder and runtime stages). Pass `--build-arg MAUTRIX_JMPCHAT_BUILD_TAGS=` (empty) to build a
+minimal image without calling support.
+
+The image documents the SIP/RTP ports used when calling is enabled (`5060-5069/udp`,
+`5060-5069/tcp`, `40000-40100/udp`); they are not published by default. See the bridge docs for
+publishing notes and the `calls.*` network configuration.
+
 On startup:
 
 1. If `/data/config.yaml` does not exist, the container generates it and exits.
@@ -267,6 +283,7 @@ Optional `network` config keys (bridge-generated `simple-config.yaml` or the pla
 - `muc_nick_sync` (default `true`): renaming a MUC portal room in Matrix also changes your nickname in the XMPP room (nickname-like names only).
 - `default_server` / `default_port` (default: SRV/domain discovery, port 5222) and `resource_prefix` (default empty): pin the XMPP connection target and resource for environments without working SRV records.
 - `history_days` (default 30): how far back MAM backfills reach by default (`sync` / `join-room` without an explicit duration).
+- `calls.*` (default `enabled: false`; requires building the bridge with `-tags "sipcalls nolibopusfile"` and libopus headers): SIP/RTP binding and port ranges, `external_ip`, `stun_server`, `livekit_service_url`, `default_country_code`, dial timeout, prefix allowlist, self-dial, DTMF redaction and `auto_create_call_room` (default `false`: refuse to ring on encrypted portals and point at `call-room` instead; when `true`, a call room is created lazily). Calling needs a JMP SIP account (self-service in the JMP account settings for the same number), a LiveKit SFU + `lk-jwt` service reachable from the homeserver (`org.matrix.msc4143.rtc_foci` well-known or `calls.livekit_service_url`; `LIVEKIT_FULL_ACCESS_HOMESERVERS` must accept bridge ghosts), and double puppeting so read receipts stop ringing other devices. Calls cannot ring in encrypted rooms (the bridge cannot speak SFrame media E2EE): portal rooms stay encrypted and calls use a linked unencrypted call room created with `call-room <number>` (it blocks `m.room.encryption` via power levels; only call traffic lives there). Without SIP credentials, calls only produce the `m.notice` call-state messages.
 
 Cheogram gateway chats (phone numbers, group texts) never receive typing/receipt signals, since the SMS/MMS gateway cannot carry them.
 

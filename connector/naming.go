@@ -30,6 +30,7 @@ type SimpleConfig struct {
 	DefaultPort          int           `yaml:"default_port,omitempty"`
 	ResourcePrefix       string        `yaml:"resource_prefix,omitempty"`
 	HistoryDays          int           `yaml:"history_days,omitempty"`
+	Calls                CallsConfig   `yaml:"calls,omitempty"`
 }
 
 // sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.

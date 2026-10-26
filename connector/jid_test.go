@@ -124,3 +124,27 @@ func TestSpecialCharactersInJIDs(t *testing.T) {
 		t.Fatalf("MakeUserID() = %q, want %q", got, "o'brien@example.com")
 	}
 }
+
+func TestE164FromCheogramJID(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		want   string
+		wantOk bool
+	}{
+		"+15550101100@cheogram.com":                  {"+15550101100", true},
+		"5550101100@cheogram.com":                    {"+15550101100", true},
+		"+15550101100":                               {"+15550101100", true},
+		"=2b15550101100@cheogram.com":                {"+15550101100", true},
+		"+15550101100;phone-context=ca@cheogram.com": {"+15550101100", true},
+		"69061@cheogram.com":                         {"", false},
+		"+15550101100,+15550101200@cheogram.com":     {"", false},
+		"alice@example.com":                          {"", false},
+		"":                                           {"", false},
+	}
+	for input, want := range tests {
+		got, ok := e164FromCheogramJID(input)
+		if got != want.want || ok != want.wantOk {
+			t.Errorf("e164FromCheogramJID(%q) = (%q, %v), want (%q, %v)", input, got, ok, want.want, want.wantOk)
+		}
+	}
+}

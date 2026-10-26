@@ -556,6 +556,7 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 			}
 		}
 	}
+	nc.extensionDecorateChatInfo(portal, chatInfo)
 	return chatInfo, nil
 }
 

@@ -235,13 +235,13 @@ Each item must keep our SPDX headers, test style, and terse management-room UX.
 
 ### WS5 - Calls
 
-- **WS5.1 SIP/MatrixRTC integration** — deferred phase 2 (opt-in by design): use `mrtc-sip-bridge` behind a build tag; config `network.calls.enabled` + inline hostkit; per-login SIP account lifecycle; call host rings inside the Cheogram portal; requires `network.cheogram` and unencrypted portals. Enable only when a SIP account exists and there is real testing capacity (JMP/Snikket hosting alone is not enough).
+- **WS5.1 SIP/MatrixRTC integration** — done phase 1 (opt-in by design): embedded `mrtc-sip-bridge` behind the `sipcalls` build tag (`connector/sipcalls*.go`, `connector/extension.go` seam): config `network.calls.*` (hostkit fields, library defaults/validation), per-login SIP account lifecycle (`sip-login`/`sip-logout`/`sip-status` with management-room prompt flow and auth-failure notice), core wiring (`core.RegisterMatrixRTCHandlers` from mxmain PostInit, `core.NewIngest`, `hostkit.NewCallStack` in Network.Start, sink switched to the calls manager), `core.CallHost` adapter (creates the Cheogram portal room when needed, joins the ghost, sets call power levels, posts call notices, marks calls read as owner) and XEP-0353 JMI notice suppression while the login's SIP account is registered (the SIP path rings instead). Default build unchanged; build calls with `go build -tags "sipcalls nolibopusfile"` (requires libopus headers at build time). Requirements to actually use: JMP self-service SIP credentials for the same number (JMP account settings; no third-party provider), LiveKit SFU + lk-jwt on the homeserver (`org.matrix.msc4143.rtc_foci` well-known or `network.calls.livekit_service_url`; `LIVEKIT_FULL_ACCESS_HOMESERVERS` must accept bridge ghosts), double puppeting, unencrypted rooms (encrypted portals: calls ring in a linked unencrypted call room created with `call-room`, or lazily with `network.calls.auto_create_call_room: true`). Remaining phase 2: live validation with a real SIP account + SFU, retry/backoff when the initial account start fails.
   - Reference: `sipcalls*.go`, `sipcalls_host.go`.
 - **WS5.2 JMI notices** — done: XEP-0353 propose/retract/accept/reject/finish (plus ringing/proceed) are bridged as deterministic `m.notice` call-state messages in the DM (`connector/xmpp_call.go`: `extractXMPPCallEvent`, session state machine, `formatCallNoticeForParty`), works without a calls build tag; ids are `call-<action>-<session>`/XMPP message ids rather than the reference bridge's `jmi:<sid>:<action>`.
   - Reference: `xmpp_jingle.go`.
-- **WS5.3 Dialpad surface** — deferred phase 2 (depends on WS5.1): `sip-login`/`-logout`/`-status`, `roster-only-calls`, `call`/`hangup`/`dtmf`/`widget`/`dialpad-link(s)`/`revoke`; dialpad can open chats and save contacts; call history follow-up.
+- **WS5.3 Dialpad surface** — phase 1 done (WS5.1): `sip-login`/`sip-logout`/`sip-status` (`connector/sipcalls_commands.go`) plus `call`/`hangup`/`dtmf` registered via `hostkit.RegisterCallCommands` (widget/dialpad deliberately nil for now). Call rooms done: `call-room <number>` / `call-room` (list) / `call-room --remove <number>` manage a linked per-number unencrypted room where calls ring when the encrypted portal cannot (`connector/sipcalls_host.go`: `decideCallRoom`, `createCallRoomForPortal`, `portalForCallRoom` cache + scan, portal metadata `CallRoomMXID`; `calls.auto_create_call_room` for lazy creation; tests in `connector/sipcalls_test.go`). Remaining phase 2: dialpad widget + `dialpad-link(s)`/`revoke`, `roster-only-calls` prefs, call history in the dialpad.
   - Reference: `sipcalls_commands.go`, `sipcalls_widget*.go`; our `docs/CALL_BRIDGING_PLAN.md`, `docs/RUST_CHEOGRAM_CALL_CLIENT_SPEC.md`.
-- **WS5.4 Ports/docs** — deferred phase 2 with WS5.1: publish SIP/RTP ports in container/docs; update playbook role config accordingly.
+- **WS5.4 Ports/docs** — phase 1 done (docs): README documents the `sipcalls` build tag, config keys and requirements. Remaining phase 2 with live calls: publish SIP/RTP ports in the container image/playbook role when calls are enabled (Dockerfile installs libopus + builds with `-tags "sipcalls nolibopusfile"`).
 
 ## P1 - important phone-network polish
 
@@ -460,7 +460,7 @@ Evidence:
 - `cheogram-android/src/main/java/eu/siacs/conversations/xmpp/jingle/JingleRtpConnection.java`
 - `cheogram-android/CHANGELOG.md`
 
-Status: WS5 — call-state Jingle messages already bridge as `m.notice` (WS5.2). SIP/MatrixRTC remains opt-in and deferred (WS5.1/WS5.3/WS5.4) until a SIP account and testing capacity exist; raw Jingle stays out of scope.
+Status: WS5 — call-state Jingle messages bridge as `m.notice` (WS5.2, done). SIP/MatrixRTC calling is implemented behind the opt-in `sipcalls` build tag (WS5.1/WS5.3 phase 1 done, WS5.4 docs done): see the Workstreams section; live validation with a real SIP account + SFU is the remaining step. Raw Jingle stays out of scope.
 
 ### 19. Advanced file transfer modes beyond HTTP upload
 

@@ -34,10 +34,22 @@ func main() {
 	}
 	m.PostInit = func() {
 		installDirectMessageCommandHandler(&m)
+		installConnectorExtensions(&m)
 	}
 
 	m.InitVersion(Tag, Commit, BuildTime)
 	m.Run()
+}
+
+// installConnectorExtensions runs the compiled-in extension's PostInit hook (SIP calls register
+// their MatrixRTC event handlers here, before br.Matrix.Start starts the event processor).
+func installConnectorExtensions(main *mxmain.BridgeMain) {
+	if main == nil || main.Bridge == nil {
+		return
+	}
+	if c, ok := main.Bridge.Network.(*connector.MyConnector); ok && c != nil {
+		c.PostInitExtensions(main.Bridge)
+	}
 }
 
 func installDirectMessageCommandHandler(main *mxmain.BridgeMain) {

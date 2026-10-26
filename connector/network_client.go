@@ -4090,6 +4090,9 @@ func (nc *MyNetworkClient) Disconnect() {
 	if client != nil {
 		client.Disconnect()
 	}
+	if nc.connector != nil {
+		nc.connector.extensionLoginStopped(nc)
+	}
 }
 
 // LogoutRemote logs the user out.
