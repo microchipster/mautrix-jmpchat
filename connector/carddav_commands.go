@@ -30,8 +30,11 @@ var CommandCardDAVLogin = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		if len(ce.Args) < 3 {
 			ce.Reply("Usage: carddav-login <addressbook URL> <username> <password>")
+			ce.Reply("Arguments are removed from the room after the command runs. Use the URL of a `.vcf` addressbook export; nothing is stored unless the connection test succeeds.")
 			return
 		}
+		// Redact the message so the password is not kept in room history.
+		ce.Redact()
 		client := cardDAVClientFromEvent(ce)
 		if client == nil {
 			return
@@ -41,22 +44,39 @@ var CommandCardDAVLogin = &commands.FullHandler{
 			Username: strings.TrimSpace(ce.Args[1]),
 			Password: strings.TrimSpace(strings.Join(ce.Args[2:], " ")),
 		}
-		if err := validateCardDAVURL(client.cardDAVConfig(), creds.URL); err != nil {
+		cfg := client.cardDAVConfig()
+		if err := validateCardDAVURL(cfg, creds.URL); err != nil {
 			ce.Reply("Invalid CardDAV URL: %v", err)
 			return
 		}
 		ctx, cancel := context.WithTimeout(ce.Ctx, cardDAVFetchTimeout)
 		defer cancel()
+		// Test the connection before storing anything: a wrong password or
+		// unreachable server must not leave broken credentials behind.
+		data, err := fetchCardDAVAddressbook(ctx, cfg, *creds)
+		if err != nil {
+			ce.Reply("CardDAV connection test failed: %v — credentials were not saved.", err)
+			return
+		}
+		contacts := parseVCards(data)
+		numbers := 0
+		for _, contact := range contacts {
+			for _, raw := range contact.Phones {
+				if _, ok := normalizeCardDAVPhoneNumber(raw, cfg.DefaultCountryCode); ok {
+					numbers++
+				}
+			}
+		}
 		if err := client.setCardDAVCredentials(ctx, creds); err != nil {
 			ce.Reply("Failed to store CardDAV credentials: %v", err)
 			return
 		}
-		ce.Reply("CardDAV credentials stored for %s. Run `carddav-sync` to import contacts into the roster, or `carddav-sync --no-apply` to preview first.", creds.URL)
+		ce.Reply("CardDAV connection test passed: %d contact(s) with %d phone number(s). Credentials stored for %s.\n\nRun `carddav-sync --no-apply` to preview the import, then `carddav-sync` to add the contacts to your roster and apply their names (and photos) to auto-named rooms.", len(contacts), numbers, creds.URL)
 	},
 	Name: "carddav-login",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionAuth,
-		Description: "Store CardDAV addressbook URL and credentials for contact import",
+		Description: "Store CardDAV addressbook URL and credentials for contact import (connection is tested first; the command message is redacted)",
 	},
 	RequiresLogin: true,
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"gosrc.io/xmpp/stanza"
+	"maunium.net/go/mautrix/bridgev2"
 )
 
 func TestVCardAvatarNeedsRefresh(t *testing.T) {
@@ -156,5 +157,22 @@ func TestFetchVCardPhotoNotConnected(t *testing.T) {
 	_, _, err := nc.fetchVCardPhoto(t.Context(), "alice@example.com")
 	if err == nil {
 		t.Fatalf("expected error when not connected")
+	}
+}
+
+func TestRefreshContactPortalAvatarsNilSafety(t *testing.T) {
+	t.Parallel()
+	nc := &MyNetworkClient{}
+	nc.refreshContactPortalAvatars(t.Context(), "+15551234567@cheogram.com", &bridgev2.Avatar{MXC: "mxc://example.com/abc"})
+	nc.refreshContactPortalAvatars(t.Context(), "x", nil)
+	refreshContactPortalAvatarsFor(t.Context(), nil, nil, "x", &bridgev2.Avatar{MXC: "mxc://example.com/abc"})
+	refreshContactPortalAvatarsFor(t.Context(), nil, nil, "x", &bridgev2.Avatar{Remove: true})
+}
+
+func TestForceRefreshAvatarGuards(t *testing.T) {
+	t.Parallel()
+	nc := &MyNetworkClient{}
+	if err := nc.forceRefreshAvatar(t.Context(), "+15551234567@cheogram.com"); err == nil {
+		t.Fatal("expected an error without a bridge")
 	}
 }

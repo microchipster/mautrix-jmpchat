@@ -218,6 +218,7 @@ type XMPPDelay struct {
 	stanza.MsgExtension
 	XMLName xml.Name `xml:"urn:xmpp:delay delay"`
 	Stamp   string   `xml:"stamp,attr,omitempty"`
+	From    string   `xml:"from,attr,omitempty"`
 }
 
 type XMPPDelayOld struct {

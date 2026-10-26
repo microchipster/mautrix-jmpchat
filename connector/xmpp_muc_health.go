@@ -111,6 +111,7 @@ func (nc *MyNetworkClient) markMUCJoined(roomJID string) {
 	if nc.mucLeft != nil {
 		delete(nc.mucLeft, roomJID)
 	}
+	go nc.nickSyncCleanupAsync(roomJID)
 }
 
 // markMUCUnjoined clears the joined flag (e.g. after a failed self-ping or an
@@ -243,6 +244,12 @@ func (nc *MyNetworkClient) scheduleMUCAutoRejoin() {
 			if i > 0 {
 				time.Sleep(mucAutoRejoinStagger)
 			}
+			// Re-check per join: the user may have left the room (or a
+			// bookmark retraction may have arrived) while the staggered
+			// rejoin was running.
+			if nc.mucLeft != nil && nc.mucLeft[roomJID] {
+				continue
+			}
 			if nc.mucJoined != nil && nc.mucJoined[roomJID] {
 				continue
 			}
@@ -277,12 +284,12 @@ func (nc *MyNetworkClient) leaveMUC(roomJID string) {
 		if nc.bookmarkedRoomNames != nil {
 			name = nc.bookmarkedRoomNames[roomJID]
 		}
-		if err := nc.publishBookmark2(BookmarkConference{
+		if err := nc.publishBookmark2Merged(context.Background(), BookmarkConference{
 			JID:      roomJID,
 			Name:     name,
 			Autojoin: "false",
 			Nick:     nick,
-		}); err != nil {
+		}, false); err != nil {
 			nc.log.Warn().Err(err).Str("room_jid", roomJID).Msg("Failed to mark bookmark as autojoin off after leaving room")
 		}
 		delete(nc.bookmarkedRooms, roomJID)

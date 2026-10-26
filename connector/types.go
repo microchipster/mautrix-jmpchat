@@ -21,6 +21,28 @@ type LoginMetadata struct {
 	PendingGatewayForms map[string]PendingGatewayForm `json:"pending_gateway_forms,omitempty"`
 	CardDAV             *CardDAVCredentials           `json:"carddav,omitempty"`
 	SIPCalls            *SIPCallCredentials           `json:"sip_calls,omitempty"`
+	// BookmarksBackfilled marks that the one-time XEP-0402 backfill (creating
+	// bookmarks for rooms this bridge is already in) has completed.
+	BookmarksBackfilled bool `json:"bookmarks_backfilled,omitempty"`
+	// MAMArchiveCursor stores the RSM cursor of the last archive-wide DM
+	// catch-up page so the next run can resume without re-reading pages.
+	// MAMArchiveCursorAt bounds how long the cursor is trusted, since servers
+	// may drop old archive items that cursors point at.
+	MAMArchiveCursor   string     `json:"mam_archive_cursor,omitempty"`
+	MAMArchiveCursorAt *time.Time `json:"mam_archive_cursor_at,omitempty"`
+	// CallRosterOnly restricts incoming SIP calls to roster contacts.
+	CallRosterOnly bool `json:"call_roster_only,omitempty"`
+	// CallHistory is a bounded, newest-first log of recent calls.
+	CallHistory []CallHistoryEntry `json:"call_history,omitempty"`
+}
+
+// CallHistoryEntry is one recorded call (SIP calling, or JMI call notices).
+type CallHistoryEntry struct {
+	Number          string    `json:"number"`
+	Direction       string    `json:"direction"` // "incoming" | "outgoing"
+	Status          string    `json:"status,omitempty"`
+	StartedAt       time.Time `json:"started_at"`
+	DurationSeconds int       `json:"duration_seconds,omitempty"`
 }
 
 // SIPCallCredentials is the SIP account of a login, used by the optional `sipcalls` build.
@@ -84,6 +106,9 @@ type GhostMetadata struct {
 	// AvatarFetchErrorHash stamps a photo hash whose vCard fetch failed with a
 	// permanent stanza error, so it is not retried until the hash changes.
 	AvatarFetchErrorHash string `json:"avatar_fetch_error_hash,omitempty"`
+	// CardDAVPhotoHash tracks the last CardDAV vCard PHOTO applied to this
+	// ghost so unchanged photos are not re-uploaded.
+	CardDAVPhotoHash string `json:"carddav_photo_hash,omitempty"`
 }
 
 // New creates a new instance for database registration.
@@ -106,6 +131,12 @@ type PortalMetadata struct {
 	Notes               map[string]string   `json:"notes,omitempty"`
 	IsMUC               bool                `json:"is_muc,omitempty"`
 	CallRoomMXID        id.RoomID           `json:"call_room_mxid,omitempty"` // Optional unencrypted room used for calls when the portal room is encrypted
+	// MUCLeft is set when the user intentionally left the XMPP room, so
+	// auto-rejoin, the join watchdog and bookmark imports leave it alone.
+	MUCLeft bool `json:"muc_left,omitempty"`
+	// MUCInvitePending marks a portal created from a MUC invite that the user
+	// has not accepted yet (the Matrix room exists with the user invited).
+	MUCInvitePending bool `json:"muc_invite_pending,omitempty"`
 }
 
 // New creates a new instance for database registration.

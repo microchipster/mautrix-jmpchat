@@ -16,7 +16,10 @@ import (
 
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/commands"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/simplevent"
 )
 
 const (
@@ -30,6 +33,7 @@ const (
 	vcardAvatarRefreshInterval = 24 * time.Hour
 	vcardAvatarRefreshInitial  = time.Minute
 	vcardAvatarRefreshStagger  = 500 * time.Millisecond
+	avatarRefreshStagger       = 250 * time.Millisecond
 )
 
 // permanentVCardError marks vCard fetch failures that will not succeed on
@@ -156,7 +160,7 @@ func (nc *MyNetworkClient) refreshVCardAvatarContext(ctx context.Context, jid, h
 	if !force && meta.AvatarHash == hash && ghost.AvatarMXC != "" {
 		return
 	}
-	if meta.AvatarFetchErrorHash == hash {
+	if meta.AvatarFetchErrorHash == hash && hash != "" {
 		return
 	}
 	photo, _, err := nc.fetchVCardPhoto(ctx, jid)
@@ -196,7 +200,167 @@ func (nc *MyNetworkClient) refreshVCardAvatarContext(ctx context.Context, jid, h
 		nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to save vCard avatar metadata")
 		return
 	}
+	nc.refreshContactPortalAvatars(ctx, jid, &bridgev2.Avatar{
+		ID:   ghost.AvatarID,
+		MXC:  ghost.AvatarMXC,
+		Hash: ghost.AvatarHash,
+	})
 	nc.log.Info().Str("jid", jid).Msg("Updated XMPP contact avatar")
+}
+
+// forceRefreshAvatar re-fetches a single contact avatar from the XMPP server,
+// bypassing the cached-hash check. It reports when the contact is unknown.
+func (nc *MyNetworkClient) forceRefreshAvatar(ctx context.Context, jid string) error {
+	if nc.bridge == nil {
+		return fmt.Errorf("bridge is not available")
+	}
+	if !nc.isXMPPConnected() {
+		return fmt.Errorf("not connected to the XMPP server")
+	}
+	ghost, err := nc.bridge.GetExistingGhostByID(ctx, MakeUserID(jid))
+	if err != nil {
+		return err
+	}
+	if ghost == nil {
+		return fmt.Errorf("no known contact for %s (start a chat with it first)", jid)
+	}
+	meta, _ := ghost.Metadata.(*GhostMetadata)
+	hash := ""
+	if meta != nil {
+		hash = meta.AvatarHash
+	}
+	nc.refreshVCardAvatarContext(ctx, jid, hash, true)
+	return nil
+}
+
+// requestAvatarRefresh schedules a forced avatar fetch in the background.
+func (nc *MyNetworkClient) requestAvatarRefresh(jid string) {
+	if nc.bridge == nil {
+		return
+	}
+	ghost, err := nc.bridge.GetExistingGhostByID(context.Background(), MakeUserID(jid))
+	if err != nil || ghost == nil {
+		return
+	}
+	meta, _ := ghost.Metadata.(*GhostMetadata)
+	hash := ""
+	if meta != nil {
+		hash = meta.AvatarHash
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), vcardFetchTimeout)
+		defer cancel()
+		nc.refreshVCardAvatarContext(ctx, jid, hash, true)
+	}()
+}
+
+// CommandAvatarRefresh re-fetches contact avatars from the XMPP server.
+var CommandAvatarRefresh = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login := ce.User.GetDefaultLogin()
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		if !client.isXMPPConnected() {
+			ce.Reply("Not connected to XMPP")
+			return
+		}
+		if len(ce.Args) > 0 {
+			jid := normalizeJID(ce.Args[0])
+			if jid == "" {
+				ce.Reply("Invalid JID")
+				return
+			}
+			ctx, cancel := context.WithTimeout(ce.Ctx, vcardFetchTimeout)
+			defer cancel()
+			if err := client.forceRefreshAvatar(ctx, jid); err != nil {
+				ce.Reply("Avatar refresh failed for %s: %v", jid, err)
+				return
+			}
+			ce.Reply("Avatar refresh requested for %s.", jid)
+			return
+		}
+		jids := client.rosterContactList()
+		if len(jids) == 0 {
+			ce.Reply("No roster contacts to refresh.")
+			return
+		}
+		requested := 0
+		for _, jid := range jids {
+			if ce.Ctx.Err() != nil {
+				break
+			}
+			client.requestAvatarRefresh(jid)
+			requested++
+			select {
+			case <-ce.Ctx.Done():
+			case <-time.After(avatarRefreshStagger):
+			}
+		}
+		ce.Reply("Requested avatar refresh for %d of %d roster contacts. Updates appear as the fetches complete.", requested, len(jids))
+	},
+	Name: "avatar-refresh",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Re-fetch contact avatars from the XMPP server (all roster contacts, or one phone/JID)",
+	},
+}
+
+// refreshContactPortalAvatars propagates a contact avatar to the DM portal
+// rooms for that contact. Framework-level propagation is disabled for this
+// bridge, so the connector does it itself.
+func (nc *MyNetworkClient) refreshContactPortalAvatars(ctx context.Context, jid string, avatar *bridgev2.Avatar) {
+	refreshContactPortalAvatarsFor(ctx, nc.bridge, nc.login, jid, avatar)
+}
+
+// refreshContactPortalAvatarsFor is the package-level implementation shared
+// with helpers that only hold the bridge and login.
+func refreshContactPortalAvatarsFor(ctx context.Context, bridge *bridgev2.Bridge, login *bridgev2.UserLogin, jid string, avatar *bridgev2.Avatar) {
+	if bridge == nil || login == nil || avatar == nil {
+		return
+	}
+	if !avatar.Remove && avatar.MXC == "" {
+		return
+	}
+	key := contactInteractionKey(jid)
+	if key == "" {
+		return
+	}
+	rows, err := bridge.DB.UserPortal.GetAllForLogin(ctx, login.UserLogin)
+	if err != nil {
+		return
+	}
+	for _, row := range rows {
+		portal, err := bridge.GetExistingPortalByKey(ctx, row.Portal)
+		if err != nil || portal == nil || portal.MXID == "" || portal.RoomType != database.RoomTypeDM {
+			continue
+		}
+		matches := false
+		if meta, _ := portal.Metadata.(*PortalMetadata); meta != nil && strings.TrimSpace(string(meta.OtherUserID)) != "" {
+			matches = contactInteractionKey(string(meta.OtherUserID)) == key
+		} else {
+			matches = contactInteractionKey(UnescapeJID(string(portal.ID))) == key
+		}
+		if !matches {
+			continue
+		}
+		bridge.QueueRemoteEvent(login, &simplevent.ChatInfoChange{
+			EventMeta: simplevent.EventMeta{
+				Type:      bridgev2.RemoteEventChatInfoChange,
+				PortalKey: networkid.PortalKey{ID: portal.ID},
+				Timestamp: time.Now(),
+			},
+			ChatInfoChange: &bridgev2.ChatInfoChange{
+				ChatInfo: &bridgev2.ChatInfo{Avatar: avatar},
+			},
+		})
+	}
 }
 
 // startVCardAvatarRefreshLoop starts the daily avatar refresh worker once per

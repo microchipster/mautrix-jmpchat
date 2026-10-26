@@ -5,6 +5,7 @@
 package connector
 
 import (
+	"encoding/base64"
 	"net"
 	"reflect"
 	"testing"
@@ -64,7 +65,7 @@ func TestParseVCards(t *testing.T) {
 	got := parseVCards([]byte(raw))
 	want := []cardDAVContact{
 		{Name: "O'Brien & Sons", Phones: []string{"+15550101100", "416-555-0100", "tel:+15550101200"}},
-		{Name: "Jos\\, Jr", Phones: []string{"tel:+15550102100"}},
+		{Name: "Jos\\, Jr", Phones: []string{"tel:+15550102100"}, Photo: []byte("hello"), PhotoMime: "image/jpeg"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("parseVCards() = %#v, want %#v", got, want)
@@ -199,5 +200,63 @@ func TestParseCardDAVSyncArgs(t *testing.T) {
 		if apply != tc.apply || force != tc.force || ok != tc.ok {
 			t.Errorf("parseCardDAVSyncArgs(%v) = (%v, %v, %v), want (%v, %v, %v)", tc.args, apply, force, ok, tc.apply, tc.force, tc.ok)
 		}
+	}
+}
+
+func TestParseVCardPhoto(t *testing.T) {
+	t.Parallel()
+	jpegB64 := base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xE0, 'j', 'p', 'g'})
+	pngData := append([]byte("\x89PNG\r\n\x1a\n"), []byte("imagedata")...)
+	pngB64 := base64.StdEncoding.EncodeToString(pngData)
+	cases := map[string]struct {
+		params   string
+		value    string
+		wantMime string
+		wantLen  int
+		wantOK   bool
+	}{
+		"base64 with type":  {params: "TYPE=JPEG;ENCODING=b", value: jpegB64, wantMime: "image/jpeg", wantLen: 7, wantOK: true},
+		"type detected":     {params: "", value: pngB64, wantMime: "image/png", wantLen: len(pngData), wantOK: true},
+		"data URI":          {params: "", value: "data:image/png;base64," + pngB64, wantMime: "image/png", wantLen: len(pngData), wantOK: true},
+		"URL skipped":       {params: "VALUE=uri", value: "https://example.com/a.jpg", wantOK: false},
+		"other URI skipped": {params: "VALUE=uri", value: "cid:abc", wantOK: false},
+		"invalid base64":    {params: "TYPE=JPEG", value: "not base64!!!", wantOK: false},
+		"empty":             {params: "TYPE=JPEG", value: "", wantOK: false},
+		"unsupported mime":  {params: "TYPE=application/pdf", value: base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")), wantOK: false},
+	}
+	for name, tc := range cases {
+		tc := tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			photo, mimeType, ok := parseVCardPhoto(tc.params, tc.value)
+			if ok != tc.wantOK {
+				t.Fatalf("parseVCardPhoto(%q, %q) ok = %v, want %v", tc.params, tc.value, ok, tc.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if mimeType != tc.wantMime {
+				t.Fatalf("parseVCardPhoto(%q, %q) mime = %q, want %q", tc.params, tc.value, mimeType, tc.wantMime)
+			}
+			if len(photo) != tc.wantLen {
+				t.Fatalf("parseVCardPhoto(%q, %q) len = %d, want %d", tc.params, tc.value, len(photo), tc.wantLen)
+			}
+		})
+	}
+}
+
+func TestParseVCardsWithPhoto(t *testing.T) {
+	t.Parallel()
+	jpegB64 := base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xE0, 'j', 'p', 'g'})
+	raw := "BEGIN:VCARD\r\nFN:Alice\r\nTEL:+15551234567\r\nPHOTO;TYPE=JPEG;ENCODING=b:" + jpegB64 + "\r\nEND:VCARD\r\n"
+	contacts := parseVCards([]byte(raw))
+	if len(contacts) != 1 {
+		t.Fatalf("parseVCards returned %d contacts, want 1", len(contacts))
+	}
+	if contacts[0].Name != "Alice" || len(contacts[0].Phones) != 1 {
+		t.Fatalf("parseVCards contact = %+v", contacts[0])
+	}
+	if len(contacts[0].Photo) != 7 || contacts[0].PhotoMime != "image/jpeg" {
+		t.Fatalf("parseVCards photo = %d bytes, mime %q", len(contacts[0].Photo), contacts[0].PhotoMime)
 	}
 }

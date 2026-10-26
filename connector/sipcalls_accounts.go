@@ -9,6 +9,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
@@ -16,6 +17,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
+	"github.com/williamkray/mrtc-sip-bridge/pkg/phone"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipua"
 )
@@ -229,6 +231,91 @@ func (x *callsExt) onInvite(loginID networkid.UserLoginID, localE164 string) fun
 			call.Reject(480, "Temporarily Unavailable")
 			return
 		}
+		ul := x.br.GetCachedUserLoginByID(loginID)
+		if x.incomingCallFiltered(ul, call) {
+			call.Reject(480, "Temporarily Unavailable")
+			return
+		}
+		if ul != nil {
+			number := strings.TrimSpace(call.Info().FromUser)
+			if asserted := strings.TrimSpace(call.Info().AssertedUser); asserted != "" {
+				number = asserted
+			}
+			x.recordIncomingCallHistory(ul, number)
+		}
 		mgr.HandleInvite(core.LoginRef(loginID), localE164, call)
 	}
+}
+
+const (
+	filteredCallNoticeQuiet = 2 * time.Minute
+	filteredCallNoticeMax   = 256
+)
+
+// incomingCallFiltered reports whether an incoming call must be rejected
+// because the login restricts calls to roster contacts and the caller is not
+// a known contact. When the roster has not loaded yet, calls are allowed.
+func (x *callsExt) incomingCallFiltered(ul *bridgev2.UserLogin, call sipua.InboundCall) bool {
+	meta := loginMeta(ul)
+	if meta == nil || !meta.CallRosterOnly {
+		return false
+	}
+	raw := strings.TrimSpace(call.Info().AssertedUser)
+	if raw == "" {
+		raw = strings.TrimSpace(call.Info().FromUser)
+	}
+	if raw == "" {
+		return false
+	}
+	number, err := phone.Normalize(raw, x.hkCfg.DefaultCountryCode)
+	if err != nil {
+		return false
+	}
+	client, _ := ul.Client.(*MyNetworkClient)
+	if client == nil {
+		return false
+	}
+	jid := number + "@cheogram.com"
+	client.rosterMu.RLock()
+	loaded := len(client.rosterItems) > 0
+	inRoster := client.rosterItems[jid]
+	client.rosterMu.RUnlock()
+	if !loaded || inRoster {
+		return false
+	}
+	x.notifyFilteredCall(ul.ID, number)
+	return true
+}
+
+// notifyFilteredCall sends a rate-limited management-room notice about a call
+// that was rejected by the roster-only setting.
+func (x *callsExt) notifyFilteredCall(loginID networkid.UserLoginID, number string) {
+	key := string(loginID) + "|" + number
+	now := time.Now()
+	x.filteredNoticeMu.Lock()
+	if x.filteredNotices == nil {
+		x.filteredNotices = map[string]time.Time{}
+	}
+	for k, at := range x.filteredNotices {
+		if now.Sub(at) > filteredCallNoticeQuiet {
+			delete(x.filteredNotices, k)
+		}
+	}
+	if at, ok := x.filteredNotices[key]; ok && now.Sub(at) < filteredCallNoticeQuiet {
+		x.filteredNoticeMu.Unlock()
+		return
+	}
+	if _, ok := x.filteredNotices[key]; !ok && len(x.filteredNotices) >= filteredCallNoticeMax {
+		oldestKey := ""
+		var oldest time.Time
+		for k, at := range x.filteredNotices {
+			if oldestKey == "" || at.Before(oldest) {
+				oldestKey, oldest = k, at
+			}
+		}
+		delete(x.filteredNotices, oldestKey)
+	}
+	x.filteredNotices[key] = now
+	x.filteredNoticeMu.Unlock()
+	x.notifyManagement(loginID, fmt.Sprintf("Blocked a call from %s: not in your Jabber roster (roster-only calls is on; `%s roster-only-calls off` to ring for everyone).", number, x.commandPrefix()))
 }

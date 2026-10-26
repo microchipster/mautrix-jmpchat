@@ -11,8 +11,7 @@ import (
 )
 
 // toHostkit converts the bridge's `network.calls` config into the library's hostkit.Config.
-// The two structs mirror each other field by field (same YAML key names); the Dialpad widget
-// block is intentionally not exposed yet, so widget remains disabled.
+// The two structs mirror each other field by field (same YAML key names).
 func (c CallsConfig) toHostkit() hostkit.Config {
 	return hostkit.Config{
 		SIPBindIP:              c.SIPBindIP,
@@ -34,5 +33,23 @@ func (c CallsConfig) toHostkit() hostkit.Config {
 		DialNumberFormat:       c.DialNumberFormat,
 		AllowSelfDial:          c.AllowSelfDial,
 		DTMFRedactCommand:      c.DTMFRedactCommand,
+		Widget: hostkit.WidgetConfig{
+			Enabled:            c.Widget.Enabled,
+			PublicURL:          c.Widget.PublicURL,
+			Secret:             c.Widget.Secret,
+			FrameAncestors:     c.Widget.FrameAncestors,
+			AllowRemoteUsers:   c.Widget.AllowRemoteUsers,
+			RemoveWhenDisabled: c.Widget.RemoveWhenDisabled,
+			TrustedProxies:     c.Widget.TrustedProxies,
+			PWA: hostkit.PWAConfig{
+				Enabled:              c.Widget.PWA.Enabled,
+				InactivityDays:       c.Widget.PWA.InactivityDays,
+				MaxLifetimeDays:      c.Widget.PWA.MaxLifetimeDays,
+				RotationGraceSeconds: c.Widget.PWA.RotationGraceSeconds,
+				EnrollMinutes:        c.Widget.PWA.EnrollMinutes,
+				MaxLinksPerUser:      c.Widget.PWA.MaxLinksPerUser,
+				NotifyOnEnroll:       c.Widget.PWA.NotifyOnEnroll,
+			},
+		},
 	}
 }

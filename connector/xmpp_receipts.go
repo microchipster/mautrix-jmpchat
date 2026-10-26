@@ -64,7 +64,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReceipt(msg stanza.Message, timesta
 			Type:      receiptType,
 			PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
 			Sender: bridgev2.EventSender{
-				Sender:   MakeUserID(senderID),
+				Sender:   nc.senderUserID(senderID),
 				IsFromMe: isFromMe,
 			},
 			Timestamp: timestamp,

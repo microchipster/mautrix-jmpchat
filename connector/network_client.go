@@ -168,6 +168,41 @@ type MyNetworkClient struct {
 	lastSelfPing                 atomic.Int64
 	vcardRefreshOnce             sync.Once
 	mucInviteLimiter             mucInviteLimiter
+	// nickSync holds the debounced Matrix -> XMPP nick requests plus own-write
+	// echo bookkeeping for the MUC nick sync.
+	nickSync     nickSyncState
+	globalNameMu sync.Mutex
+	globalName   string
+	globalNameAt time.Time
+	// mucInvitePasswords remembers room passwords from invites until the
+	// invite is accepted or rejected (memory only, never persisted).
+	mucInvitePasswords map[string]string
+	mucInviteMu        sync.Mutex
+	// mucRoomChecks caches "is this JID a MUC room" disco results so repeated
+	// invites and resyncs do not probe the same JID over and over.
+	mucRoomChecks  map[string]mucRoomCheckEntry
+	mucRoomCheckMu sync.Mutex
+	// mucEchoes tracks the room-assigned identifiers (stanza-id, occupant-id)
+	// learned from MUC echoes of our own outbound messages. Retractions target
+	// the room-assigned stanza-id, which we only learn from the echo.
+	mucEchoes map[string]mucEchoEntry
+	mucEchoMu sync.Mutex
+
+	occupantAvatarMu       sync.Mutex
+	occupantAvatarNext     time.Time
+	occupantAvatarBlocks   map[string]time.Time
+	occupantAvatarRoomErrs map[string]int
+	// bookmarkWriteMu serializes the read-modify-write bookmark publishes;
+	// bookmarkStateMu guards the capability gate, the session cache and the
+	// "server refuses private writes" flag.
+	bookmarkWriteMu    sync.Mutex
+	bookmarkStateMu    sync.Mutex
+	bookmarkCache      map[string]BookmarkConference
+	bookmarkCacheValid bool
+	bookmarkWritesOff  bool
+	bookmarkGateKnown  bool
+	bookmarkGateRead   bool
+	bookmarkGateWrite  bool
 }
 
 const defaultMAMLookback = 30 * 24 * time.Hour
@@ -426,7 +461,7 @@ func (nc *MyNetworkClient) buildMUCMemberMap(roomJID string, occupants map[strin
 		if memberJID == "" || memberJID == ownBareJID {
 			continue
 		}
-		ghostID := MakeUserID(memberJID)
+		ghostID := nc.senderUserID(memberJID)
 		memberMap[ghostID] = bridgev2.ChatMember{
 			EventSender: bridgev2.EventSender{Sender: ghostID},
 			Membership:  event.MembershipJoin,
@@ -1471,6 +1506,19 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	// responses. Keeping it across reconnects would hide newly added bookmarks.
 	nc.bookmarkedRooms = map[string]bool{}
 	nc.bookmarkedRoomNames = map[string]string{}
+	nc.mucInvitePasswords = map[string]string{}
+	nc.mucRoomChecks = map[string]mucRoomCheckEntry{}
+	nc.mucEchoes = map[string]mucEchoEntry{}
+	nc.occupantAvatarBlocks = map[string]time.Time{}
+	nc.occupantAvatarRoomErrs = map[string]int{}
+	nc.bookmarkStateMu.Lock()
+	nc.bookmarkCache = nil
+	nc.bookmarkCacheValid = false
+	nc.bookmarkWritesOff = false
+	nc.bookmarkGateKnown = false
+	nc.bookmarkGateRead = false
+	nc.bookmarkGateWrite = false
+	nc.bookmarkStateMu.Unlock()
 	if nc.callSessions == nil {
 		nc.callSessions = map[string]*xmppCallSessionState{}
 	}
@@ -1669,6 +1717,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.startMUCHealthLoop()
 		nc.scheduleMUCAutoRejoin()
 		nc.resendPendingSends()
+		go nc.scheduleBookmarkBackfill()
 
 		// Initial Presence is sent automatically by the library
 
@@ -1717,6 +1766,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		nc.triggerAutomaticMUCCatchup()
 		nc.startMUCHealthLoop()
 		nc.scheduleMUCAutoRejoin()
+		go nc.scheduleBookmarkBackfill()
 		return nil
 	}
 
@@ -2483,6 +2533,7 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 				nc.mucJoined[bareFrom] = true
 				nc.markMUCJoined(bareFrom)
 				nc.confirmMUCNick(bareFrom, resource)
+				nc.handleOwnMUCNickPresence(bareFrom, resource)
 				nc.maybeStartPendingMUCBackfill(bareFrom)
 				if pending, ok := nc.popPendingMUCCreation(bareFrom); ok {
 					go func(roomJID string, pending pendingMUCCreation) {
@@ -2534,11 +2585,18 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 						}
 					}
 					applyMUCOccupantPresence(occupants, pres.From, memberJID, false)
-					// Contact rule: when the occupant maps to a real bare JID
-					// (non-anonymous room), reuse the 1:1 avatar flow so the
-					// ghost shares the same uploaded avatar.
-					if memberJID != "" && !strings.Contains(memberJID, "/") {
-						nc.handleVCardUpdatePresence(memberJID, pres)
+					if memberJID != "" {
+						if strings.Contains(memberJID, "/") {
+							// Anonymous room: only the room-scoped resource
+							// is known, so probe the XEP-0084 avatar nodes
+							// through the occupant's full JID.
+							nc.maybeFetchOccupantAvatar(bareFrom, resource, pres)
+						} else {
+							// Contact rule: when the occupant maps to a real
+							// bare JID (non-anonymous room), reuse the 1:1
+							// avatar flow so the ghost shares the same avatar.
+							nc.handleVCardUpdatePresence(memberJID, pres)
+						}
 					}
 				}
 			}
@@ -3014,36 +3072,19 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 	fromParts := strings.Split(fromJidStr, "/")
 	bareFromJid := fromParts[0]
 
-	var mucInvite MUCUserInvite
-	if msg.Get(&mucInvite) && mucInvite.Invite != nil {
+	var mucInviteExt MUCUserInvite
+	if msg.Get(&mucInviteExt) && mucInviteExt.Invite != nil {
 		roomJID := strings.TrimSpace(bareFromJid)
 		if roomJID == "" {
-			roomJID = strings.TrimSpace(mucInvite.Invite.From)
+			roomJID = strings.TrimSpace(mucInviteExt.Invite.From)
 		}
 		if roomJID != "" {
-			if !nc.allowMUCInvite(roomJID, mucInvite.Invite.From, mucInvite.Invite.Reason) {
-				return
-			}
-			portalID := MakePortalID(roomJID)
-			resync := &simplevent.ChatResync{
-				EventMeta: simplevent.EventMeta{
-					Type:         bridgev2.RemoteEventChatResync,
-					PortalKey:    networkid.PortalKey{ID: portalID},
-					CreatePortal: true,
-					Timestamp:    time.Now(),
-				},
-				ChatInfo: nil,
-			}
-			nc.log.Info().
-				Str("room_jid", roomJID).
-				Str("from", mucInvite.Invite.From).
-				Str("reason", mucInvite.Invite.Reason).
-				Msg("Received MUC invite")
-			nc.bridge.QueueRemoteEvent(nc.login, resync)
-			portalKey := networkid.PortalKey{ID: MakePortalID(roomJID)}
-			nc.scheduleMUCBackfill(roomJID, nc.historySyncStartForPortal(context.Background(), portalKey))
-			nc.joinMUC(roomJID, "", mucInvite.Password)
-			nc.notifyManagement(fmt.Sprintf("Joined MUC room %s after an invite from %s.", roomJID, mucInvite.Invite.From))
+			nc.actOnMUCInvite(mucInvite{
+				room:     roomJID,
+				inviter:  mucInviteExt.Invite.From,
+				reason:   mucInviteExt.Invite.Reason,
+				password: mucInviteExt.Password,
+			})
 			if stanza.StringValue(msg.Body) == "" {
 				return
 			}
@@ -3052,34 +3093,14 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 
 	var directInvite MUCDirectInvite
 	if msg.Get(&directInvite) && directInvite.JID != "" {
-		roomJID := strings.TrimSpace(directInvite.JID)
-		if roomJID != "" {
-			if !nc.allowMUCInvite(roomJID, directInvite.From, directInvite.Reason) {
-				return
-			}
-			portalID := MakePortalID(roomJID)
-			resync := &simplevent.ChatResync{
-				EventMeta: simplevent.EventMeta{
-					Type:         bridgev2.RemoteEventChatResync,
-					PortalKey:    networkid.PortalKey{ID: portalID},
-					CreatePortal: true,
-					Timestamp:    time.Now(),
-				},
-				ChatInfo: nil,
-			}
-			nc.log.Info().
-				Str("room_jid", roomJID).
-				Str("from", directInvite.From).
-				Str("reason", directInvite.Reason).
-				Msg("Received direct MUC invite")
-			nc.bridge.QueueRemoteEvent(nc.login, resync)
-			portalKey := networkid.PortalKey{ID: MakePortalID(roomJID)}
-			nc.scheduleMUCBackfill(roomJID, nc.historySyncStartForPortal(context.Background(), portalKey))
-			nc.joinMUC(roomJID, "", directInvite.Password)
-			nc.notifyManagement(fmt.Sprintf("Joined MUC room %s after an invite from %s.", roomJID, directInvite.From))
-			if stanza.StringValue(msg.Body) == "" {
-				return
-			}
+		nc.actOnMUCInvite(mucInvite{
+			room:     strings.TrimSpace(directInvite.JID),
+			inviter:  directInvite.From,
+			reason:   directInvite.Reason,
+			password: directInvite.Password,
+		})
+		if stanza.StringValue(msg.Body) == "" {
+			return
 		}
 	}
 
@@ -3196,6 +3217,15 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	if isMUC && nc.handleIncomingMUCSubject(msg, bareFromJid) {
 		return
 	}
+	// Raw body, attachment URL and trusted delay as received: message identity
+	// and duplicate detection need them before any rewriting (reply-fallback
+	// stripping, encrypted notices, sender-prefix stripping).
+	rawBody := stanza.StringValue(msg.Body)
+	rawOOB := ""
+	if rawAttachment := extractXMPPAttachment(msg); rawAttachment != nil {
+		rawOOB = rawAttachment.URL
+	}
+	hashDelay := nc.trustedDelay(msg, bareFromJid, bareJID(msg.From), isMUC, time.Now())
 	var delayStamp string
 	var delay XMPPDelay
 	if msg.Get(&delay) {
@@ -3365,29 +3395,87 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		Msg("Queueing chat resync for incoming message")
 	nc.bridge.QueueRemoteEvent(nc.login, resync)
 
-	msgID := nc.extractMessageID(msg, bareFromJid, isFromMe)
-	if msgID == "" {
-		msgID = idOverride
+	// Message identity: id attribute, trusted stanza-id (scoped by its
+	// assigner), origin-id, delay hash for ID-less history replays, or random.
+	originIDRaw := ""
+	var originExt XMPPOriginID
+	if msg.Get(&originExt) {
+		originIDRaw = strings.TrimSpace(originExt.ID)
 	}
+	stanzaIDTrusted := nc.trustedStanzaID(msg, bareFromJid, isFromMe)
+	if isFromMe && msg.Type == stanza.MessageTypeGroupchat && originIDRaw != "" {
+		// The room echoed one of our own MUC messages. Remember the
+		// room-assigned identifiers so later retractions can reference them.
+		echoSID := ""
+		var echoStanzaID XMPPStanzaID
+		if msg.Get(&echoStanzaID) {
+			echoSID = strings.TrimSpace(echoStanzaID.ID)
+		}
+		echoOcc := ""
+		var echoOccupantID XMPOccupantID
+		if msg.Get(&echoOccupantID) {
+			echoOcc = strings.TrimSpace(echoOccupantID.ID)
+		}
+		if echoSID != "" || echoOcc != "" {
+			nc.recordMucEcho(originIDRaw, echoSID, echoOcc)
+		}
+	}
+	scope := nc.ownScope()
+	if msg.Type == stanza.MessageTypeGroupchat {
+		scope = strings.ToLower(bareJID(bareFromJid))
+	}
+	idAttr := strings.TrimSpace(msg.Id)
+	if idAttr == "" {
+		// MAM results carry the archive id; use it as a stable fallback for
+		// archived stanzas without an id attribute.
+		idAttr = strings.TrimSpace(idOverride)
+	}
+	msgID := inboundMessageID(inboundIDs{
+		idAttr:     idAttr,
+		originID:   originIDRaw,
+		stanzaID:   stanzaIDTrusted,
+		scope:      scope,
+		delay:      hashDelay,
+		senderFull: msg.From,
+		body:       rawBody,
+		oob:        rawOOB,
+	})
 	serverMsgID := nc.extractServerMessageID(msg, bareFromJid, isFromMe)
 	originAliasID, stanzaAliasID, plainAliasID := xmppMessageAliases(msg)
+	dupCand := dupCandidate{
+		id:       msgID,
+		idAttr:   idAttr,
+		originID: originIDRaw,
+		stanzaID: stanzaIDTrusted,
+		sender:   nc.senderUserID(senderID),
+		fromMe:   isFromMe,
+		ts:       timestamp,
+	}
 
 	evt := &simplevent.Message[string]{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessage,
 			PortalKey: networkid.PortalKey{ID: portalID},
 			Sender: bridgev2.EventSender{
-				Sender:   MakeUserID(senderID),
+				Sender:   nc.senderUserID(senderID),
 				IsFromMe: isFromMe,
 			},
 			Timestamp: timestamp,
 			PostHandleFunc: func(ctx context.Context, portal *bridgev2.Portal) {
-				nc.markPortalHistoryProgress(ctx, portal, timestamp, msgID, serverMsgID)
+				nc.markPortalHistoryProgress(ctx, portal, timestamp, string(msgID), serverMsgID)
 			},
 		},
 		Data: stanza.StringValue(msg.Body),
 		ID:   networkid.MessageID(msgID),
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data string) (*bridgev2.ConvertedMessage, error) {
+			dedupeKey := networkid.PortalKey{ID: portal.ID, Receiver: portal.Receiver}
+			if dupID := nc.isBridgedDuplicate(ctx, dedupeKey, dupCand); dupID != "" {
+				nc.log.Debug().
+					Str("duplicate_of", string(dupID)).
+					Str("portal_id", string(portal.ID)).
+					Msg("Skipping message already bridged through another path")
+				return nil, bridgev2.ErrIgnoringRemoteEvent
+			}
 			if err := nc.ensurePortalRoomHealthy(ctx, portal); err != nil {
 				nc.log.Warn().Err(err).Str("portal_id", string(portal.ID)).Msg("ensurePortalRoomHealthy returned error; attempting message conversion anyway")
 			}
@@ -3636,7 +3724,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 	// origin or room-assigned ids. Resolve all of them into the bridgev2
 	// message id before queueing the sync, otherwise the framework cannot
 	// find the message and drops the reaction.
-	portalKey := networkid.PortalKey{ID: portalID, Receiver: nc.login.ID}
+	portalKey := nc.effectivePortalKey(portalID)
 	resolveCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	target, resolveErr := nc.resolveReactionTarget(resolveCtx, portalKey, reactions.ID)
 	cancel()
@@ -3652,7 +3740,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 	reactionList := reactions.All()
 	reactionItems := make([]*bridgev2.BackfillReaction, 0, len(reactionList))
 	sender := bridgev2.EventSender{
-		Sender:   MakeUserID(senderID),
+		Sender:   nc.senderUserID(senderID),
 		IsFromMe: isFromMe,
 	}
 	for _, emoji := range reactionList {
@@ -3674,7 +3762,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPReaction(msg stanza.Message, timest
 		TargetMessage: targetID,
 		Reactions: &bridgev2.ReactionSyncData{
 			Users: map[networkid.UserID]*bridgev2.ReactionSyncUser{
-				MakeUserID(senderID): &bridgev2.ReactionSyncUser{
+				nc.senderUserID(senderID): &bridgev2.ReactionSyncUser{
 					Reactions:       reactionItems,
 					HasAllReactions: true,
 				},
@@ -3768,6 +3856,25 @@ func (nc *MyNetworkClient) resolveMUCSenderID(msg stanza.Message, roomJID string
 		return msg.From
 	}
 	return ""
+}
+
+// senderUserID converts a resolved sender JID into the internal user ID.
+// MUC occupants in anonymous rooms keep their room-scoped resource so each
+// participant gets a distinct ghost (room@conference.example.com/nick),
+// matching the reference bridge model: names and avatars can then attach to
+// the occupant instead of collapsing into the room itself.
+func (nc *MyNetworkClient) senderUserID(senderID string) networkid.UserID {
+	senderID = strings.TrimSpace(senderID)
+	if senderID == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(senderID, '/'); idx > 0 {
+		room, resource := senderID[:idx], strings.TrimSpace(senderID[idx+1:])
+		if resource != "" && strings.Contains(room, "@") && !strings.HasPrefix(room, "+") {
+			return networkid.UserID(EscapeJID(CanonicalBareJID(room)) + "/" + EscapeJID(resource))
+		}
+	}
+	return MakeUserID(senderID)
 }
 
 func stripMUCSenderPrefix(body string, senderID string) string {

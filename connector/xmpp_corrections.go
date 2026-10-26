@@ -87,8 +87,13 @@ const maxAliasCandidates = 5
 // aliasMessageIDs finds the IDs of messages in one portal whose metadata carries
 // ref under one of the given alias keys. `->>` works on Postgres jsonb and
 // SQLite >= 3.38 (the `message` table column layout is pinned to the vendored
-// mautrix version).
+// mautrix version). A non-zero since bounds the search to rows at or after it.
 func (nc *MyNetworkClient) aliasMessageIDs(ctx context.Context, portalKey networkid.PortalKey, keys []string, ref string) ([]networkid.MessageID, error) {
+	return nc.aliasMessageIDsSince(ctx, portalKey, keys, ref, time.Time{})
+}
+
+// aliasMessageIDsSince is aliasMessageIDs with a lower time bound.
+func (nc *MyNetworkClient) aliasMessageIDsSince(ctx context.Context, portalKey networkid.PortalKey, keys []string, ref string, since time.Time) ([]networkid.MessageID, error) {
 	if ref == "" || len(keys) == 0 {
 		return nil, nil
 	}
@@ -104,11 +109,17 @@ func (nc *MyNetworkClient) aliasMessageIDs(ctx context.Context, portalKey networ
 		}
 		cond += fmt.Sprintf("metadata->>'%s'=$4", key)
 	}
+	window := ""
+	args := []any{nc.bridge.DB.BridgeID, portalKey.ID, portalKey.Receiver, ref}
+	if !since.IsZero() {
+		window = " AND timestamp >= $5"
+		args = append(args, since)
+	}
 	query := fmt.Sprintf(
-		`SELECT id FROM message WHERE bridge_id=$1 AND room_id=$2 AND room_receiver=$3 AND (%s) ORDER BY timestamp DESC LIMIT %d`,
-		cond, maxAliasCandidates,
+		`SELECT id FROM message WHERE bridge_id=$1 AND room_id=$2 AND room_receiver=$3 AND (%s)%s ORDER BY timestamp DESC LIMIT %d`,
+		cond, window, maxAliasCandidates,
 	)
-	rows, err := nc.bridge.DB.Query(ctx, query, nc.bridge.DB.BridgeID, portalKey.ID, portalKey.Receiver, ref)
+	rows, err := nc.bridge.DB.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +209,8 @@ func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 		return fmt.Errorf("XMPP client not connected")
 	}
 
-	newBody := strings.TrimSpace(msg.Content.Body)
+	// Mentions of bridged users use their XMPP names in the corrected body.
+	newBody := strings.TrimSpace(rewriteMentions(msg.Content.Body, msg.Content.FormattedBody, msg.Content.Format == event.FormatHTML, nc.mentionResolver(ctx, msg.Portal)))
 	if newBody == "" && msg.Content.FormattedBody != "" {
 		newBody = strings.TrimSpace(htmlToPlainText(msg.Content.FormattedBody))
 	}
@@ -303,6 +315,15 @@ func (nc *MyNetworkClient) HandleMatrixMessageRemove(ctx context.Context, msg *b
 	if portalUsesGroupChat(msg.Portal) {
 		msgType = stanza.MessageTypeGroupchat
 	}
+	if msgType == stanza.MessageTypeGroupchat {
+		// In a MUC room the room assigns the stanza-id when it echoes our
+		// own messages. Retractions should reference the room-assigned ID
+		// rather than our origin-id, so wait briefly for the echo. When the
+		// room never echoed the message, fall back to the stored ID.
+		if echo, ok := nc.waitMucEcho(ctx, targetID, mucEchoWait); ok && echo.stanzaID != "" {
+			targetID = echo.stanzaID
+		}
+	}
 	stanzaID := uuid.NewString()
 	m := stanza.NewMessage(stanza.Attrs{To: jid, Type: msgType, Id: stanzaID})
 	m.Extensions = append(m.Extensions,
@@ -342,7 +363,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCorrection(msg stanza.Message, time
 		return false
 	}
 
-	portalKey := networkid.PortalKey{ID: MakePortalID(bareFromJid), Receiver: nc.login.ID}
+	portalKey := nc.effectivePortalKey(MakePortalID(bareFromJid))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	target, err := nc.resolveXMPPRefTarget(ctx, portalKey, replace.ID, false)
@@ -354,7 +375,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCorrection(msg stanza.Message, time
 		nc.log.Debug().Str("ref", replace.ID).Str("from", bareFromJid).Msg("Ignoring XEP-0308 correction with unknown target")
 		return true
 	}
-	if target.SenderID != MakeUserID(senderID) {
+	if target.SenderID != nc.senderUserID(senderID) {
 		nc.log.Warn().
 			Str("ref", replace.ID).
 			Str("sender", senderID).
@@ -373,7 +394,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCorrection(msg stanza.Message, time
 			Type:      bridgev2.RemoteEventEdit,
 			PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
 			Sender: bridgev2.EventSender{
-				Sender:   MakeUserID(senderID),
+				Sender:   nc.senderUserID(senderID),
 				IsFromMe: isFromMe,
 			},
 			Timestamp: timestamp,
@@ -435,7 +456,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPRetraction(msg stanza.Message, time
 		return false
 	}
 
-	portalKey := networkid.PortalKey{ID: MakePortalID(bareFromJid), Receiver: nc.login.ID}
+	portalKey := nc.effectivePortalKey(MakePortalID(bareFromJid))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	target, err := nc.resolveXMPPRefTarget(ctx, portalKey, ref, moderation)
@@ -447,7 +468,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPRetraction(msg stanza.Message, time
 		nc.log.Debug().Str("ref", ref).Str("from", bareFromJid).Msg("Ignoring retraction with unknown target")
 		return true
 	}
-	if !moderation && target.SenderID != MakeUserID(senderID) {
+	if !moderation && target.SenderID != nc.senderUserID(senderID) {
 		nc.log.Warn().
 			Str("ref", ref).
 			Str("sender", senderID).
@@ -462,7 +483,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPRetraction(msg stanza.Message, time
 			Type:      bridgev2.RemoteEventMessageRemove,
 			PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
 			Sender: bridgev2.EventSender{
-				Sender:   MakeUserID(senderID),
+				Sender:   nc.senderUserID(senderID),
 				IsFromMe: isFromMe,
 			},
 			Timestamp: timestamp,

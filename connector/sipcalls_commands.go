@@ -61,6 +61,15 @@ func registerSIPCommands(x *callsExt, proc *commands.Processor) {
 				Description: "Create (or list/remove) the dedicated unencrypted call room of a phone number; needed for calls when the portal room is encrypted.",
 			},
 		})
+		proc.AddHandler(&commands.FullHandler{
+			Func:          hostkit.WithSpan("roster-only-calls", x.cmdRosterOnlyCalls),
+			Name:          "roster-only-calls",
+			RequiresLogin: true,
+			Help: commands.HelpMeta{
+				Section:     commands.HelpSectionChats,
+				Description: "Restrict incoming SIP calls to contacts in your Jabber roster (on|off|status).",
+			},
+		})
 	}
 }
 
@@ -76,8 +85,8 @@ func (x *callsExt) callCommandDeps() hostkit.CommandDeps {
 			return e164FromCheogramJID(UnescapeJID(string(p.ID)))
 		},
 		RedactDTMF: x.cfg.DTMFRedactCommand != nil && *x.cfg.DTMFRedactCommand,
-		Widget:     nil,
-		Dialpad:    nil,
+		Widget:     x.widgetCommandInstaller(),
+		Dialpad:    x.dialpadCommandDeps(),
 	}
 }
 
@@ -343,6 +352,75 @@ func registrationState(acct *sipaccount.Account) string {
 		return "stopped"
 	default:
 		return "registering"
+	}
+}
+
+// cmdRosterOnlyCalls shows or changes whether incoming SIP calls ring only for
+// contacts in the login's Jabber roster.
+func (x *callsExt) cmdRosterOnlyCalls(ce *commands.Event) {
+	if ce.User == nil {
+		ce.Reply("Run `%s roster-only-calls` in your management room.", x.commandPrefix())
+		return
+	}
+	if !x.enabled {
+		ce.Reply("SIP calls are disabled on this bridge (network.calls.enabled).")
+		return
+	}
+	if x.cfgErr != nil {
+		ce.Reply("The calls configuration is invalid: %v", x.cfgErr)
+		return
+	}
+	if !ce.Sudo && ce.RoomID != ce.User.ManagementRoom {
+		ce.Reply("Run `%s roster-only-calls` in your management room.", x.commandPrefix())
+		return
+	}
+	ul, _ := selectCommandLogin(ce)
+	if ul == nil {
+		ce.Reply("No login found.")
+		return
+	}
+	meta := loginMeta(ul)
+	if meta == nil {
+		ce.Reply("Log in to JMP.chat first.")
+		return
+	}
+	arg := ""
+	if len(ce.Args) > 0 {
+		arg = strings.ToLower(strings.TrimSpace(ce.Args[0]))
+	}
+	switch arg {
+	case "", "status":
+		if meta.CallRosterOnly {
+			ce.Reply("Roster-only calls: **on** — calls from numbers outside your Jabber roster are blocked (the caller hears a rejection; you get a notice here).")
+			if warning := x.rosterOnlyWarning(ul); warning != "" {
+				ce.Reply(warning)
+			}
+		} else {
+			ce.Reply("Roster-only calls: **off** — calls from any number ring.")
+		}
+	case "on", "off":
+		x.saveMu.Lock()
+		prev := meta.CallRosterOnly
+		meta.CallRosterOnly = arg == "on"
+		err := ul.Save(ce.Ctx)
+		if err != nil {
+			meta.CallRosterOnly = prev
+		}
+		x.saveMu.Unlock()
+		if err != nil {
+			ce.Reply("Failed to save the roster-only setting: %v", err)
+			return
+		}
+		if arg == "on" {
+			ce.Reply("Roster-only calls are now **on**. Use `%s roster-only-calls off` to ring for everyone.", x.commandPrefix())
+			if warning := x.rosterOnlyWarning(ul); warning != "" {
+				ce.Reply(warning)
+			}
+		} else {
+			ce.Reply("Roster-only calls are now **off**. Calls from any number ring again.")
+		}
+	default:
+		ce.Reply("Usage: `%s roster-only-calls [on|off|status]`", x.commandPrefix())
 	}
 }
 

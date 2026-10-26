@@ -38,7 +38,7 @@ func TestPushBookmarksWithoutConnection(t *testing.T) {
 			"room-a@conference.example.com": true,
 		},
 	}
-	if pushed := nc.pushBookmarks(); pushed != 0 {
+	if pushed := nc.pushBookmarks(t.Context()); pushed != 0 {
 		t.Errorf("pushBookmarks without a connection should push nothing, got %d", pushed)
 	}
 }

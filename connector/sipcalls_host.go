@@ -103,7 +103,11 @@ func (h *callHost) ResolveCallRoom(ctx context.Context, login core.LoginRef, e16
 		return nil, fmt.Errorf("%s is not an E.164 phone number", e164)
 	}
 	jid := e164 + "@cheogram.com"
-	portal, err := h.x.br.GetPortalByKey(ctx, networkid.PortalKey{ID: MakePortalID(jid), Receiver: ul.ID})
+	portalKey := networkid.PortalKey{ID: MakePortalID(jid)}
+	if h.x.br.Config != nil && h.x.br.Config.SplitPortals {
+		portalKey.Receiver = ul.ID
+	}
+	portal, err := h.x.br.GetPortalByKey(ctx, portalKey)
 	if err != nil {
 		return nil, fmt.Errorf("load call portal: %w", err)
 	}

@@ -68,12 +68,12 @@ func (nc *MyNetworkClient) initiateGroupChat(ctx context.Context, name string, p
 		}
 		nc.bookmarkedRoomNames[roomJID] = name
 	}
-	if err := nc.publishBookmark2(BookmarkConference{
+	if err := nc.publishBookmark2Merged(ctx, BookmarkConference{
 		JID:      roomJID,
 		Name:     name,
 		Autojoin: "true",
 		Nick:     nc.defaultMUCNick(),
-	}); err != nil {
+	}, true); err != nil {
 		nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to publish group chat bookmark")
 	}
 

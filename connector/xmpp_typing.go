@@ -141,7 +141,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPTyping(msg stanza.Message, bareFrom
 			Type:      bridgev2.RemoteEventTyping,
 			PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
 			Sender: bridgev2.EventSender{
-				Sender: MakeUserID(senderJID),
+				Sender: nc.senderUserID(senderJID),
 			},
 			Timestamp: time.Now(),
 		},

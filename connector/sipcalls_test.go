@@ -270,3 +270,46 @@ func TestIsCallPortalEmptyReceiver(t *testing.T) {
 		t.Fatal("matching receiver must be accepted")
 	}
 }
+
+func TestCallsConfigWidgetToHostkit(t *testing.T) {
+	t.Parallel()
+	notify := false
+	cfg := CallsConfig{Widget: CallsWidgetConfig{
+		Enabled:            true,
+		PublicURL:          "https://widget.example.com",
+		Secret:             "0123456789abcdef0123456789abcdef",
+		FrameAncestors:     []string{"https://element.example.com"},
+		AllowRemoteUsers:   true,
+		RemoveWhenDisabled: true,
+		TrustedProxies:     []string{"10.0.0.0/8"},
+		PWA: CallsWidgetPWAConfig{
+			Enabled:              true,
+			InactivityDays:       30,
+			MaxLifetimeDays:      365,
+			RotationGraceSeconds: 60,
+			EnrollMinutes:        10,
+			MaxLinksPerUser:      3,
+			NotifyOnEnroll:       &notify,
+		},
+	}}
+	hk := cfg.toHostkit()
+	if !hk.Widget.Enabled || hk.Widget.PublicURL != "https://widget.example.com" || hk.Widget.Secret != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("widget basic fields not mapped: %+v", hk.Widget)
+	}
+	if len(hk.Widget.FrameAncestors) != 1 || hk.Widget.FrameAncestors[0] != "https://element.example.com" {
+		t.Fatalf("frame ancestors not mapped: %+v", hk.Widget.FrameAncestors)
+	}
+	if !hk.Widget.AllowRemoteUsers || !hk.Widget.RemoveWhenDisabled {
+		t.Fatalf("widget booleans not mapped: %+v", hk.Widget)
+	}
+	if len(hk.Widget.TrustedProxies) != 1 || hk.Widget.TrustedProxies[0] != "10.0.0.0/8" {
+		t.Fatalf("trusted proxies not mapped: %+v", hk.Widget.TrustedProxies)
+	}
+	pwa := hk.Widget.PWA
+	if !pwa.Enabled || pwa.InactivityDays != 30 || pwa.MaxLifetimeDays != 365 || pwa.RotationGraceSeconds != 60 || pwa.EnrollMinutes != 10 || pwa.MaxLinksPerUser != 3 {
+		t.Fatalf("PWA fields not mapped: %+v", pwa)
+	}
+	if pwa.NotifyOnEnroll == nil || *pwa.NotifyOnEnroll != false {
+		t.Fatalf("PWA NotifyOnEnroll not mapped: %+v", pwa.NotifyOnEnroll)
+	}
+}

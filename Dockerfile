@@ -1,11 +1,12 @@
 # -- Build mautrix-jmpchat (with Go) --
 FROM golang:1.27-alpine3.24 AS go-builder
-RUN apk add --no-cache git ca-certificates build-base olm-dev zlib-dev opus-dev pkgconf
+RUN apk add --no-cache git ca-certificates build-base opus-dev pkgconf
 
-# Build tags. The default enables the optional SIP calling support (network.calls.enabled,
-# off unless configured). "nolibopusfile" builds hraban/opus without the opusfile dependency.
-# Set to an empty string for a minimal build without calling support.
-ARG MAUTRIX_JMPCHAT_BUILD_TAGS="sipcalls nolibopusfile"
+# Build tags. The default enables pure-Go Matrix E2BE ("goolm", no libolm in the
+# image) and the optional SIP calling support (network.calls.enabled, off unless
+# configured). "nolibopusfile" builds hraban/opus without the opusfile
+# dependency. Set to an empty string for a minimal build without calling support.
+ARG MAUTRIX_JMPCHAT_BUILD_TAGS="goolm sipcalls nolibopusfile"
 
 WORKDIR /build
 # Copy all files needed for Go build
@@ -23,7 +24,7 @@ FROM alpine:3.24
 ENV UID=1337 \
     GID=1337
 
-RUN apk add --no-cache su-exec ca-certificates bash yq-go olm tzdata opus
+RUN apk add --no-cache su-exec ca-certificates bash yq-go tzdata opus
 
 COPY --from=go-builder /build/mautrix-jmpchat /usr/bin/mautrix-jmpchat
 COPY --from=go-builder /build/docker-run.sh /docker-run.sh

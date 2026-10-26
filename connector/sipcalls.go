@@ -25,6 +25,7 @@ import (
 	"github.com/williamkray/mrtc-sip-bridge/pkg/hostkit"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipua"
+	"github.com/williamkray/mrtc-sip-bridge/pkg/widget"
 )
 
 func init() {
@@ -69,14 +70,26 @@ type callsExt struct {
 	// callRoomMu guards callRoomIndex, a cache of linked call rooms (Matrix room -> portal key).
 	callRoomMu    sync.Mutex
 	callRoomIndex map[id.RoomID]networkid.PortalKey
+
+	// filteredNoticeMu guards filteredNotices, the rate limiter for the
+	// management notices about rejected roster-only callers.
+	filteredNoticeMu sync.Mutex
+	filteredNotices  map[string]time.Time
+
+	// Dialpad widget state (see sipcalls_widget.go).
+	widgetSrv  *widget.Server
+	widgetInst *widget.Installer
+	widgetStop context.CancelFunc
+	widgetWG   sync.WaitGroup
 }
 
 func newCallsExt(c *MyConnector) connectorExtension {
 	x := &callsExt{
-		c:             c,
-		accounts:      map[networkid.UserLoginID]*loginCalls{},
-		loginBusy:     map[networkid.UserLoginID]bool{},
-		callRoomIndex: map[id.RoomID]networkid.PortalKey{},
+		c:               c,
+		accounts:        map[networkid.UserLoginID]*loginCalls{},
+		loginBusy:       map[networkid.UserLoginID]bool{},
+		callRoomIndex:   map[id.RoomID]networkid.PortalKey{},
+		filteredNotices: map[string]time.Time{},
 	}
 	base := zerolog.Nop()
 	if c != nil {
@@ -188,6 +201,8 @@ func (x *callsExt) start(ctx context.Context) error {
 	if x.rtc != nil {
 		x.rtc.SetSink(mgr)
 	}
+	// Start the optional Dialpad widget now that the call stack exists.
+	x.startWidget(ctx)
 	// Start SIP accounts for logins that already existed when the bridge started.
 	for _, ul := range x.br.GetAllCachedUserLogins() {
 		x.ensureAccountForLogin(ul)
@@ -226,6 +241,9 @@ func (x *callsExt) stop() {
 	case <-time.After(10 * time.Second):
 		x.log.Warn().Msg("Timed out waiting for SIP account teardown")
 	}
+
+	// Stop the Dialpad widget before tearing down the call stack it depends on.
+	x.stopWidget()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -368,7 +386,7 @@ func (x *callsExt) dial(ref core.LoginRef, req sipua.DialRequest) (sipua.Outboun
 // typed nil) when calls have not started.
 func (x *callsExt) callAPI() hostkit.CallAPI {
 	if mgr := x.manager(); mgr != nil {
-		return mgr
+		return &callAPIProxy{x: x, mgr: mgr}
 	}
 	return nil
 }

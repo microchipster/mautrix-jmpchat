@@ -81,6 +81,8 @@ func myCommandHandlers() []*commands.FullHandler {
 		CommandSearchRoster,
 		CommandSyncRoster,
 		CommandAvatarProbe,
+		CommandAvatarRefresh,
+		CommandCallHistory,
 		CommandCardDAVLogin,
 		CommandCardDAVLogout,
 		CommandCardDAVStatus,

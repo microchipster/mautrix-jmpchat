@@ -191,6 +191,20 @@ func (nc *MyNetworkClient) requestMAM(ctx context.Context, roomJID string, max i
 }
 
 func (nc *MyNetworkClient) backfillAccountDMs(ctx context.Context, start time.Time) error {
+	if cursor := nc.freshMAMArchiveCursor(); cursor != "" {
+		err := nc.backfillMAMStarting(ctx, "", "", time.Time{}, cursor, func(next string) {
+			nc.persistMAMArchiveCursor(ctx, next)
+		})
+		if err == nil {
+			return nil
+		}
+		if isMAMCursorError(err) {
+			nc.log.Warn().Err(err).Msg("Stored MAM archive cursor was rejected; falling back to a timestamp window")
+			nc.clearMAMArchiveCursor(ctx)
+		} else if !isServiceUnavailableMAMError(err) {
+			return err
+		}
+	}
 	err := nc.backfillMAM(ctx, "", "", start)
 	if !isServiceUnavailableMAMError(err) {
 		return err
@@ -201,6 +215,79 @@ func (nc *MyNetworkClient) backfillAccountDMs(ctx context.Context, start time.Ti
 	}
 	nc.log.Info().Str("to_jid", ownJID).Msg("Retrying account DM MAM query against own bare JID after service-unavailable")
 	return nc.backfillMAM(ctx, ownJID, "", start)
+}
+
+// mamArchiveCursorTTL bounds how long a stored archive cursor is trusted.
+// Servers may drop old archive items, making cursors meaningless.
+const mamArchiveCursorTTL = 7 * 24 * time.Hour
+
+// isMAMCursorError reports whether a MAM error means the stored RSM cursor
+// no longer points at a known archive item.
+func isMAMCursorError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "item-not-found") || strings.Contains(msg, "bad-request")
+}
+
+// mamArchiveCursorFresh reports whether a stored cursor may still be used.
+func mamArchiveCursorFresh(meta *LoginMetadata, now time.Time) bool {
+	if meta == nil || strings.TrimSpace(meta.MAMArchiveCursor) == "" {
+		return false
+	}
+	if meta.MAMArchiveCursorAt == nil {
+		return false
+	}
+	return now.Sub(*meta.MAMArchiveCursorAt) <= mamArchiveCursorTTL
+}
+
+// applyMAMArchiveCursor records a new cursor on the metadata.
+func applyMAMArchiveCursor(meta *LoginMetadata, cursor string) {
+	now := time.Now()
+	meta.MAMArchiveCursor = cursor
+	meta.MAMArchiveCursorAt = &now
+}
+
+func (nc *MyNetworkClient) freshMAMArchiveCursor() string {
+	if nc.login == nil {
+		return ""
+	}
+	meta, _ := nc.login.Metadata.(*LoginMetadata)
+	if !mamArchiveCursorFresh(meta, time.Now()) {
+		return ""
+	}
+	return strings.TrimSpace(meta.MAMArchiveCursor)
+}
+
+func (nc *MyNetworkClient) persistMAMArchiveCursor(ctx context.Context, cursor string) {
+	cursor = strings.TrimSpace(cursor)
+	if cursor == "" || nc.login == nil {
+		return
+	}
+	meta, _ := nc.login.Metadata.(*LoginMetadata)
+	if meta == nil {
+		return
+	}
+	applyMAMArchiveCursor(meta, cursor)
+	if err := nc.login.Save(ctx); err != nil {
+		nc.log.Warn().Err(err).Msg("Failed to persist MAM archive cursor")
+	}
+}
+
+func (nc *MyNetworkClient) clearMAMArchiveCursor(ctx context.Context) {
+	if nc.login == nil {
+		return
+	}
+	meta, _ := nc.login.Metadata.(*LoginMetadata)
+	if meta == nil || (meta.MAMArchiveCursor == "" && meta.MAMArchiveCursorAt == nil) {
+		return
+	}
+	meta.MAMArchiveCursor = ""
+	meta.MAMArchiveCursorAt = nil
+	if err := nc.login.Save(ctx); err != nil {
+		nc.log.Warn().Err(err).Msg("Failed to clear MAM archive cursor")
+	}
 }
 
 func (nc *MyNetworkClient) requestMAMPage(ctx context.Context, toJID string, withJID string, max int, start time.Time, before, after *string) (*MAMFin, []collectedMAMMessage, error) {
@@ -389,12 +476,20 @@ func (nc *MyNetworkClient) backfillDM(ctx context.Context, withJID string, start
 }
 
 func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJID string, start time.Time) error {
+	return nc.backfillMAMStarting(ctx, toJID, withJID, start, "", nil)
+}
+
+// backfillMAMStarting walks a MAM archive page by page. When initialAfter is
+// set (or start is non-zero), the walk is forward-only; otherwise it walks
+// backwards from the newest page. persist, when set, receives the RSM cursor
+// of every successfully processed forward page so callers can resume later.
+func (nc *MyNetworkClient) backfillMAMStarting(ctx context.Context, toJID string, withJID string, start time.Time, initialAfter string, persist func(string)) error {
 	const pageSize = 100
 	const maxPages = 10000
 
 	before := ""
-	after := ""
-	forward := !start.IsZero()
+	after := initialAfter
+	forward := !start.IsZero() || initialAfter != ""
 	mucArchive := withJID == "" && toJID != "" && bareJID(toJID) != nc.ownBareJID()
 	if nc.log.GetLevel() <= zerolog.DebugLevel {
 		nc.log.Debug().
@@ -469,6 +564,9 @@ func (nc *MyNetworkClient) backfillMAM(ctx context.Context, toJID string, withJI
 				break
 			}
 			after = *fin.Set.Last
+			if persist != nil {
+				persist(after)
+			}
 		} else {
 			if fin.Set.First == nil || fin.Set.First.Content == "" {
 				if nc.log.GetLevel() <= zerolog.DebugLevel {

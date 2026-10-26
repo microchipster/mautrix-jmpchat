@@ -109,7 +109,9 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 			extensions = append(extensions, ref)
 		}
 	} else {
-		body = strings.TrimSpace(msg.Content.Body)
+		// Mentions of bridged users are rewritten to their XMPP names; an HTML-only event still
+		// yields plain text.
+		body = strings.TrimSpace(rewriteMentions(msg.Content.Body, msg.Content.FormattedBody, msg.Content.Format == event.FormatHTML, nc.mentionResolver(ctx, msg.Portal)))
 		if body == "" && msg.Content.MsgType == event.MsgLocation {
 			body = strings.TrimSpace(msg.Content.GeoURI)
 		}
@@ -517,6 +519,16 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 					Membership: event.MembershipJoin,
 				},
 			},
+		}
+		// Self-heal the portal avatar on resync from the contact's ghost.
+		if nc.bridge != nil {
+			if ghost, err := nc.bridge.GetExistingGhostByID(ctx, remoteUserID); err == nil && ghost != nil && ghost.AvatarMXC != "" {
+				chatInfo.Avatar = &bridgev2.Avatar{
+					ID:   ghost.AvatarID,
+					MXC:  ghost.AvatarMXC,
+					Hash: ghost.AvatarHash,
+				}
+			}
 		}
 	} else {
 		targetJID := UnescapeJID(string(portal.ID))

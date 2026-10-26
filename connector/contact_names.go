@@ -144,17 +144,30 @@ func clearContactNameSources(ctx context.Context, bridge *bridgev2.Bridge, login
 				changed = true
 			}
 		}
+		removedPhoto := false
+		clearPhoto := func() {
+			if meta.CardDAVPhotoHash != "" {
+				meta.CardDAVPhotoHash = ""
+				changed = true
+			}
+			if strings.HasPrefix(string(ghost.AvatarID), "carddav:") {
+				ghost.UpdateInfo(ctx, &bridgev2.UserInfo{Avatar: &bridgev2.Avatar{Remove: true}})
+				removedPhoto = true
+			}
+		}
 		switch source {
 		case "custom":
 			clear(&meta.CustomName)
 		case "carddav":
 			clear(&meta.CardDAVName)
+			clearPhoto()
 		case "roster":
 			clear(&meta.RemoteName)
 		default:
 			clear(&meta.CustomName)
 			clear(&meta.CardDAVName)
 			clear(&meta.RemoteName)
+			clearPhoto()
 		}
 		if !changed {
 			continue
@@ -162,6 +175,9 @@ func clearContactNameSources(ctx context.Context, bridge *bridgev2.Bridge, login
 		ghost.Metadata = meta
 		if err := bridge.DB.Ghost.Update(ctx, ghost.Ghost); err != nil {
 			continue
+		}
+		if removedPhoto {
+			refreshContactPortalAvatarsFor(ctx, bridge, login, contactJID, &bridgev2.Avatar{Remove: true})
 		}
 		cleared++
 	}

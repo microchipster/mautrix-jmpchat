@@ -353,8 +353,73 @@ func (nc *MyNetworkClient) getAndAdvanceCallSession(key string, call *xmppCallEv
 		delete(nc.callSessions, key)
 		return notice
 	}
+	if updated.Terminal && (session == nil || !session.Terminal) {
+		nc.recordJMICallHistory(key, call, updated, timestamp)
+	}
 	nc.callSessions[key] = updated
 	return notice
+}
+
+// recordJMICallHistory stores a finished XEP-0353 call in the login's bounded
+// call log so users can see recent calls without opening Cheogram.
+func (nc *MyNetworkClient) recordJMICallHistory(key string, call *xmppCallEvent, session *xmppCallSessionState, timestamp time.Time) {
+	peer := key
+	if idx := strings.IndexByte(peer, '|'); idx >= 0 {
+		peer = peer[:idx]
+	}
+	entry := CallHistoryEntry{
+		Number:    peer,
+		Direction: "incoming",
+		Status:    jmiCallStatus(call),
+		StartedAt: session.ProposedAt,
+	}
+	if session.InitiatedByMe {
+		entry.Direction = "outgoing"
+		if entry.Status == "missed" {
+			entry.Status = "cancelled"
+		}
+	}
+	if session.WasAnswered && !session.AnsweredAt.IsZero() && timestamp.After(session.AnsweredAt) {
+		entry.DurationSeconds = int(timestamp.Sub(session.AnsweredAt).Seconds())
+	}
+	if entry.StartedAt.IsZero() {
+		entry.StartedAt = timestamp
+	}
+	go nc.recordCallHistoryForCurrentLogin(entry)
+}
+
+// jmiCallStatus turns the terminal call event into a short history status.
+func jmiCallStatus(call *xmppCallEvent) string {
+	switch call.Action {
+	case "finish":
+		switch call.Reason {
+		case "":
+			return "ended"
+		case "success":
+			return "completed"
+		}
+		return call.Reason
+	case "reject":
+		if call.Reason != "" {
+			return call.Reason
+		}
+		return "rejected"
+	case "retract":
+		return "missed"
+	}
+	if call.Reason != "" {
+		return call.Reason
+	}
+	return call.Action
+}
+
+func (nc *MyNetworkClient) recordCallHistoryForCurrentLogin(entry CallHistoryEntry) {
+	if nc.login == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	recordCallHistory(ctx, nc.login, entry)
 }
 
 func (nc *MyNetworkClient) pruneCallSessionsLocked(now time.Time) {
@@ -417,7 +482,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPCall(msg stanza.Message, timestamp 
 			Type:      bridgev2.RemoteEventMessage,
 			PortalKey: networkid.PortalKey{ID: portalID},
 			Sender: bridgev2.EventSender{
-				Sender:   MakeUserID(senderID),
+				Sender:   nc.senderUserID(senderID),
 				IsFromMe: isFromMe,
 			},
 			Timestamp: timestamp,

@@ -319,42 +319,24 @@ var CommandListUsers = &commands.FullHandler{
 			ce.Reply("No login found")
 			return
 		}
-		rows, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
-		if err != nil {
-			ce.Reply("Failed to list portals: %v", err)
-			return
-		}
-		users := map[string]bool{}
-		for _, row := range rows {
-			portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, row.Portal)
-			if err != nil || portal == nil {
+		interactions := collectContactInteractions(ce.Ctx, ce.Bridge, login)
+		lines := make([]string, 0, len(interactions))
+		for _, ci := range interactions {
+			if !ci.Self && !ci.DM {
 				continue
 			}
-			if portal.RoomType != database.RoomTypeDM {
-				continue
-			}
-			jid := string(portal.OtherUserID)
-			if jid == "" {
-				jid = string(portal.ID)
-			}
-			jid = UnescapeJID(jid)
-			users[jid] = true
+			lines = append(lines, formatContactInteractionLine(ci))
 		}
-		if len(users) == 0 {
+		if len(lines) == 0 {
 			ce.Reply("No users found")
 			return
 		}
-		list := make([]string, 0, len(users))
-		for jid := range users {
-			list = append(list, jid)
-		}
-		sort.Strings(list)
-		ce.Reply(strings.Join(list, "\n"))
+		ce.Reply("Direct message users (%d):\n%s", len(lines), strings.Join(lines, "\n"))
 	},
 	Name: "list-users",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "List users you have DMs with",
+		Description: "List users you have DMs with, including first/last activity (yourself included)",
 	},
 	RequiresLogin: true,
 }
@@ -384,12 +366,24 @@ var CommandListContacts = &commands.FullHandler{
 			ce.Reply("No roster contacts found")
 			return
 		}
-		ce.Reply(strings.Join(contacts, "\n"))
+		byJID := map[string]*contactInteraction{}
+		for _, ci := range collectContactInteractions(ce.Ctx, ce.Bridge, login) {
+			byJID[contactInteractionKey(ci.JID)] = ci
+		}
+		lines := make([]string, 0, len(contacts))
+		for _, jid := range contacts {
+			if ci := byJID[contactInteractionKey(jid)]; ci != nil {
+				lines = append(lines, formatContactInteractionLine(ci))
+			} else {
+				lines = append(lines, fmt.Sprintf("- `%s` — no bridged messages yet", jid))
+			}
+		}
+		ce.Reply("Roster contacts (%d):\n%s", len(lines), strings.Join(lines, "\n"))
 	},
 	Name: "list-contacts",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "List contacts currently present in your XMPP roster",
+		Description: "List contacts currently present in your XMPP roster, annotated with bridged activity",
 	},
 	RequiresLogin: true,
 }
@@ -401,52 +395,21 @@ var CommandListContacted = &commands.FullHandler{
 			ce.Reply("No login found")
 			return
 		}
-		rows, err := ce.Bridge.DB.UserPortal.GetAllForLogin(ce.Ctx, login.UserLogin)
-		if err != nil {
-			ce.Reply("Failed to list portals: %v", err)
-			return
-		}
-		contacted := map[string]struct{}{}
-		for _, row := range rows {
-			portal, err := ce.Bridge.GetPortalByKey(ce.Ctx, row.Portal)
-			if err != nil || portal == nil {
-				jid := UnescapeJID(string(row.Portal.ID))
-				if groupContacts := splitCheogramGroupContacts(jid); len(groupContacts) > 0 {
-					for _, contact := range groupContacts {
-						addContactedJIDs(contacted, contact)
-					}
-				} else {
-					addContactedJIDs(contacted, jid)
-				}
-				continue
-			}
-			if !portalUsesGroupChat(portal) {
-				jid := string(portal.OtherUserID)
-				if jid == "" {
-					jid = string(portal.ID)
-				}
-				addContactedJIDs(contacted, UnescapeJID(jid))
-				continue
-			}
-			for _, contact := range portalContacts(portal) {
-				addContactedJIDs(contacted, contact)
-			}
-		}
-		if len(contacted) == 0 {
+		interactions := collectContactInteractions(ce.Ctx, ce.Bridge, login)
+		if len(interactions) == 0 {
 			ce.Reply("No contacted users found")
 			return
 		}
-		list := make([]string, 0, len(contacted))
-		for jid := range contacted {
-			list = append(list, jid)
+		lines := make([]string, 0, len(interactions))
+		for _, ci := range interactions {
+			lines = append(lines, formatContactInteractionLine(ci))
 		}
-		sort.Strings(list)
-		ce.Reply(strings.Join(list, "\n"))
+		ce.Reply("Contacted users (%d):\n%s", len(lines), strings.Join(lines, "\n"))
 	},
 	Name: "list-contacted",
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionChats,
-		Description: "List users you have contacted directly or via Cheogram group chats",
+		Description: "List users you have contacted directly or via Cheogram group chats, including first/last activity",
 	},
 	RequiresLogin: true,
 }
@@ -464,6 +427,7 @@ var CommandListUnnamedContacts = &commands.FullHandler{
 			RoomID       id.RoomID
 			RemoteName   string
 			MessageCount int
+			FirstTS      time.Time
 			LastTS       time.Time
 			Preview      string
 		}
@@ -516,6 +480,7 @@ var CommandListUnnamedContacts = &commands.FullHandler{
 							RoomID:       portal.MXID,
 							RemoteName:   remoteName,
 							MessageCount: stats.messageCount,
+							FirstTS:      stats.firstTS,
 							LastTS:       stats.lastTS,
 							Preview:      stats.preview,
 						}
@@ -525,6 +490,9 @@ var CommandListUnnamedContacts = &commands.FullHandler{
 							existing.LastTS = stats.lastTS
 							existing.Preview = stats.preview
 							existing.RoomID = portal.MXID
+						}
+						if !stats.firstTS.IsZero() && (existing.FirstTS.IsZero() || stats.firstTS.Before(existing.FirstTS)) {
+							existing.FirstTS = stats.firstTS
 						}
 						if remoteName != "" && existing.RemoteName == "" {
 							existing.RemoteName = remoteName
@@ -601,7 +569,7 @@ var CommandListUnnamedContacts = &commands.FullHandler{
 			if u.RemoteName != "" {
 				remoteInfo = fmt.Sprintf(" | Remote name: %q", u.RemoteName)
 			}
-			sb.WriteString(fmt.Sprintf("  - Messages: %d | Last active: %s%s\n", u.MessageCount, formatLastActivity(u.LastTS), remoteInfo))
+			sb.WriteString(fmt.Sprintf("  - Messages: %d | First: %s | Last: %s%s\n", u.MessageCount, formatFirstInteractionDate(u.FirstTS), formatLastActivity(u.LastTS), remoteInfo))
 			if u.Preview != "" {
 				sb.WriteString(fmt.Sprintf("  - Last message: %q\n", u.Preview))
 			}
@@ -684,7 +652,8 @@ var CommandJoinRoom = &commands.FullHandler{
 			start = time.Time{}
 		}
 		client.scheduleMUCBackfill(roomJID, start)
-		client.joinMUC(roomJID, "", "")
+		client.clearMUCInviteState(ce.Ctx, roomJID)
+		client.joinMUC(roomJID, "", client.recallMUCInvitePassword(roomJID))
 		ce.Reply("Joining %s and starting backfill", roomJID)
 	},
 	Name: "join-room",
@@ -816,8 +785,9 @@ var CommandBookmarksSync = &commands.FullHandler{
 				ce.Reply("Not connected to the XMPP server; try again after the bridge reconnects.")
 				return
 			}
-			pushed := client.pushBookmarks()
-			ce.Reply("Pushed %d XEP-0402 bookmark(s).", pushed)
+			created := client.runBookmarkBackfill(ce.Ctx, true)
+			pushed := client.pushBookmarks(ce.Ctx)
+			ce.Reply("Pushed %d XEP-0402 bookmark(s) and created %d for already-bridged rooms.", pushed, created)
 			return
 		}
 		ce.Reply("Usage: bookmarks-sync [push]\nWithout `push`, lists the bookmarked MUC rooms known to this login.")
@@ -928,7 +898,11 @@ var CommandListRooms = &commands.FullHandler{
 			if room.preview != "" {
 				preview = " | " + room.preview
 			}
-			lines = append(lines, fmt.Sprintf("[%s] %s | %s | messages=%d | last=%s%s", kind, room.roomID, room.name, room.messageCount, formatLastActivity(room.lastTS), preview))
+			line := fmt.Sprintf("[%s] %s | %s | messages=%d | first=%s | last=%s", kind, room.roomID, room.name, room.messageCount, formatFirstInteractionDate(room.firstTS), formatLastActivity(room.lastTS))
+			if room.portal != nil && room.portal.MXID != "" {
+				line += fmt.Sprintf(" | [open](%s)", room.portal.MXID.URI().MatrixToURL())
+			}
+			lines = append(lines, line+preview)
 		}
 		if filter == "all" || filter == "space" {
 			if login.SpaceRoom != "" {
@@ -2086,6 +2060,7 @@ type roomPruneStats struct {
 	targetJID    string
 	name         string
 	messageCount int
+	firstTS      time.Time
 	lastTS       time.Time
 	preview      string
 }
@@ -2115,6 +2090,9 @@ func getRoomPruneStats(ce *commands.Event, portal *bridgev2.Portal) *roomPruneSt
 				}
 			}
 		}
+	}
+	if firstMsg, err := ce.Bridge.DB.Message.GetFirstPortalMessageExcludingIDPattern(ce.Ctx, portal.PortalKey, fakeMessageIDPattern); err == nil && firstMsg != nil {
+		stats.firstTS = firstMsg.Timestamp
 	}
 	return stats
 }
@@ -2236,6 +2214,7 @@ type candidateRoom struct {
 	targetJID    string
 	name         string
 	messageCount int
+	firstTS      time.Time
 	lastTS       time.Time
 	preview      string
 	isOrphan     bool
@@ -2333,6 +2312,7 @@ func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*ca
 				targetJID:    targetJID,
 				name:         stats.name,
 				messageCount: stats.messageCount,
+				firstTS:      stats.firstTS,
 				lastTS:       stats.lastTS,
 				preview:      stats.preview,
 				isOrphan:     false,
@@ -2373,6 +2353,7 @@ func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*ca
 							candidate.targetJID = stats.targetJID
 							candidate.name = stats.name
 							candidate.messageCount = stats.messageCount
+							candidate.firstTS = stats.firstTS
 							candidate.lastTS = stats.lastTS
 							candidate.preview = stats.preview
 						} else {
@@ -2446,6 +2427,7 @@ func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*ca
 				portal, _ := ce.Bridge.GetPortalByMXID(ce.Ctx, roomID)
 				var targetJID string
 				var msgCount int
+				var firstTS time.Time
 				var lastTS time.Time
 				var preview string
 
@@ -2456,6 +2438,7 @@ func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*ca
 						roomName = stats.name
 					}
 					msgCount = stats.messageCount
+					firstTS = stats.firstTS
 					lastTS = stats.lastTS
 					preview = stats.preview
 				} else if ghostJID != "" {
@@ -2479,6 +2462,7 @@ func collectCandidateRooms(ce *commands.Event, login *bridgev2.UserLogin) ([]*ca
 					targetJID:    targetJID,
 					name:         roomName,
 					messageCount: msgCount,
+					firstTS:      firstTS,
 					lastTS:       lastTS,
 					preview:      preview,
 					isOrphan:     portal == nil,

@@ -6,6 +6,8 @@ package connector
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +16,9 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/networkid"
 )
 
 const (
@@ -200,12 +205,14 @@ func normalizeCardDAVPhoneNumber(raw, defaultCountryCode string) (string, bool) 
 
 // cardDAVContact is a minimal vCard contact for roster import.
 type cardDAVContact struct {
-	Name   string
-	Phones []string
+	Name      string
+	Phones    []string
+	Photo     []byte
+	PhotoMime string
 }
 
-// parseVCards extracts names and telephone numbers from vCard data. It
-// handles line folding and property parameters (including Apple's
+// parseVCards extracts names, telephone numbers and photos from vCard data.
+// It handles line folding and property parameters (including Apple's
 // "item1.TEL" style grouping).
 func parseVCards(data []byte) []cardDAVContact {
 	text := strings.ReplaceAll(string(data), "\r\n", "\n")
@@ -218,6 +225,9 @@ func parseVCards(data []byte) []cardDAVContact {
 			continue
 		}
 		lines = append(lines, line)
+	}
+	if len(data) == 0 {
+		return nil
 	}
 	var contacts []cardDAVContact
 	var current *cardDAVContact
@@ -237,7 +247,7 @@ func parseVCards(data []byte) []cardDAVContact {
 		if current == nil {
 			continue
 		}
-		name, value, ok := splitVCardProperty(trimmed)
+		name, params, value, ok := splitVCardPropertyParams(trimmed)
 		if !ok {
 			continue
 		}
@@ -253,9 +263,117 @@ func parseVCards(data []byte) []cardDAVContact {
 			if value != "" {
 				current.Phones = append(current.Phones, value)
 			}
+		case "PHOTO":
+			if current.Photo == nil {
+				if photo, mimeType, ok := parseVCardPhoto(params, value); ok {
+					current.Photo = photo
+					current.PhotoMime = mimeType
+				}
+			}
 		}
 	}
 	return contacts
+}
+
+// splitVCardPropertyParams splits a content line into property name, raw
+// parameters (the part between ';' and ':') and value.
+func splitVCardPropertyParams(line string) (name, params, value string, ok bool) {
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return "", "", "", false
+	}
+	name = line[:idx]
+	value = strings.TrimSpace(line[idx+1:])
+	if semi := strings.Index(name, ";"); semi >= 0 {
+		params = strings.TrimSpace(name[semi+1:])
+		name = name[:semi]
+	}
+	return strings.TrimSpace(name), params, value, true
+}
+
+// parseVCardPhoto decodes a PHOTO property value. Inline base64 payloads and
+// data: URIs are supported; URL references are skipped because fetching
+// remote photos is deliberately out of scope for the importer.
+func parseVCardPhoto(params, value string) ([]byte, string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, "", false
+	}
+	hint := vCardPhotoMimeHint(params)
+	if strings.HasPrefix(strings.ToLower(value), "data:") {
+		comma := strings.Index(value, ",")
+		if comma < 0 {
+			return nil, "", false
+		}
+		meta := strings.ToLower(value[:comma])
+		if !strings.Contains(meta, ";base64") {
+			return nil, "", false
+		}
+		if hint == "" {
+			if semi := strings.Index(meta[5:], ";"); semi >= 0 {
+				hint = strings.TrimSpace(meta[5 : 5+semi])
+			} else {
+				hint = strings.TrimSpace(meta[5:])
+			}
+		}
+		decoded, err := base64.StdEncoding.DecodeString(stripASCIIWhitespace(value[comma+1:]))
+		if err != nil {
+			return nil, "", false
+		}
+		return validateVCardPhoto(decoded, hint)
+	}
+	if strings.HasPrefix(strings.ToLower(value), "http://") || strings.HasPrefix(strings.ToLower(value), "https://") {
+		return nil, "", false
+	}
+	if strings.Contains(strings.ToLower(params), "value=uri") {
+		return nil, "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(stripASCIIWhitespace(value))
+	if err != nil {
+		return nil, "", false
+	}
+	return validateVCardPhoto(decoded, hint)
+}
+
+// vCardPhotoMimeHint maps a PHOTO property's TYPE parameter to a MIME type.
+func vCardPhotoMimeHint(params string) string {
+	for _, param := range strings.Split(params, ";") {
+		param = strings.TrimSpace(param)
+		if !strings.HasPrefix(strings.ToUpper(param), "TYPE=") {
+			continue
+		}
+		value := strings.Trim(strings.TrimSpace(param[5:]), `"`)
+		switch strings.ToUpper(value) {
+		case "JPEG", "JPG":
+			return "image/jpeg"
+		case "PNG":
+			return "image/png"
+		case "GIF":
+			return "image/gif"
+		case "WEBP":
+			return "image/webp"
+		}
+		if strings.Contains(value, "/") {
+			return strings.ToLower(value)
+		}
+	}
+	return ""
+}
+
+// validateVCardPhoto enforces the avatar limits shared with the XMPP avatar
+// code paths.
+func validateVCardPhoto(data []byte, hint string) ([]byte, string, bool) {
+	if len(data) == 0 || len(data) > maxVCardAvatarSize {
+		return nil, "", false
+	}
+	mimeType := hint
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	if !allowedVCardAvatarMime(mimeType) {
+		return nil, "", false
+	}
+	return data, mimeType, true
 }
 
 // splitVCardProperty splits a content line into its property name and value,
@@ -316,6 +434,7 @@ type cardDAVSyncResult struct {
 	Added      int
 	Skipped    int
 	Conflicts  int
+	Photos     int
 	DryRun     bool
 }
 
@@ -344,6 +463,7 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 	seen := map[string]bool{}
 	for _, contact := range contacts {
 		result.Contacts++
+		var contactJIDs []string
 		for _, raw := range contact.Phones {
 			number, ok := normalizeCardDAVPhoneNumber(raw, cfg.DefaultCountryCode)
 			if !ok {
@@ -355,6 +475,7 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 				continue
 			}
 			seen[jid] = true
+			contactJIDs = append(contactJIDs, jid)
 			if existing[jid] {
 				result.Skipped++
 				continue
@@ -378,6 +499,9 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 			result.Added++
 			time.Sleep(cardDAVSyncAddInterval)
 		}
+		if apply && len(contact.Photo) > 0 && len(contactJIDs) > 0 {
+			result.Photos += nc.applyCardDAVPhoto(ctx, contactJIDs, contact.Photo)
+		}
 	}
 	if apply {
 		now := time.Now()
@@ -389,4 +513,54 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 		nc.refreshRosterNamedPortals()
 	}
 	return result, nil
+}
+
+// applyCardDAVPhoto stores a CardDAV photo on existing ghosts for the given
+// contact JIDs and refreshes their DM portal avatars. Live XMPP avatars win:
+// ghosts with a fetched XMPP avatar are left untouched.
+func (nc *MyNetworkClient) applyCardDAVPhoto(ctx context.Context, jids []string, photo []byte) int {
+	if nc.bridge == nil || len(photo) == 0 {
+		return 0
+	}
+	sum := sha256.Sum256(photo)
+	hash := fmt.Sprintf("%x", sum[:8])
+	applied := 0
+	for _, jid := range jids {
+		ghost, err := nc.bridge.GetExistingGhostByID(ctx, MakeUserID(jid))
+		if err != nil {
+			nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to load ghost for CardDAV photo")
+			continue
+		}
+		if ghost == nil {
+			continue
+		}
+		meta, _ := ghost.Metadata.(*GhostMetadata)
+		if meta == nil {
+			meta = &GhostMetadata{}
+		}
+		if strings.TrimSpace(meta.AvatarHash) != "" {
+			continue
+		}
+		if meta.CardDAVPhotoHash == hash && ghost.AvatarMXC != "" {
+			continue
+		}
+		meta.CardDAVPhotoHash = hash
+		ghost.Metadata = meta
+		photoCopy := photo
+		ghost.UpdateInfo(ctx, &bridgev2.UserInfo{Avatar: &bridgev2.Avatar{
+			ID:  networkid.AvatarID("carddav:" + hash),
+			Get: func(ctx context.Context) ([]byte, error) { return photoCopy, nil },
+		}})
+		if err := nc.bridge.DB.Ghost.Update(ctx, ghost.Ghost); err != nil {
+			nc.log.Warn().Err(err).Str("jid", jid).Msg("Failed to store CardDAV photo hash")
+			continue
+		}
+		nc.refreshContactPortalAvatars(ctx, jid, &bridgev2.Avatar{
+			ID:   ghost.AvatarID,
+			MXC:  ghost.AvatarMXC,
+			Hash: ghost.AvatarHash,
+		})
+		applied++
+	}
+	return applied
 }

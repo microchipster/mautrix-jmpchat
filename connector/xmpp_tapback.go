@@ -177,7 +177,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPTapback(msg stanza.Message, timesta
 	}
 
 	sender := bridgev2.EventSender{
-		Sender:   MakeUserID(senderID),
+		Sender:   nc.senderUserID(senderID),
 		IsFromMe: isFromMe,
 	}
 
@@ -215,7 +215,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPTapback(msg stanza.Message, timesta
 		TargetMessage: target.ID,
 		Reactions: &bridgev2.ReactionSyncData{
 			Users: map[networkid.UserID]*bridgev2.ReactionSyncUser{
-				MakeUserID(senderID): {
+				nc.senderUserID(senderID): {
 					Reactions:       reactionItems,
 					HasAllReactions: true,
 				},
