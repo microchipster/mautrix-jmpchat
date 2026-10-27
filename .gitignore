@@ -8,3 +8,10 @@ cheogram
 jmpchat
 /mautrix-jmpchat
 signal/
+
+# Reference checkouts (separate repositories)
+/cheogram-android/
+/jmpchat-matrix-bridge/
+
+# Local session notes
+session-*.md
