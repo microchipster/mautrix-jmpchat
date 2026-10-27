@@ -417,8 +417,11 @@ func (nc *MyNetworkClient) isOwnLoginTarget(target bridgev2.GhostOrUserLogin) bo
 }
 
 // clearMUCInviteState clears the persistent left/invite-pending flags of a
-// room's portal after the user joined it (or explicitly asked to join).
+// room's portal (and the in-memory left flag) after the user joined it (or
+// explicitly asked to join), so the watchdog and bookmark imports treat it as
+// joined again.
 func (nc *MyNetworkClient) clearMUCInviteState(ctx context.Context, roomJID string) {
+	nc.rejoinMUC(roomJID)
 	if nc.bridge == nil || roomJID == "" {
 		return
 	}
@@ -437,6 +440,31 @@ func (nc *MyNetworkClient) clearMUCInviteState(ctx context.Context, roomJID stri
 	meta.MUCLeft, meta.MUCInvitePending = false, false
 	if err := portal.Save(ctx); err != nil {
 		nc.log.Warn().Err(err).Str("room_jid", roomJID).Msg("Failed to clear invite state on portal")
+	}
+}
+
+// markPortalMUCLeft persists the "intentionally left" flag on a room's portal
+// so the bridge stops treating the room as joined. join-room and accepting an
+// invite clear it again through clearMUCInviteState.
+func (nc *MyNetworkClient) markPortalMUCLeft(ctx context.Context, roomJID string) {
+	if nc.bridge == nil || roomJID == "" {
+		return
+	}
+	portal, err := nc.bridge.GetExistingPortalByKey(ctx, networkid.PortalKey{ID: MakePortalID(roomJID)})
+	if err != nil {
+		nc.log.Warn().Err(err).Str("room_jid", roomJID).Msg("Failed to load portal to mark it as left")
+		return
+	}
+	if portal == nil {
+		return
+	}
+	meta, _ := portal.Metadata.(*PortalMetadata)
+	if meta == nil || meta.MUCLeft {
+		return
+	}
+	meta.MUCLeft, meta.MUCInvitePending = true, false
+	if err := portal.Save(ctx); err != nil {
+		nc.log.Warn().Err(err).Str("room_jid", roomJID).Msg("Failed to mark portal as left")
 	}
 }
 

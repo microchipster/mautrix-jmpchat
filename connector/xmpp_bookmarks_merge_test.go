@@ -212,6 +212,9 @@ func TestParseBookmark2Items(t *testing.T) {
 	if room.Name != "My Room" || room.Nick != "alice" || room.Password != "secret" || !room.AutojoinEnabled() {
 		t.Fatalf("unexpected parsed item: %+v", room)
 	}
+	if room.ItemID != "room@conference.example.com" {
+		t.Fatalf("the pubsub item ID must be preserved for retraction, got %q", room.ItemID)
+	}
 	if _, ok := items["no-jid.example.com"]; !ok {
 		t.Fatalf("item without a jid attribute should fall back to the item id: %+v", items)
 	}
@@ -228,6 +231,141 @@ func TestPublishBookmark2MergedWithoutConnection(t *testing.T) {
 	}
 	if err := nc.publishBookmark2Merged(t.Context(), BookmarkConference{}, true); err == nil {
 		t.Fatal("an empty bookmark JID must fail")
+	}
+}
+
+func TestBookmarkRoomLooksLikeKnownMUC(t *testing.T) {
+	t.Parallel()
+
+	nc := &MyNetworkClient{
+		mucRoomChecks: map[string]mucRoomCheckEntry{
+			"known@example.com":   {isRoom: true},
+			"unknown@example.com": {isRoom: false},
+		},
+	}
+	tests := []struct {
+		name string
+		jid  string
+		want bool
+	}{
+		{name: "cached positive", jid: "known@example.com", want: true},
+		{name: "conference subdomain", jid: "room@conference.example.org", want: true},
+		{name: "groups subdomain", jid: "room@groups.example.com", want: true},
+		{name: "muc subdomain", jid: "room@muc.example.org", want: true},
+		{name: "cached negative", jid: "unknown@example.com", want: false},
+		{name: "account JID", jid: "alice@example.com", want: false},
+		{name: "empty", jid: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nc.bookmarkRoomLooksLikeKnownMUC(tt.jid); got != tt.want {
+				t.Errorf("bookmarkRoomLooksLikeKnownMUC(%q) = %t, want %t", tt.jid, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBookmarkRetractionItemID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		existing BookmarkConference
+		roomKey  string
+		want     string
+	}{
+		{
+			name:     "fetched item ID wins",
+			existing: BookmarkConference{JID: "room@conference.example.org", ItemID: "custom-item-id"},
+			roomKey:  "room@conference.example.org",
+			want:     "custom-item-id",
+		},
+		{
+			name:     "room JID fallback",
+			existing: BookmarkConference{JID: "room@conference.example.org"},
+			roomKey:  "room@conference.example.org",
+			want:     "room@conference.example.org",
+		},
+		{
+			name:     "canonical key fallback",
+			existing: BookmarkConference{},
+			roomKey:  "room@conference.example.org",
+			want:     "room@conference.example.org",
+		},
+		{
+			name:     "blank item ID is ignored",
+			existing: BookmarkConference{JID: "room@conference.example.org", ItemID: "  "},
+			roomKey:  "room@conference.example.org",
+			want:     "room@conference.example.org",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := bookmarkRetractionItemID(tt.existing, tt.roomKey); got != tt.want {
+				t.Errorf("bookmarkRetractionItemID(%+v, %q) = %q, want %q", tt.existing, tt.roomKey, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleBookmarkConferencesSkipsNonMUCJIDs(t *testing.T) {
+	t.Parallel()
+
+	nc := &MyNetworkClient{
+		login: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			Metadata: &LoginMetadata{RemoteUserID: "alice@example.com"},
+		}},
+	}
+	nc.handleBookmarkConferences([]BookmarkConference{
+		{JID: "alice@example.com", Autojoin: "true"},
+		{JID: "+15550101100@cheogram.com", Autojoin: "true"},
+	}, "test")
+	if nc.bookmarkedRooms != nil {
+		t.Fatalf("non-MUC JIDs must not be recorded as bookmarks: %v", nc.bookmarkedRooms)
+	}
+	if nc.mucRooms != nil {
+		t.Fatalf("non-MUC JIDs must not be joined: %v", nc.mucRooms)
+	}
+	if nc.mucHealth != nil {
+		t.Fatalf("non-MUC JIDs must not enter the join watchdog state: %v", nc.mucHealth)
+	}
+}
+
+func TestRemoveBookmarkGuards(t *testing.T) {
+	t.Parallel()
+
+	nc := &MyNetworkClient{}
+	if _, err := nc.removeBookmark(t.Context(), ""); err == nil {
+		t.Fatal("an empty JID must be rejected")
+	}
+	if _, err := nc.removeBookmark(t.Context(), "not-a-room-jid"); err == nil {
+		t.Fatal("a JID without a domain must be rejected")
+	}
+
+	// Without a connection the retraction fails and the local state must be
+	// left untouched, so a retried command sees the bookmark again.
+	nc = &MyNetworkClient{
+		login:           &bridgev2.UserLogin{UserLogin: &database.UserLogin{Metadata: &LoginMetadata{RemoteUserID: "me@example.com"}}},
+		bookmarkedRooms: map[string]bool{"room@conference.example.org": true},
+	}
+	if _, err := nc.removeBookmark(t.Context(), "room@conference.example.org"); err == nil || !strings.Contains(err.Error(), "fetch") {
+		t.Fatalf("expected a retraction fetch failure without a connection, got %v", err)
+	}
+	if !nc.bookmarkedRooms["room@conference.example.org"] {
+		t.Fatal("a failed retraction must not drop the local bookmark state")
+	}
+}
+
+func TestLogNonMUCBookmarkOnce(t *testing.T) {
+	t.Parallel()
+
+	nc := &MyNetworkClient{}
+	nc.logNonMUCBookmarkOnce("alice@example.com", "test")
+	nc.logNonMUCBookmarkOnce("alice@example.com", "test") // must not panic or log again
+	if !nc.nonMUCBookmarkLogged["alice@example.com"] {
+		t.Fatal("the JID must be remembered as already reported")
 	}
 }
 

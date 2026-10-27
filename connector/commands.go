@@ -800,6 +800,57 @@ var CommandBookmarksSync = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+var CommandRemoveBookmark = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login, args := selectCommandLogin(ce)
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		roomJID, err := parseRemoveBookmarkArgs(args)
+		if err != nil {
+			ce.Reply("%v", err)
+			return
+		}
+		if !client.isXMPPConnected() {
+			ce.Reply("Not connected to the XMPP server; try again after the bridge reconnects.")
+			return
+		}
+		retracted, err := client.removeBookmark(ce.Ctx, roomJID)
+		if err != nil {
+			ce.Reply("Failed to remove the bookmark for %s: %v", roomJID, err)
+			return
+		}
+		if retracted {
+			ce.Reply("Removed the XEP-0402 bookmark for %s and left the room; the join watchdog will not rejoin it.", roomJID)
+			return
+		}
+		ce.Reply("Left %s locally; the server had no bookmark for it. The join watchdog will not rejoin it.", roomJID)
+	},
+	Name: "remove-bookmark",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Remove a room's XEP-0402 bookmark and leave it (use: remove-bookmark <room_jid>)",
+	},
+	RequiresLogin: true,
+}
+
+func parseRemoveBookmarkArgs(args []string) (string, error) {
+	if len(args) != 1 {
+		return "", fmt.Errorf("usage: remove-bookmark <room_jid>")
+	}
+	roomJID := CanonicalBareJID(UnescapeJID(strings.TrimSpace(args[0])))
+	if roomJID == "" || !strings.Contains(roomJID, "@") {
+		return "", fmt.Errorf("please provide a room JID, e.g. room@conference.example.com")
+	}
+	return roomJID, nil
+}
+
 var CommandListDiscoveredRooms = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		login := ce.User.GetDefaultLogin()

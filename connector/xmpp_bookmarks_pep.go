@@ -98,13 +98,27 @@ func (nc *MyNetworkClient) handleBookmarkPEP(msg stanza.Message) bool {
 		Msg("Received XEP-0402 bookmark update")
 
 	for _, roomJID := range removed {
-		nc.leaveMUC(roomJID)
+		// The bookmark is already gone on the server: drop the local record
+		// before leaving, so leaveMUC does not republish an autojoin-off item.
 		if nc.bookmarkedRooms != nil {
 			delete(nc.bookmarkedRooms, roomJID)
 		}
+		if nc.bookmarkedRoomNames != nil {
+			delete(nc.bookmarkedRoomNames, roomJID)
+		}
+		nc.leaveMUC(roomJID)
 	}
 	var toJoin []BookmarkConference
 	for _, conf := range conferences {
+		if nc.isNonMUCRoomJID(conf.JID) {
+			// Cheogram gateway JIDs and the login's own JID are not MUC
+			// rooms: a bookmark event for them must not trigger a join or a
+			// leave presence.
+			nc.log.Debug().
+				Str("room_jid", conf.JID).
+				Msg("Skipping non-MUC JID from bookmark event")
+			continue
+		}
 		if !conf.AutojoinEnabled() {
 			nc.leaveMUC(conf.JID)
 			if nc.bookmarkedRooms != nil {

@@ -105,6 +105,7 @@ func myCommandHandlers() []*commands.FullHandler {
 		CommandMUCNick,
 		CommandMUCNickDefault,
 		CommandBookmarksSync,
+		CommandRemoveBookmark,
 		CommandListDiscoveredRooms,
 		CommandListRooms,
 		CommandListUnnamedContacts,
@@ -396,6 +397,7 @@ func managementRoomHelpText() string {
 		"- set-contact-name <jid> <name>\n" +
 		"- auto-rename\n" +
 		"- join-room <room_jid> [full|<duration>]\n" +
+		"- remove-bookmark <room_jid>\n" +
 		"- list-rooms [all|dm|group|orphans|space|stale]\n" +
 		"- list-discovered-rooms\n" +
 		"- list-unnamed-contacts"

@@ -49,6 +49,11 @@ type BookmarkConference struct {
 	Autojoin string `xml:"autojoin,attr,omitempty"`
 	Nick     string `xml:"nick,omitempty"`
 	Password string `xml:"password,omitempty"`
+	// ItemID is the pubsub item ID a XEP-0402 bookmark was fetched under.
+	// Items should use the room JID, but servers may use another ID; keeping
+	// it lets a retraction target the item that actually exists. Never
+	// marshalled.
+	ItemID string `xml:"-"`
 }
 
 // BookmarkConference2 implements XEP-0402 (Bookmarks 2).

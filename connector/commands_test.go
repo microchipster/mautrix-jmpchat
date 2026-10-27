@@ -93,6 +93,45 @@ func TestParseBlockCommandArgs(t *testing.T) {
 	}
 }
 
+func TestParseRemoveBookmarkArgs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{name: "bare JID", args: []string{"room@conference.example.org"}, want: "room@conference.example.org"},
+		{name: "resource stripped", args: []string{"room@conference.example.org/nick"}, want: "room@conference.example.org"},
+		{name: "domain lowercased", args: []string{"Room@Conference.Example.ORG"}, want: "Room@conference.example.org"},
+		{name: "escaped cheogram JID", args: []string{"=2b15550101100@cheogram.com"}, want: "+15550101100@cheogram.com"},
+		{name: "surrounding spaces", args: []string{"  room@conference.example.org "}, want: "room@conference.example.org"},
+		{name: "missing argument", args: nil, wantErr: true},
+		{name: "too many arguments", args: []string{"room@conference.example.org", "extra"}, wantErr: true},
+		{name: "empty argument", args: []string{""}, wantErr: true},
+		{name: "not a JID", args: []string{"room"}, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseRemoveBookmarkArgs(tt.args)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseRemoveBookmarkArgs(%v) = %q, want an error", tt.args, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseRemoveBookmarkArgs(%v) returned error: %v", tt.args, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseRemoveBookmarkArgs(%v) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatPingStatusConnected(t *testing.T) {
 	t.Parallel()
 

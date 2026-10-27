@@ -149,9 +149,10 @@ func (nc *MyNetworkClient) runMUCHealthCheck() {
 		nc.mucHealth = map[string]*mucJoinHealthState{}
 	}
 	for roomJID := range nc.mucRooms {
-		if isCheogramGatewayJID(roomJID) {
-			// Cheogram gateway JIDs are not MUC rooms; joining them would be
-			// dropped and retried forever by this watchdog.
+		if nc.isNonMUCRoomJID(roomJID) {
+			// Cheogram gateway JIDs and the login's own JID are not MUC
+			// rooms; joining them would be dropped and retried forever by
+			// this watchdog.
 			continue
 		}
 		if nc.mucLeft != nil && nc.mucLeft[roomJID] {
@@ -193,10 +194,42 @@ func (nc *MyNetworkClient) runMUCHealthCheck() {
 	}
 }
 
+// classifySelfPingAnswer classifies an IQ answer to a self-ping (XEP-0410 MUC
+// self-ping or XEP-0199 ping to our own full JID). It reports whether the
+// ping round trip succeeded and whether the answer is our own ping routed
+// back, which must be answered with a result:
+//   - IQTypeResult: the XEP-0199 pong; the standard success.
+//   - IQTypeGet: our own ping delivered back to this session. XEP-0410 treats
+//     this loopback as proof of occupancy, and the responder (us) answers it
+//     so a pong can complete the round trip.
+//   - IQTypeError: the service answered but the ping target is not reachable
+//     as a MUC occupant; the caller rejoins (a stream-liveness ping may still
+//     treat an error answer as proof that the server is answering).
+//
+// Anything else is an unexpected answer type.
+func classifySelfPingAnswer(iqType stanza.StanzaType) (ok bool, loopback bool) {
+	switch iqType {
+	case stanza.IQTypeResult:
+		return true, false
+	case stanza.IQTypeGet:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// answerPingLoopback answers our own ping after the server or MUC service
+// routed it back to this session (XEP-0199 requires a result answer).
+func (nc *MyNetworkClient) answerPingLoopback(iq stanza.IQ) {
+	if err := nc.sendXMPP(iq.MakeResult()); err != nil {
+		nc.log.Debug().Err(err).Msg("Failed to answer the looped-back self-ping")
+	}
+}
+
 // pingMUCSelf sends an XEP-0410 self-ping (an IQ get to our own occupant JID)
 // and marks the room as not joined when it fails, so the health loop rejoins.
 func (nc *MyNetworkClient) pingMUCSelf(roomJID, nick string) {
-	if isCheogramGatewayJID(roomJID) {
+	if nc.isNonMUCRoomJID(roomJID) {
 		return
 	}
 	if nc.xmppClient == nil || !nc.isXMPPConnected() {
@@ -217,8 +250,12 @@ func (nc *MyNetworkClient) pingMUCSelf(roomJID, nick string) {
 	}
 	select {
 	case resp := <-ch:
-		if resp.Type == stanza.IQTypeResult {
-			nc.log.Debug().Str("room_jid", roomJID).Msg("MUC self-ping succeeded")
+		ok, loopback := classifySelfPingAnswer(resp.Type)
+		if loopback {
+			nc.answerPingLoopback(resp)
+		}
+		if ok {
+			nc.log.Debug().Str("room_jid", roomJID).Str("type", string(resp.Type)).Msg("MUC self-ping succeeded")
 			return
 		}
 		nc.log.Warn().Str("room_jid", roomJID).Str("type", string(resp.Type)).Msg("MUC self-ping returned non-result; rejoining")
@@ -237,7 +274,7 @@ func (nc *MyNetworkClient) scheduleMUCAutoRejoin() {
 		time.Sleep(3 * time.Second)
 		rooms := make([]string, 0, len(nc.mucRooms))
 		for roomJID := range nc.mucRooms {
-			if isCheogramGatewayJID(roomJID) {
+			if nc.isNonMUCRoomJID(roomJID) {
 				continue
 			}
 			if nc.mucLeft != nil && nc.mucLeft[roomJID] {

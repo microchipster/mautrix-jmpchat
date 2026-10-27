@@ -135,6 +135,14 @@ func TestClearMUCInviteStateNilBridge(t *testing.T) {
 	t.Parallel()
 	nc := &MyNetworkClient{}
 	nc.clearMUCInviteState(t.Context(), "room@conf.example.com") // must not panic
+
+	// An explicit join clears the in-memory "intentionally left" flag too,
+	// so the watchdog picks the room back up.
+	nc.mucLeft = map[string]bool{"room@conf.example.com": true}
+	nc.clearMUCInviteState(t.Context(), "room@conf.example.com")
+	if nc.mucLeft["room@conf.example.com"] {
+		t.Fatal("clearMUCInviteState must clear the in-memory left flag")
+	}
 }
 
 func TestHandleMatrixMembershipGuards(t *testing.T) {

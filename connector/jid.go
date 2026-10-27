@@ -156,6 +156,19 @@ func isCheogramGatewayJID(jid string) bool {
 	return canonical == "cheogram.com" || strings.HasSuffix(canonical, "@cheogram.com")
 }
 
+// isSelfBareJID reports whether a JID is the given account's own bare JID.
+// A login's own JID is never a MUC room: a stray bookmark or an autojoin entry
+// for it would make the join watchdog send MUC join presences to the account
+// itself, which the server silently drops and the watchdog retries forever.
+func isSelfBareJID(ownBareJID, jid string) bool {
+	own := CanonicalBareJID(UnescapeJID(strings.TrimSpace(ownBareJID)))
+	if own == "" {
+		return false
+	}
+	candidate := CanonicalBareJID(UnescapeJID(strings.TrimSpace(jid)))
+	return candidate != "" && strings.EqualFold(candidate, own)
+}
+
 // e164FromCheogramJID extracts an E.164 phone number from a Cheogram phone JID
 // ("+15551234567@cheogram.com", possibly carrying phone-context parameters). Short codes and
 // comma-separated group JIDs are rejected; the boolean reports whether the input was usable.

@@ -62,6 +62,42 @@ func TestJoinMUCSkipsCheogramGatewayJID(t *testing.T) {
 	}
 }
 
+func TestIsNonMUCRoomJID(t *testing.T) {
+	t.Parallel()
+
+	nc := &MyNetworkClient{
+		login: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			Metadata: &LoginMetadata{RemoteUserID: "alice@example.com"},
+		}},
+	}
+	tests := []struct {
+		name string
+		jid  string
+		want bool
+	}{
+		{name: "own bare JID", jid: "alice@example.com", want: true},
+		{name: "own JID with resource", jid: "alice@example.com/phone", want: true},
+		{name: "own JID mixed case", jid: "Alice@Example.Com", want: true},
+		{name: "cheogram contact", jid: "+15550101100@cheogram.com", want: true},
+		{name: "real MUC", jid: "room@groups.example.com", want: false},
+		{name: "other account JID", jid: "bob@example.com", want: false},
+		{name: "other domain MUC", jid: "room@conference.example.org", want: false},
+		{name: "empty", jid: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := nc.isNonMUCRoomJID(tt.jid); got != tt.want {
+				t.Errorf("isNonMUCRoomJID(%q) = %t, want %t", tt.jid, got, tt.want)
+			}
+		})
+	}
+
+	if noLogin := (&MyNetworkClient{}); noLogin.isNonMUCRoomJID("alice@example.com") {
+		t.Error("without a login there is no own JID to match")
+	}
+}
+
 func TestInitiateGroupChatSkipsMUCSetupForCheogram(t *testing.T) {
 	t.Parallel()
 

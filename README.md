@@ -122,6 +122,7 @@ When the bridge is running and a user has a management room, the quick-help text
 - `muc-nick <room JID> [<nickname>|--clear]`
 - `muc-nick-default <nickname>|--clear`
 - `bookmarks-sync [push]`
+- `remove-bookmark <room JID>` — retract the room's XEP-0402 bookmark, leave the room and stop the watchdog from rejoining it
 - `add-to-roster <jid> [name]` / `save-contact` (alias)
 - `remove-from-roster <jid>`
 - `search-roster <query>`

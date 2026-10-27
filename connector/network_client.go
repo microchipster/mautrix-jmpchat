@@ -182,6 +182,10 @@ type MyNetworkClient struct {
 	// invites and resyncs do not probe the same JID over and over.
 	mucRoomChecks  map[string]mucRoomCheckEntry
 	mucRoomCheckMu sync.Mutex
+	// nonMUCBookmarkLogged records bookmarked JIDs that failed the MUC
+	// identity check, so each one is reported once per connection instead of
+	// on every bookmark fetch or PEP event. Guarded by mucRoomCheckMu.
+	nonMUCBookmarkLogged map[string]bool
 	// mucEchoes tracks the room-assigned identifiers (stanza-id, occupant-id)
 	// learned from MUC echoes of our own outbound messages. Retractions target
 	// the room-assigned stanza-id, which we only learn from the echo.
@@ -329,6 +333,15 @@ func (nc *MyNetworkClient) ownBareJID() string {
 		return bareJID(meta.RemoteUserID)
 	}
 	return ""
+}
+
+// isNonMUCRoomJID reports whether a JID must never be treated as a MUC room:
+// Cheogram gateway JIDs (contacts and group texts are not rooms) and the
+// login's own bare JID (the account is not a room; a bookmark or autojoin
+// entry for it would make the join watchdog retry a join that can never
+// succeed).
+func (nc *MyNetworkClient) isNonMUCRoomJID(jid string) bool {
+	return isCheogramGatewayJID(jid) || isSelfBareJID(nc.ownBareJID(), jid)
 }
 
 func (nc *MyNetworkClient) queuePendingMUCCreation(roomJID string, pending pendingMUCCreation) {
@@ -652,11 +665,12 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 }
 
 func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
-	if isCheogramGatewayJID(roomJID) {
+	if nc.isNonMUCRoomJID(roomJID) {
 		// Cheogram gateway JIDs (single contacts, group texts and the bare
-		// gateway) are not MUC rooms. A join presence would be dropped by the
-		// gateway and the join-health watchdog would retry it forever.
-		nc.log.Debug().Str("room_jid", roomJID).Msg("Skipping MUC join for Cheogram gateway JID")
+		// gateway) and the login's own JID are not MUC rooms. A join presence
+		// would be dropped by the server and the join-health watchdog would
+		// retry it forever.
+		nc.log.Debug().Str("room_jid", roomJID).Msg("Skipping MUC join for a non-MUC JID")
 		return
 	}
 	if nickname == "" {
@@ -972,13 +986,13 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 		if roomJID == "" {
 			continue
 		}
-		if isCheogramGatewayJID(roomJID) {
-			// Cheogram gateway JIDs are not MUC rooms and must never be joined
-			// from a bookmark import.
+		if nc.isNonMUCRoomJID(roomJID) {
+			// Cheogram gateway JIDs and the login's own JID are not MUC rooms
+			// and must never be imported or joined from a bookmark.
 			nc.log.Debug().
 				Str("source", source).
 				Str("room_jid", roomJID).
-				Msg("Skipping Cheogram gateway JID from bookmark import")
+				Msg("Skipping non-MUC JID from bookmark import")
 			continue
 		}
 		if seen[roomJID] {
@@ -1048,8 +1062,7 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 			} else {
 				start = nc.historySyncStartForPortal(context.Background(), networkid.PortalKey{ID: portalID})
 			}
-			nc.scheduleMUCBackfill(roomJID, start)
-			nc.joinMUC(roomJID, nick, conf.Password)
+			nc.joinBookmarkedMUC(conf, source, roomJID, nick, start)
 		}
 	}
 }
@@ -1524,6 +1537,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 	nc.bookmarkedRoomNames = map[string]string{}
 	nc.mucInvitePasswords = map[string]string{}
 	nc.mucRoomChecks = map[string]mucRoomCheckEntry{}
+	nc.nonMUCBookmarkLogged = map[string]bool{}
 	nc.mucEchoes = map[string]mucEchoEntry{}
 	nc.occupantAvatarBlocks = map[string]time.Time{}
 	nc.occupantAvatarRoomErrs = map[string]int{}
@@ -2279,8 +2293,17 @@ func (nc *MyNetworkClient) selfPingOwnJID(client *xmpp.Client) {
 			nc.log.Warn().Str("target", target).Msg("XMPP self-ping result channel closed")
 			return
 		}
-		if resp.Type == stanza.IQTypeResult || resp.Type == stanza.IQTypeError {
-			nc.log.Debug().Str("target", target).Msg("XMPP self-ping succeeded")
+		success, loopback := classifySelfPingAnswer(resp.Type)
+		if loopback {
+			// The server routed our own ping back to this session, which
+			// proves the stream delivers to us; answer it so the responder
+			// side of XEP-0199 is satisfied.
+			nc.answerPingLoopback(resp)
+		}
+		if success || resp.Type == stanza.IQTypeError {
+			// An error answer (e.g. service-unavailable) still proves the
+			// server is answering this stream, which is all this ping checks.
+			nc.log.Debug().Str("target", target).Str("type", string(resp.Type)).Msg("XMPP self-ping succeeded")
 			return
 		}
 		nc.log.Warn().Str("target", target).Str("iq_type", string(resp.Type)).Msg("XMPP self-ping returned unexpected IQ type")
@@ -2655,6 +2678,16 @@ func (nc *MyNetworkClient) handleXMPPPresence(s xmpp.Sender, p stanza.Packet) {
 	}
 }
 
+// isPingIQGet reports whether an IQ is an XEP-0199 ping request that this
+// session must answer with an empty result.
+func isPingIQGet(iq *stanza.IQ) bool {
+	if iq == nil || iq.Type != stanza.IQTypeGet {
+		return false
+	}
+	_, ok := iq.Payload.(*stanza.Ping)
+	return ok
+}
+
 func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 	iq, ok := p.(*stanza.IQ)
 	if !ok {
@@ -2667,6 +2700,18 @@ func (nc *MyNetworkClient) handleXMPPIq(s xmpp.Sender, p stanza.Packet) {
 		Str("id", iq.Id).
 		Msg("Received XMPP IQ")
 	nc.log.Debug().Interface("payload", iq.Payload).Msg("IQ payload details")
+
+	if isPingIQGet(iq) {
+		// XEP-0199: an entity that receives a ping must answer with a result.
+		// This connector registers a catch-all IQ route, so the patched
+		// router's auto-reply never runs; answer here instead. Our own
+		// self-pings are answered by their callers, because the router's IQ
+		// result route claims the loopback before it reaches this handler.
+		if err := s.Send(iq.MakeResult()); err != nil {
+			nc.log.Debug().Err(err).Msg("Failed to answer XMPP ping")
+		}
+		return
+	}
 
 	if iq.Type == stanza.IQTypeResult {
 		switch payload := iq.Payload.(type) {

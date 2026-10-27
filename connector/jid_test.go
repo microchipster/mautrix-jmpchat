@@ -148,3 +148,32 @@ func TestE164FromCheogramJID(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSelfBareJID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		own  string
+		jid  string
+		want bool
+	}{
+		{name: "exact", own: "alice@example.com", jid: "alice@example.com", want: true},
+		{name: "with resource", own: "alice@example.com", jid: "alice@example.com/phone", want: true},
+		{name: "mixed case", own: "alice@example.com", jid: "Alice@Example.Com", want: true},
+		{name: "own with resource", own: "alice@example.com/phone", jid: "alice@example.com", want: true},
+		{name: "surrounding spaces", own: " alice@example.com ", jid: "alice@example.com", want: true},
+		{name: "escaped cheogram JID", own: "+15550101100@cheogram.com", jid: "=2b15550101100@cheogram.com", want: true},
+		{name: "different localpart", own: "alice@example.com", jid: "bob@example.com", want: false},
+		{name: "different domain", own: "alice@example.com", jid: "alice@example.org", want: false},
+		{name: "empty own JID", own: "", jid: "alice@example.com", want: false},
+		{name: "empty candidate", own: "alice@example.com", jid: "", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isSelfBareJID(tt.own, tt.jid); got != tt.want {
+				t.Errorf("isSelfBareJID(%q, %q) = %t, want %t", tt.own, tt.jid, got, tt.want)
+			}
+		})
+	}
+}

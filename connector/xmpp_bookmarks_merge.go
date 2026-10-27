@@ -122,15 +122,21 @@ func bookmarkPublishOptionsForm() *stanza.Form {
 	}
 }
 
-// bookmarkPublishError wraps an IQ error answer of a bookmark publish so the
+// bookmarkPublishError wraps an IQ error answer of a bookmark write so the
 // classification below can inspect it.
 type bookmarkPublishError struct {
 	reason string
 	code   int
 	text   string
+	// verb names the operation in Error() ("publish" when empty).
+	verb string
 }
 
 func (e *bookmarkPublishError) Error() string {
+	verb := e.verb
+	if verb == "" {
+		verb = "publish"
+	}
 	msg := e.reason
 	if msg == "" {
 		msg = e.text
@@ -141,7 +147,7 @@ func (e *bookmarkPublishError) Error() string {
 	if msg == "" {
 		msg = "unknown IQ error"
 	}
-	return "bookmark publish failed: " + msg
+	return "bookmark " + verb + " failed: " + msg
 }
 
 // bookmarkErrorDisablesWrites classifies an IQ error (condition reason and/or
@@ -280,6 +286,7 @@ func parseBookmark2Items(list []stanza.Item) map[string]BookmarkConference {
 			Autojoin: conf.Autojoin,
 			Nick:     conf.Nick,
 			Password: conf.Password,
+			ItemID:   strings.TrimSpace(item.Id),
 		}
 	}
 	return items
@@ -402,6 +409,123 @@ func (nc *MyNetworkClient) publishBookmarkIQ(ctx context.Context, conf BookmarkC
 	}
 }
 
+// bookmarkRetractionItemID returns the pubsub item ID a retraction must
+// target for a fetched bookmark: the ID it was fetched under, falling back to
+// its room JID and then to the canonical room key.
+func bookmarkRetractionItemID(existing BookmarkConference, roomKey string) string {
+	if id := strings.TrimSpace(existing.ItemID); id != "" {
+		return id
+	}
+	if jid := strings.TrimSpace(existing.JID); jid != "" {
+		return jid
+	}
+	return roomKey
+}
+
+// publishBookmarkRetractionIQ deletes one XEP-0402 bookmark item with the
+// XEP-0060 retract request. notify=true tells the user's other online clients
+// about the deletion; this session's own notification is idempotent with the
+// local leave the caller performs.
+func (nc *MyNetworkClient) publishBookmarkRetractionIQ(ctx context.Context, itemID string) error {
+	service := nc.ownBareJID()
+	if service == "" {
+		return fmt.Errorf("own bare JID missing")
+	}
+	if nc.xmppClient == nil {
+		return fmt.Errorf("not connected to XMPP")
+	}
+	notify := true
+	iq, err := stanza.NewDelItemFromNode(service, NSBookmarks2, itemID, &notify)
+	if err != nil {
+		return err
+	}
+	ch, err := nc.xmppClient.SendIQ(ctx, iq)
+	if err != nil {
+		return err
+	}
+	select {
+	case resp := <-ch:
+		if resp.Type == stanza.IQTypeError {
+			e := resp.Error
+			retractErr := &bookmarkPublishError{verb: "retraction"}
+			if e != nil {
+				retractErr.reason = strings.ToLower(strings.TrimSpace(e.Reason))
+				retractErr.code = e.Code
+				retractErr.text = e.Text
+			}
+			return retractErr
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// retractBookmark2 retracts one XEP-0402 bookmark with the same
+// read-modify-write discipline as publishBookmark2Merged: the current item is
+// fetched first so the retraction targets the item's real ID, and a bookmark
+// that is already absent is not an error. The boolean reports whether an item
+// was actually retracted from the server.
+func (nc *MyNetworkClient) retractBookmark2(ctx context.Context, roomJID string) (bool, error) {
+	key := bookmarkRoomKey(roomJID)
+	if key == "" {
+		return false, fmt.Errorf("bookmark JID missing")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	nc.bookmarkWriteMu.Lock()
+	defer nc.bookmarkWriteMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(ctx, bookmarkWriteTimeout)
+	defer cancel()
+
+	items, err := nc.fetchBookmark2Items(ctx)
+	if err != nil {
+		return false, fmt.Errorf("bookmark fetch before retraction failed: %w", err)
+	}
+	nc.bookmarkCacheStore(items)
+
+	existing, ok := items[key]
+	if !ok {
+		return false, nil
+	}
+	if err := nc.publishBookmarkRetractionIQ(ctx, bookmarkRetractionItemID(existing, key)); err != nil {
+		if bookmarkPublishDisablesWrites(err) && nc.disableBookmarkWrites() {
+			nc.log.Warn().Err(err).Msg("Bookmarks: the server refused a private bookmark write (non-private node configuration or no publish-options); bookmark writes are disabled for this session")
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// removeBookmark retracts the XEP-0402 bookmark of a room and marks the room
+// intentionally left (unavailable presence, in-memory mucLeft and portal
+// metadata), so the join watchdog stops retrying it. The boolean reports
+// whether a server-side bookmark item was retracted.
+func (nc *MyNetworkClient) removeBookmark(ctx context.Context, roomJID string) (bool, error) {
+	roomJID = CanonicalBareJID(UnescapeJID(strings.TrimSpace(roomJID)))
+	if roomJID == "" || !strings.Contains(roomJID, "@") {
+		return false, fmt.Errorf("invalid room JID")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	retracted, err := nc.retractBookmark2(ctx, roomJID)
+	if err != nil {
+		return false, fmt.Errorf("removing the bookmark of %s: %w", roomJID, err)
+	}
+	if nc.bookmarkedRooms != nil {
+		delete(nc.bookmarkedRooms, roomJID)
+	}
+	if nc.bookmarkedRoomNames != nil {
+		delete(nc.bookmarkedRoomNames, roomJID)
+	}
+	nc.leaveMUC(roomJID)
+	nc.markPortalMUCLeft(ctx, roomJID)
+	return retracted, nil
+}
+
 // publishBookmark2Merged performs the read-modify-write publish of one
 // bookmark: fetch the server's current item, merge the requested change (so
 // other clients' name/password/nick survive), publish with publish-options.
@@ -499,6 +623,74 @@ func (nc *MyNetworkClient) bridgedMUCBookmarkCandidates(ctx context.Context) []s
 	}
 	sort.Strings(rooms)
 	return rooms
+}
+
+// bookmarkRoomLooksLikeKnownMUC is the fast, non-blocking half of the MUC
+// identity check done before a bookmarked room is first joined: a cached
+// positive "is this a room" result or a MUC-looking domain is accepted without
+// a disco round-trip. Anything else is verified through the isMUCRoom disco
+// check, because a bookmark can also name a plain account JID (for example the
+// login's own JID), which would never answer a MUC join presence.
+func (nc *MyNetworkClient) bookmarkRoomLooksLikeKnownMUC(roomJID string) bool {
+	roomKey := CanonicalBareJID(roomJID)
+	if roomKey == "" {
+		return false
+	}
+	nc.mucRoomCheckMu.Lock()
+	entry, cached := nc.mucRoomChecks[roomKey]
+	nc.mucRoomCheckMu.Unlock()
+	if cached && entry.isRoom {
+		return true
+	}
+	return mucDomainHeuristic(roomKey)
+}
+
+// joinBookmarkedMUC performs the first join of an autojoin-bookmarked room
+// after checking that the JID really names a MUC room. Known rooms and
+// MUC-looking domains join immediately; everything else is verified with a
+// disco check on a separate goroutine, because a disco request needs the
+// stanza loop to receive its answer. Non-MUC JIDs are skipped and reported
+// once per connection.
+func (nc *MyNetworkClient) joinBookmarkedMUC(conf BookmarkConference, source, roomJID, nick string, start time.Time) {
+	if nc.bookmarkRoomLooksLikeKnownMUC(roomJID) {
+		nc.scheduleMUCBackfill(roomJID, start)
+		nc.joinMUC(roomJID, nick, conf.Password)
+		return
+	}
+	if !nc.isXMPPConnected() {
+		nc.log.Debug().Str("room_jid", roomJID).Msg("Deferring bookmarked MUC join: XMPP is not connected")
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if !nc.isMUCRoom(ctx, roomJID) {
+			nc.logNonMUCBookmarkOnce(roomJID, source)
+			return
+		}
+		nc.scheduleMUCBackfill(roomJID, start)
+		nc.joinMUC(roomJID, nick, conf.Password)
+	}()
+}
+
+// logNonMUCBookmarkOnce reports a bookmarked JID that is not a MUC room once
+// per connection, so a stale bookmark does not spam the log on every bookmark
+// fetch or PEP event.
+func (nc *MyNetworkClient) logNonMUCBookmarkOnce(roomJID, source string) {
+	nc.mucRoomCheckMu.Lock()
+	if nc.nonMUCBookmarkLogged == nil {
+		nc.nonMUCBookmarkLogged = map[string]bool{}
+	}
+	alreadyLogged := nc.nonMUCBookmarkLogged[roomJID]
+	nc.nonMUCBookmarkLogged[roomJID] = true
+	nc.mucRoomCheckMu.Unlock()
+	if alreadyLogged {
+		return
+	}
+	nc.log.Info().
+		Str("source", source).
+		Str("room_jid", roomJID).
+		Msg("Ignoring bookmarked JID that is not a MUC room")
 }
 
 // runBookmarkBackfill creates autojoin=true bookmarks for the rooms this
