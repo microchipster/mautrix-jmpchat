@@ -31,7 +31,9 @@ type SimpleConfig struct {
 	DefaultPort          int           `yaml:"default_port,omitempty"`
 	ResourcePrefix       string        `yaml:"resource_prefix,omitempty"`
 	HistoryDays          int           `yaml:"history_days,omitempty"`
-	Calls                CallsConfig   `yaml:"calls,omitempty"`
+	// HistoryTTL configures the Matrix-history retention cleanup.
+	HistoryTTL HistoryTTLConfig `yaml:"history_ttl,omitempty"`
+	Calls      CallsConfig      `yaml:"calls,omitempty"`
 }
 
 // sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.
@@ -60,7 +62,10 @@ func (c *SimpleConfig) mucNickSyncEnabled() bool {
 
 func (c *SimpleConfig) UnmarshalYAML(unmarshal func(any) error) error {
 	type simpleConfigAlias SimpleConfig
-	config := simpleConfigAlias{ContactNameSuffix: defaultContactNameSuffix}
+	config := simpleConfigAlias{
+		ContactNameSuffix: defaultContactNameSuffix,
+		HistoryTTL:        DefaultHistoryTTLConfig(),
+	}
 
 	var scalar string
 	if err := unmarshal(&scalar); err == nil {

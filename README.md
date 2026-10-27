@@ -53,6 +53,7 @@ This is still an active bridge implementation, not a finished polished product. 
 - `Dockerfile`: container build for deployment
 - `DEVEL.md`: maintainer-oriented Go/codebase walkthrough
 - `docs/CHEOGRAM_ANALYSIS.md`: notes comparing this bridge to Cheogram Android and JMP behavior
+- `docs/history-ttl.md`: Matrix-history retention (TTL) configuration, `ttl` command and caveats
 
 ## Important Implementation Notes
 
@@ -138,6 +139,7 @@ When the bridge is running and a user has a management room, the quick-help text
 - `roster-only-calls [on|off|status]` — restrict incoming SIP calls to numbers in the Jabber roster (unknown callers are rejected and you get a management-room notice)
 - `widget` — turn the room into a private Dialpad widget room (registered by the calls library when the Dialpad widget is enabled in `calls.widget`)
 - `call-room <phone number> [--force]` / `call-room` / `call-room --remove <phone number>` — create, list or unlink a dedicated unencrypted room used for calls with a number (needed when the portal room is encrypted, so encrypted chat rooms keep their E2EE while calls still ring). Call rooms are named `📞 <contact>`, hidden from `list-rooms`, and their call notices are mirrored into the portal room with a link
+- `ttl status` / `ttl run [--dry-run|--apply]` — show or run the Matrix history retention cleanup (config: `history_ttl.*`, see `docs/history-ttl.md`; admin only, `run --apply` needs `history_ttl.enabled: true`)
 
 Recent bridge-specific additions include:
 
@@ -292,6 +294,7 @@ Optional `network` config keys (bridge-generated `simple-config.yaml` or the pla
 - `muc_nick_sync` (default `true`): renaming a MUC portal room in Matrix also changes your nickname in the XMPP room (nickname-like names only).
 - `default_server` / `default_port` (default: SRV/domain discovery, port 5222) and `resource_prefix` (default empty): pin the XMPP connection target and resource for environments without working SRV records.
 - `history_days` (default 30): how far back MAM backfills reach by default (`sync` / `join-room` without an explicit duration).
+- `history_ttl.*` (disabled by default): Matrix-history retention cleanup — redacts bridged events and deletes their bridge rows past a global/per-room/per-contact period or matching the `otp`/`credit-card`/`ssn`/custom redaction patterns; `enabled`, `global`, `per_room`, `per_contact` (canonical JIDs/phone numbers, `0` = keep forever), `patterns`, `custom_patterns`, `delete_media`, `dry_run`, `interval`, `scan_window`, `scan_limit`; run `ttl status` from the management room and see `docs/history-ttl.md`.
 - `calls.*` (`enabled` defaults to on and the standard image always includes the calling support; set `enabled: false` to disable the SIP runtime entirely — each account still opts in individually with `sip-login`): SIP/RTP binding and port ranges, `external_ip`, `stun_server`, `livekit_service_url`, `default_country_code`, dial timeout, prefix allowlist, self-dial, DTMF redaction, `auto_create_call_room` (default `true`: when a call arrives for an encrypted portal with no call room yet, one is created lazily and its notices are mirrored into the portal room; set `false` to refuse to ring and point at `call-room` instead) and `widget.*` (default `enabled: false`; when enabled, `public_url` and `secret` serve the Dialpad widget, with optional `frame_ancestors`/`trusted_proxies` and `pwa.*` device-enrollment tuning; put the block in `simple-config.yaml`'s `calls:` section via `matrix_bridge_mautrix_jmpchat_network_configuration_extension_yaml` on the playbook side). Calling needs a JMP SIP account (self-service in the JMP account settings for the same number), a LiveKit SFU + `lk-jwt` service reachable from the homeserver (`org.matrix.msc4143.rtc_foci` well-known or `calls.livekit_service_url`; `LIVEKIT_FULL_ACCESS_HOMESERVERS` must accept bridge ghosts), and double puppeting so read receipts stop ringing other devices. Calls cannot ring in encrypted rooms (the bridge cannot speak SFrame media E2EE): portal rooms stay encrypted and calls use a linked unencrypted call room created with `call-room <number>` (it blocks `m.room.encryption` via power levels; only call traffic lives there). Without SIP credentials, calls only produce the `m.notice` call-state messages. Call rooms are named `📞 <contact>`, are hidden from `list-rooms`, and their call notices are mirrored into the encrypted portal room with a `matrix.to` link.
 
 Cheogram gateway chats (phone numbers, group texts) never receive typing/receipt signals, since the SMS/MMS gateway cannot carry them.
@@ -329,6 +332,7 @@ This README is intentionally not a JMP marketing page. For product/user-facing i
 
 - `DEVEL.md` for a codebase-specific Go tutorial and maintenance guide
 - `docs/CHEOGRAM_ANALYSIS.md` for protocol and behavior notes
+- `docs/history-ttl.md` for Matrix-history retention (TTL)
 - `TODO.md` for remaining bridge-parity work
 
 ## Caveats

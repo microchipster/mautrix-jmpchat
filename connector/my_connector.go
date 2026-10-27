@@ -32,13 +32,21 @@ type MyConnector struct {
 	// extn is the optional build-tag extension (SIP calls in the sipcalls build).
 	extn     connectorExtension
 	extnOnce sync.Once
+
+	// ttlMu guards ttlCancel and ttlState (Matrix history retention).
+	ttlMu     sync.Mutex
+	ttlCancel context.CancelFunc
+	ttlState  ttlState
 }
 
 // NewMyConnector creates a new instance of MyConnector.
 func NewMyConnector(log zerolog.Logger) *MyConnector {
 	return &MyConnector{
-		log:    log.With().Str("component", "network-connector").Logger(),
-		config: &SimpleConfig{ContactNameSuffix: defaultContactNameSuffix},
+		log: log.With().Str("component", "network-connector").Logger(),
+		config: &SimpleConfig{
+			ContactNameSuffix: defaultContactNameSuffix,
+			HistoryTTL:        DefaultHistoryTTLConfig(),
+		},
 	}
 }
 
@@ -106,6 +114,7 @@ func myCommandHandlers() []*commands.FullHandler {
 		CommandDeleteAllPortals,
 		CommandPruneRooms,
 		CommandPruneDuplicates,
+		CommandTTL,
 		CommandDeleteRoom,
 		CommandRebindRoom,
 		CommandRebindAll,
@@ -212,6 +221,7 @@ func (c *MyConnector) GetConfig() (string, any, configupgrade.Upgrader) {
 	if c.config == nil {
 		c.config = &SimpleConfig{
 			ContactNameSuffix: defaultContactNameSuffix,
+			HistoryTTL:        DefaultHistoryTTLConfig(),
 			CardDAV:           CardDAVConfig{DefaultCountryCode: defaultCardDAVCountryCode},
 		}
 	}
@@ -255,12 +265,14 @@ func (c *MyConnector) Start(ctx context.Context) error {
 	if len(userIDs) == 0 {
 		c.log.Warn().Msg("No stored JMP.chat logins found; no XMPP connection will be started")
 	}
+	c.startHistoryTTLLoop()
 	return nil
 }
 
 // Stop implements bridgev2.NetworkConnector.
 func (c *MyConnector) Stop() {
 	c.log.Info().Msg("MyConnector Stop called")
+	c.stopHistoryTTLLoop()
 	c.extensionStop()
 	if c.tel != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
@@ -354,6 +366,7 @@ func managementRoomHelpText() string {
 		"- delete-all-portals yes\n" +
 		"- prune-rooms [empty] [dry-run|confirm] [days] (default 30d, or 'empty' for creation-only rooms)\n" +
 		"- prune-duplicates [dry-run|confirm]\n" +
+		"- ttl status | ttl run [--dry-run|--apply]\n" +
 		"- delete-room <room_id|jid>\n" +
 		"- rebind-room <target_jid_or_phone> <matrix_room_id>\n" +
 		"- rebind-all [dry-run|confirm]\n" +
