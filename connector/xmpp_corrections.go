@@ -232,10 +232,7 @@ func (nc *MyNetworkClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.M
 		msg.EditTarget.Metadata = &MessageMetadata{Body: newBody}
 	}
 
-	msgType := stanza.MessageTypeChat
-	if portalUsesGroupChat(msg.Portal) {
-		msgType = stanza.MessageTypeGroupchat
-	}
+	msgType := outboundXMPPStanzaType(msg.Portal)
 
 	// SMS/MMS cannot be edited: send the new text as a fresh message instead.
 	if strings.HasSuffix(jid, "@cheogram.com") {
@@ -311,10 +308,7 @@ func (nc *MyNetworkClient) HandleMatrixMessageRemove(ctx context.Context, msg *b
 		return fmt.Errorf("redaction target has no XMPP message ID")
 	}
 
-	msgType := stanza.MessageTypeChat
-	if portalUsesGroupChat(msg.Portal) {
-		msgType = stanza.MessageTypeGroupchat
-	}
+	msgType := outboundXMPPStanzaType(msg.Portal)
 	if msgType == stanza.MessageTypeGroupchat {
 		// In a MUC room the room assigns the stanza-id when it echoes our
 		// own messages. Retractions should reference the room-assigned ID

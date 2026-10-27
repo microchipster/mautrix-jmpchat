@@ -652,6 +652,13 @@ func (nc *MyNetworkClient) maybeStartPendingDMBackfills() {
 }
 
 func (nc *MyNetworkClient) joinMUC(roomJID, nickname, password string) {
+	if isCheogramGatewayJID(roomJID) {
+		// Cheogram gateway JIDs (single contacts, group texts and the bare
+		// gateway) are not MUC rooms. A join presence would be dropped by the
+		// gateway and the join-health watchdog would retry it forever.
+		nc.log.Debug().Str("room_jid", roomJID).Msg("Skipping MUC join for Cheogram gateway JID")
+		return
+	}
 	if nickname == "" {
 		nickname = nc.mucNickForRoom(roomJID, "")
 	}
@@ -963,6 +970,15 @@ func (nc *MyNetworkClient) handleBookmarkConferences(confs []BookmarkConference,
 	for _, conf := range confs {
 		roomJID := strings.TrimSpace(conf.JID)
 		if roomJID == "" {
+			continue
+		}
+		if isCheogramGatewayJID(roomJID) {
+			// Cheogram gateway JIDs are not MUC rooms and must never be joined
+			// from a bookmark import.
+			nc.log.Debug().
+				Str("source", source).
+				Str("room_jid", roomJID).
+				Msg("Skipping Cheogram gateway JID from bookmark import")
 			continue
 		}
 		if seen[roomJID] {
@@ -3357,7 +3373,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	if nc.handleIncomingXMPPRetraction(msg, timestamp, bareFromJid, senderID, isMUC, isFromMe, fromMAM) {
 		return
 	}
-	if isMUC && !fromMAM {
+	if isMUC && !fromMAM && !isCheogramGatewayJID(bareFromJid) {
 		if (nc.mucRooms == nil || !nc.mucRooms[bareFromJid]) && nc.isXMPPConnected() {
 			start := nc.historySyncStartForPortal(context.Background(), networkid.PortalKey{ID: portalID})
 			nc.scheduleMUCBackfill(bareFromJid, start)

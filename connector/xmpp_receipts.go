@@ -123,7 +123,7 @@ func (nc *MyNetworkClient) HandleMatrixReadReceipt(ctx context.Context, msg *bri
 
 	xmppMsg := stanza.NewMessage(stanza.Attrs{
 		To:   UnescapeJID(string(msg.Portal.ID)),
-		Type: stanza.MessageTypeChat,
+		Type: outboundXMPPStanzaType(msg.Portal),
 		Id:   uuid.NewString(),
 	})
 	xmppMsg.Extensions = append(xmppMsg.Extensions,

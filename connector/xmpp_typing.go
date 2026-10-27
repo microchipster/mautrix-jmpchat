@@ -45,10 +45,7 @@ func (nc *MyNetworkClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2
 		return nil
 	}
 
-	msgType := stanza.MessageTypeChat
-	if portalUsesGroupChat(msg.Portal) {
-		msgType = stanza.MessageTypeGroupchat
-	}
+	msgType := outboundXMPPStanzaType(msg.Portal)
 
 	m := stanza.NewMessage(stanza.Attrs{
 		To:   jid,

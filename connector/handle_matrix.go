@@ -66,12 +66,10 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		log.Info().Msg("XMPP connection established, proceeding with message dispatch")
 	}
 
+	// Cheogram gateway JIDs (including comma-separated group texts) are not
+	// MUCs and expect type=chat; real MUC rooms keep type=groupchat.
+	msgType := outboundXMPPStanzaType(msg.Portal)
 	isMUC := portalUsesGroupChat(msg.Portal)
-
-	var msgType stanza.StanzaType = stanza.MessageTypeChat
-	if isMUC {
-		msgType = stanza.MessageTypeGroupchat
-	}
 
 	// Send message to XMPP
 	m := stanza.NewMessage(stanza.Attrs{
@@ -352,10 +350,7 @@ func (nc *MyNetworkClient) sendXMPPReactionSet(ctx context.Context, portal *brid
 	}
 	reactions = filteredReactions
 	jid := UnescapeJID(string(portal.ID))
-	msgType := stanza.MessageTypeChat
-	if portalUsesGroupChat(portal) {
-		msgType = stanza.MessageTypeGroupchat
-	}
+	msgType := outboundXMPPStanzaType(portal)
 	xmppMsg := stanza.NewMessage(stanza.Attrs{
 		To:   jid,
 		Type: msgType,

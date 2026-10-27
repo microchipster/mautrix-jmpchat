@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -381,6 +382,25 @@ func portalUsesGroupChat(portal *bridgev2.Portal) bool {
 		return true
 	}
 	return len(splitCheogramGroupContacts(UnescapeJID(string(portal.ID)))) > 0
+}
+
+// outboundXMPPStanzaType chooses the XMPP message type for stanzas the bridge
+// sends to a portal. Cheogram gateway JIDs are not MUCs and expect type=chat,
+// even when their local part is a comma-separated group text list. Real MUC
+// rooms keep type=groupchat. This is the single decision point for outbound
+// message stanza types (messages, reactions, edits, retractions, typing,
+// receipts and MUC subject changes).
+func outboundXMPPStanzaType(portal *bridgev2.Portal) stanza.StanzaType {
+	if portal == nil {
+		return stanza.MessageTypeChat
+	}
+	if isCheogramGatewayJID(UnescapeJID(string(portal.ID))) {
+		return stanza.MessageTypeChat
+	}
+	if portalUsesGroupChat(portal) {
+		return stanza.MessageTypeGroupchat
+	}
+	return stanza.MessageTypeChat
 }
 
 func dmRoomName(ctx context.Context, bridge *bridgev2.Bridge, jid, explicit, suffix string) string {

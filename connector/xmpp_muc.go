@@ -41,7 +41,10 @@ func init() {
 	stanza.TypeRegistry.MapExtension(stanza.PKTIQ, xml.Name{Space: NSMUCOwner, Local: "query"}, MUCOwnerQuery{})
 }
 
-// initiateGroupChat normalizes the participants, queues the pending MUC creation and joins the group MUC.
+// initiateGroupChat normalizes the participants and, for real MUC rooms, queues
+// the pending MUC creation, joins the group MUC and publishes an autojoin
+// bookmark. Cheogram gateway group JIDs are not MUCs: they skip all of that and
+// only resolve the target JID/name (the caller still creates the portal).
 // It returns the resolved room JID and room name.
 func (nc *MyNetworkClient) initiateGroupChat(ctx context.Context, name string, participants []string) (string, string, error) {
 	roomJID, err := normalizedCheogramGroupJID(participants)
@@ -53,28 +56,34 @@ func (nc *MyNetworkClient) initiateGroupChat(ctx context.Context, name string, p
 		name = groupRoomNameFromParticipants(ctx, nc.bridge, participants, "", nc.contactNameSuffix())
 	}
 
-	nc.queuePendingMUCCreation(roomJID, pendingMUCCreation{
-		name:         name,
-		participants: append([]string(nil), participants...),
-	})
-	nc.joinMUC(roomJID, "", "")
+	if !isCheogramGatewayJID(roomJID) {
+		nc.queuePendingMUCCreation(roomJID, pendingMUCCreation{
+			name:         name,
+			participants: append([]string(nil), participants...),
+		})
+		nc.joinMUC(roomJID, "", "")
 
-	if nc.bookmarkedRooms != nil {
-		nc.bookmarkedRooms[roomJID] = true
-	}
-	if name != "" {
-		if nc.bookmarkedRoomNames == nil {
-			nc.bookmarkedRoomNames = map[string]string{}
+		if nc.bookmarkedRooms != nil {
+			nc.bookmarkedRooms[roomJID] = true
 		}
-		nc.bookmarkedRoomNames[roomJID] = name
-	}
-	if err := nc.publishBookmark2Merged(ctx, BookmarkConference{
-		JID:      roomJID,
-		Name:     name,
-		Autojoin: "true",
-		Nick:     nc.defaultMUCNick(),
-	}, true); err != nil {
-		nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to publish group chat bookmark")
+		if name != "" {
+			if nc.bookmarkedRoomNames == nil {
+				nc.bookmarkedRoomNames = map[string]string{}
+			}
+			nc.bookmarkedRoomNames[roomJID] = name
+		}
+		if err := nc.publishBookmark2Merged(ctx, BookmarkConference{
+			JID:      roomJID,
+			Name:     name,
+			Autojoin: "true",
+			Nick:     nc.defaultMUCNick(),
+		}, true); err != nil {
+			nc.log.Err(err).Str("room_jid", roomJID).Msg("Failed to publish group chat bookmark")
+		}
+	} else {
+		nc.log.Debug().
+			Str("room_jid", roomJID).
+			Msg("Skipping MUC creation, join and bookmark for Cheogram gateway group JID")
 	}
 
 	return roomJID, name, nil

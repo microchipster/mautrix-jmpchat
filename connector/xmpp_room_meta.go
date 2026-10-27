@@ -72,8 +72,11 @@ func (nc *MyNetworkClient) HandleMatrixRoomTopic(ctx context.Context, msg *bridg
 	portal := msg.Portal
 	topic := strings.TrimSpace(msg.Content.Topic)
 	roomJID := UnescapeJID(string(portal.ID))
-	if roomJID != "" && nc.isXMPPConnected() && portalUsesGroupChat(portal) {
-		m := stanza.NewMessage(stanza.Attrs{To: roomJID, Type: stanza.MessageTypeGroupchat, Id: uuid.NewString()})
+	// MUC subject changes only make sense for real MUC rooms; Cheogram gateway
+	// JIDs are not MUCs and must not receive them.
+	msgType := outboundXMPPStanzaType(portal)
+	if roomJID != "" && nc.isXMPPConnected() && msgType == stanza.MessageTypeGroupchat {
+		m := stanza.NewMessage(stanza.Attrs{To: roomJID, Type: msgType, Id: uuid.NewString()})
 		m.Subject = stanza.StringPtr(topic)
 		if err := nc.sendXMPP(m); err != nil {
 			nc.log.Warn().Err(err).Str("room_jid", roomJID).Msg("Failed to send MUC subject change")

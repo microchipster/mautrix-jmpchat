@@ -142,6 +142,20 @@ func MakePortalID(jid string) networkid.PortalID {
 	return networkid.PortalID(EscapeJID(CanonicalBareJID(jid)))
 }
 
+// isCheogramGatewayJID reports whether a JID belongs to the Cheogram/JMP gateway
+// rather than to a real XMPP MUC service. Cheogram addresses always use the
+// cheogram.com domain, either for a single contact (+15551234567@cheogram.com),
+// for a group text (+15551234567,+15557654321@cheogram.com) or as the bare
+// gateway JID (cheogram.com). None of them are MUC rooms: the gateway expects
+// type=chat and must not receive MUC join presence, configuration or bookmarks.
+func isCheogramGatewayJID(jid string) bool {
+	canonical := strings.ToLower(CanonicalBareJID(UnescapeJID(strings.TrimSpace(jid))))
+	if canonical == "" {
+		return false
+	}
+	return canonical == "cheogram.com" || strings.HasSuffix(canonical, "@cheogram.com")
+}
+
 // e164FromCheogramJID extracts an E.164 phone number from a Cheogram phone JID
 // ("+15551234567@cheogram.com", possibly carrying phone-context parameters). Short codes and
 // comma-separated group JIDs are rejected; the boolean reports whether the input was usable.

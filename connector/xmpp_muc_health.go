@@ -149,6 +149,11 @@ func (nc *MyNetworkClient) runMUCHealthCheck() {
 		nc.mucHealth = map[string]*mucJoinHealthState{}
 	}
 	for roomJID := range nc.mucRooms {
+		if isCheogramGatewayJID(roomJID) {
+			// Cheogram gateway JIDs are not MUC rooms; joining them would be
+			// dropped and retried forever by this watchdog.
+			continue
+		}
 		if nc.mucLeft != nil && nc.mucLeft[roomJID] {
 			continue
 		}
@@ -191,6 +196,9 @@ func (nc *MyNetworkClient) runMUCHealthCheck() {
 // pingMUCSelf sends an XEP-0410 self-ping (an IQ get to our own occupant JID)
 // and marks the room as not joined when it fails, so the health loop rejoins.
 func (nc *MyNetworkClient) pingMUCSelf(roomJID, nick string) {
+	if isCheogramGatewayJID(roomJID) {
+		return
+	}
 	if nc.xmppClient == nil || !nc.isXMPPConnected() {
 		return
 	}
@@ -229,6 +237,9 @@ func (nc *MyNetworkClient) scheduleMUCAutoRejoin() {
 		time.Sleep(3 * time.Second)
 		rooms := make([]string, 0, len(nc.mucRooms))
 		for roomJID := range nc.mucRooms {
+			if isCheogramGatewayJID(roomJID) {
+				continue
+			}
 			if nc.mucLeft != nil && nc.mucLeft[roomJID] {
 				continue
 			}
