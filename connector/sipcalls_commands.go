@@ -50,27 +50,35 @@ func registerSIPCommands(x *callsExt, proc *commands.Processor) {
 	}} {
 		proc.AddHandler(handler)
 	}
-	if x.enabled && x.cfgErr == nil {
-		hostkit.RegisterCallCommands(proc, x.callCommandDeps())
-		proc.AddHandler(&commands.FullHandler{
-			Func:          hostkit.WithSpan("call-room", x.cmdCallRoom),
-			Name:          "call-room",
-			RequiresLogin: true,
-			Help: commands.HelpMeta{
-				Section:     commands.HelpSectionChats,
-				Description: "Create (or list/remove) the dedicated unencrypted call room of a phone number; needed for calls when the portal room is encrypted.",
-			},
-		})
-		proc.AddHandler(&commands.FullHandler{
-			Func:          hostkit.WithSpan("roster-only-calls", x.cmdRosterOnlyCalls),
-			Name:          "roster-only-calls",
-			RequiresLogin: true,
-			Help: commands.HelpMeta{
-				Section:     commands.HelpSectionChats,
-				Description: "Restrict incoming SIP calls to contacts in your Jabber roster (on|off|status).",
-			},
-		})
+}
+
+// registerCallCommands adds the interactive calling surface (call/hangup/dtmf via hostkit, plus the
+// call-room and roster-only-calls handlers). It must run from postInit: registerSIPCommands runs
+// before postInit computes x.enabled and x.cfgErr, so gating on those values there silently skipped
+// the entire surface. The individual handlers still validate state at invocation time.
+func registerCallCommands(x *callsExt, proc *commands.Processor) {
+	if x == nil || proc == nil || !x.enabled || x.cfgErr != nil {
+		return
 	}
+	hostkit.RegisterCallCommands(proc, x.callCommandDeps())
+	proc.AddHandler(&commands.FullHandler{
+		Func:          hostkit.WithSpan("call-room", x.cmdCallRoom),
+		Name:          "call-room",
+		RequiresLogin: true,
+		Help: commands.HelpMeta{
+			Section:     commands.HelpSectionChats,
+			Description: "Create (or list/remove) the dedicated unencrypted call room of a phone number; needed for calls when the portal room is encrypted.",
+		},
+	})
+	proc.AddHandler(&commands.FullHandler{
+		Func:          hostkit.WithSpan("roster-only-calls", x.cmdRosterOnlyCalls),
+		Name:          "roster-only-calls",
+		RequiresLogin: true,
+		Help: commands.HelpMeta{
+			Section:     commands.HelpSectionChats,
+			Description: "Restrict incoming SIP calls to contacts in your Jabber roster (on|off|status).",
+		},
+	})
 }
 
 // callCommandDeps adapts the call, hangup and dtmf commands to this host.

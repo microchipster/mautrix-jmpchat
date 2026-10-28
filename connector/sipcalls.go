@@ -167,6 +167,7 @@ func (x *callsExt) postInit(br *bridgev2.Bridge, proc *commands.Processor) {
 	x.rtc = core.NewIngest(core.LogSink{Log: &x.log})
 	x.rtc.SetLocalNumber(x.loginNumber)
 	core.RegisterMatrixRTCHandlers(mc.EventProcessor, hostkit.ResolveRTCLogin(br, x.hasAccount), x.rtc)
+	registerCallCommands(x, proc)
 	x.log.Info().Msg("SIP call support enabled (set up an account with `sip-login` to register)")
 }
 
