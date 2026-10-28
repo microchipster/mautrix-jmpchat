@@ -215,6 +215,10 @@ func (x *callsExt) resolveRTCLogin(br *bridgev2.Bridge) core.LoginResolver {
 		if br.IsGhostMXID(evt.Sender) || evt.Sender == br.Bot.GetMXID() {
 			return "", false
 		}
+		x.log.Debug().
+			Str("rtc_sender", evt.Sender.String()).
+			Str("rtc_room", evt.RoomID.String()).
+			Msg("resolving MatrixRTC event")
 		if login, ok := x.loginForCallRoom(ctx, evt.RoomID); ok {
 			return login, true
 		}
@@ -229,11 +233,25 @@ func (x *callsExt) resolveRTCLogin(br *bridgev2.Bridge) core.LoginResolver {
 // loginForCallRoom maps a linked call room to the login that should receive its call events.
 func (x *callsExt) loginForCallRoom(ctx context.Context, roomID id.RoomID) (core.LoginRef, bool) {
 	key, ok := x.cachedCallRoomPortal(roomID)
+	x.log.Debug().Bool("rtc_index_hit", ok).Str("rtc_room", roomID.String()).Msg("call-room index lookup")
 	if !ok {
 		return "", false
 	}
 	portal, err := x.br.GetExistingPortalByKey(ctx, key)
-	if err != nil || portal == nil || portal.Receiver == "" || !x.hasAccount(portal.Receiver) {
+	if err != nil {
+		x.log.Debug().Err(err).Msg("call-room portal load failed")
+		return "", false
+	}
+	if portal == nil {
+		x.log.Debug().Msg("call-room portal missing")
+		return "", false
+	}
+	hasAccount := x.hasAccount(portal.Receiver)
+	x.log.Debug().
+		Str("rtc_portal_receiver", string(portal.Receiver)).
+		Bool("rtc_has_account", hasAccount).
+		Msg("call-room portal loaded")
+	if portal.Receiver == "" || !hasAccount {
 		return "", false
 	}
 	return core.LoginRef(portal.Receiver), true
@@ -269,6 +287,7 @@ func (x *callsExt) warmCallRoomIndex(ctx context.Context) {
 		}
 		x.setCallRoomIndex(meta.CallRoomMXID, networkid.PortalKey{ID: portal.ID, Receiver: portal.Receiver})
 	}
+	x.log.Debug().Int("rtc_portals", len(portals)).Msg("call-room index warmed")
 }
 
 // start brings up the SIP runtime and call manager. It runs after br.Matrix.Start, so postInit
