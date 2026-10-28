@@ -7,8 +7,8 @@ const jitterSlotSize = 1500
 // Latency bound: when the buffer holds more than delay+latencySlack frames for latencyPops consecutive
 // pops (the sender's clock runs faster than ours), one frame is dropped.
 const (
-	latencySlack = 1
-	latencyPops  = 5
+	latencySlack = 3
+	latencyPops  = 25
 )
 
 type jitterSlot struct {
