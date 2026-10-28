@@ -23,6 +23,7 @@ import (
 	"github.com/williamkray/mrtc-sip-bridge/pkg/calls"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/hostkit"
+	"github.com/williamkray/mrtc-sip-bridge/pkg/matrixrtc"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipua"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/widget"
@@ -171,7 +172,30 @@ func (x *callsExt) postInit(br *bridgev2.Bridge, proc *commands.Processor) {
 	}
 	x.rtc = core.NewIngest(core.LogSink{Log: &x.log})
 	x.rtc.SetLocalNumber(x.loginNumber)
-	core.RegisterMatrixRTCHandlers(mc.EventProcessor, x.resolveRTCLogin(br), x.rtc)
+	// Register the MatrixRTC handlers ourselves instead of core.RegisterMatrixRTCHandlers so a
+	// dispatch cannot miss because of the event's TypeClass: unstable event types are absent from
+	// the mautrix GuessClass table, and the class an event carries at dispatch time depends on
+	// the path it took (timeline vs decrypted copy). The core only cares about the event type, so
+	// register the same handler for every plausible class and let the parser reject the rest.
+	resolve := x.resolveRTCLogin(br)
+	for _, ingType := range matrixrtc.IngestEventTypes() {
+		for _, class := range []event.TypeClass{event.StateEventType, event.MessageEventType, event.UnknownEventType} {
+			handlerType := ingType
+			handlerType.Class = class
+			mc.EventProcessor.On(handlerType, func(ctx context.Context, evt *event.Event) {
+				login, ok := resolve(ctx, evt)
+				if x.log.GetLevel() <= zerolog.DebugLevel {
+					x.log.Debug().
+						Str("rtc_event_type", evt.Type.String()).
+						Str("rtc_event_class", evt.Type.Class.Name()).
+						Bool("rtc_resolved", ok).
+						Stringer("event_id", evt.ID).
+						Msg("MatrixRTC event handed to the call core")
+				}
+				x.rtc.HandleMatrixRTCEvent(ctx, login, evt)
+			})
+		}
+	}
 	registerCallCommands(x, proc)
 	x.log.Info().Msg("SIP call support enabled (set up an account with `sip-login` to register)")
 }
