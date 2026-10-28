@@ -246,15 +246,42 @@ func (x *callsExt) loginForCallRoom(ctx context.Context, roomID id.RoomID) (core
 		x.log.Debug().Msg("call-room portal missing")
 		return "", false
 	}
-	hasAccount := x.hasAccount(portal.Receiver)
+	// Single-login bridges leave the portal receiver empty: the owning login is then simply the
+	// only login with a SIP account. This must be the same core.LoginRef value that onInvite
+	// passes to HandleInvite (the UserLoginID). Multi-login deployments address portals by
+	// receiver, so prefer that when set.
+	loginID := portal.Receiver
+	if loginID == "" {
+		loginID = x.singleAccountLogin()
+	}
+	hasAccount := loginID != "" && x.hasAccount(loginID)
 	x.log.Debug().
 		Str("rtc_portal_receiver", string(portal.Receiver)).
+		Str("rtc_login_id", string(loginID)).
 		Bool("rtc_has_account", hasAccount).
 		Msg("call-room portal loaded")
-	if portal.Receiver == "" || !hasAccount {
+	if !hasAccount {
 		return "", false
 	}
-	return core.LoginRef(portal.Receiver), true
+	return core.LoginRef(loginID), true
+}
+
+// singleAccountLogin returns the only login that has a SIP account, or "" when there is none or
+// more than one (multi-login deployments always address portals by receiver instead).
+func (x *callsExt) singleAccountLogin() networkid.UserLoginID {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	var only networkid.UserLoginID
+	for loginID, lc := range x.accounts {
+		if lc == nil || lc.acct == nil {
+			continue
+		}
+		if only != "" {
+			return ""
+		}
+		only = loginID
+	}
+	return only
 }
 
 // warmCallRoomIndex loads linked call rooms from portal metadata into the in-memory cache. The
