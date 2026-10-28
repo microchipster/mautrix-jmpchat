@@ -14,6 +14,8 @@ COPY go.mod go.sum *.yaml *.sh ./
 COPY cmd/. cmd/.
 COPY connector/. connector/.
 COPY patched-xmpp/. patched-xmpp/.
+# third_party/ carries locally patched Go modules (see the replace directives in go.mod)
+COPY third_party/. third_party/.
 COPY .git .git
 
 RUN BUILD_TAGS="goolm sipcalls nolibopusfile" ./build-go.sh
