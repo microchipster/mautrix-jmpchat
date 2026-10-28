@@ -182,9 +182,11 @@ func (j *joiner) Join(ctx context.Context, p JoinParams) (sess Session, err erro
 		return nil, fail("timeout", err)
 	}
 
-	// 3. Connect.
+	// 3. Connect. The capability must stay opus/48000/2: pion registers the Opus codec as stereo, and a
+	// mono capability makes setRemoteDescription fail with "codec is not supported by remote", which
+	// leaves the bridge publishing nothing (clients then show the bridge as muted). Opus packets stay mono.
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 1,
+		MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
 	})
 	if err != nil {
 		return nil, fail("connect_error", err)
