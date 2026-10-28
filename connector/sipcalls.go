@@ -71,6 +71,11 @@ type callsExt struct {
 	callRoomMu    sync.Mutex
 	callRoomIndex map[id.RoomID]networkid.PortalKey
 
+	// callRoomWarmMu guards callRoomWarmed, which ensures the call-room index is loaded from
+	// portal metadata at most once per process.
+	callRoomWarmMu sync.Mutex
+	callRoomWarmed bool
+
 	// filteredNoticeMu guards filteredNotices, the rate limiter for the
 	// management notices about rejected roster-only callers.
 	filteredNoticeMu sync.Mutex
@@ -166,9 +171,80 @@ func (x *callsExt) postInit(br *bridgev2.Bridge, proc *commands.Processor) {
 	}
 	x.rtc = core.NewIngest(core.LogSink{Log: &x.log})
 	x.rtc.SetLocalNumber(x.loginNumber)
-	core.RegisterMatrixRTCHandlers(mc.EventProcessor, hostkit.ResolveRTCLogin(br, x.hasAccount), x.rtc)
+	core.RegisterMatrixRTCHandlers(mc.EventProcessor, x.resolveRTCLogin(br), x.rtc)
 	registerCallCommands(x, proc)
 	x.log.Info().Msg("SIP call support enabled (set up an account with `sip-login` to register)")
+}
+
+// resolveRTCLogin resolves MatrixRTC membership events to the login whose call owns the room.
+// Linked call rooms are stored in portal metadata (PortalMetadata.CallRoomMXID), not as portal
+// rows, so the stock resolver built on br.GetPortalByMXID cannot see them and the call core would
+// silently drop every membership event. This resolver checks the call-room cache first and falls
+// back to the stock resolver for ordinary portal rooms. The cache is in-memory only, so a lookup
+// miss warms it once per process from portal metadata.
+func (x *callsExt) resolveRTCLogin(br *bridgev2.Bridge) core.LoginResolver {
+	fallback := hostkit.ResolveRTCLogin(br, x.hasAccount)
+	return func(ctx context.Context, evt *event.Event) (core.LoginRef, bool) {
+		if evt == nil || br == nil {
+			return "", false
+		}
+		if br.IsGhostMXID(evt.Sender) || evt.Sender == br.Bot.GetMXID() {
+			return "", false
+		}
+		if login, ok := x.loginForCallRoom(ctx, evt.RoomID); ok {
+			return login, true
+		}
+		x.warmCallRoomIndex(ctx)
+		if login, ok := x.loginForCallRoom(ctx, evt.RoomID); ok {
+			return login, true
+		}
+		return fallback(ctx, evt)
+	}
+}
+
+// loginForCallRoom maps a linked call room to the login that should receive its call events.
+func (x *callsExt) loginForCallRoom(ctx context.Context, roomID id.RoomID) (core.LoginRef, bool) {
+	key, ok := x.cachedCallRoomPortal(roomID)
+	if !ok {
+		return "", false
+	}
+	portal, err := x.br.GetExistingPortalByKey(ctx, key)
+	if err != nil || portal == nil || portal.Receiver == "" || !x.hasAccount(portal.Receiver) {
+		return "", false
+	}
+	return core.LoginRef(portal.Receiver), true
+}
+
+// warmCallRoomIndex loads linked call rooms from portal metadata into the in-memory cache. The
+// cache is not persisted and cmdCallRoom only fills it in the running process, so after a restart
+// the first membership event for a call room would otherwise be dropped. Runs at most once per
+// process (a retry is allowed if listing portals fails).
+func (x *callsExt) warmCallRoomIndex(ctx context.Context) {
+	x.callRoomWarmMu.Lock()
+	if x.callRoomWarmed {
+		x.callRoomWarmMu.Unlock()
+		return
+	}
+	x.callRoomWarmed = true
+	x.callRoomWarmMu.Unlock()
+	portals, err := x.br.GetAllPortals(ctx)
+	if err != nil {
+		x.log.Warn().Err(err).Msg("Failed to list portals while warming the call-room index")
+		x.callRoomWarmMu.Lock()
+		x.callRoomWarmed = false
+		x.callRoomWarmMu.Unlock()
+		return
+	}
+	for _, portal := range portals {
+		if portal == nil {
+			continue
+		}
+		meta, ok := portal.Metadata.(*PortalMetadata)
+		if !ok || meta == nil || meta.CallRoomMXID == "" {
+			continue
+		}
+		x.setCallRoomIndex(meta.CallRoomMXID, networkid.PortalKey{ID: portal.ID, Receiver: portal.Receiver})
+	}
 }
 
 // start brings up the SIP runtime and call manager. It runs after br.Matrix.Start, so postInit
