@@ -56,7 +56,11 @@ type bridge struct {
 	early       atomic.Bool
 	connectedAt atomic.Int64 // unix nanoseconds, 0 = never connected
 	connMu      sync.Mutex   // serialises Connect and the receiver detach in Stop
-	ringback    toneGen
+	// media trace (per-second diagnostics; locate growing buffers in live calls)
+	traceN     atomic.Uint64
+	writtenRTC atomic.Uint64
+	writeUS    atomic.Uint64
+	ringback   toneGen
 }
 
 func (c Config) withDefaults() Config {
@@ -205,8 +209,12 @@ func (b *bridge) sipToRTCStep() {
 	}
 	n, err := b.enc.encode(pcm, b.s2rOut[:])
 	if err == nil {
+		t := time.Now()
 		err = b.rtc.WriteOpus(b.s2rOut[:n], FrameDuration)
+		b.writtenRTC.Add(1)
+		b.writeUS.Store(uint64(time.Since(t).Microseconds()))
 	}
+	b.traceTick(now)
 	if err != nil && now.Sub(b.s2rErrLog) >= errLogInterval {
 		b.s2rErrLog = now
 		b.log.Warn().Err(err).Msg("media: sip to rtc frame failed")

@@ -34,6 +34,13 @@ type jitterBuffer struct {
 	out        [jitterSlotSize]byte
 }
 
+// Depth returns the number of buffered frames (each frame is 20 ms of media time).
+func (j *jitterBuffer) Depth() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.count
+}
+
 func newJitterBuffer(delayFrames, maxFrames int) *jitterBuffer {
 	if delayFrames < 1 {
 		delayFrames = 1
