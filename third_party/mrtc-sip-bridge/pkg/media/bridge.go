@@ -1,6 +1,7 @@
 package media
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,6 +62,9 @@ type bridge struct {
 	writtenRTC atomic.Uint64
 	writeUS    atomic.Uint64
 	ringback   toneGen
+
+	// optional PCM capture for offline audio-quality analysis (JMPCHAT_MEDIA_DUMP)
+	dump *dumpSink
 }
 
 func (c Config) withDefaults() Config {
@@ -97,6 +101,7 @@ func newBridge(cfg Config, sip SIPLeg, rtc RTCLeg) (*bridge, error) {
 		cfg: cfg, clk: cfg.Clock, log: cfg.Log, sip: sip, rtc: rtc, enc: enc, dec: dec,
 		jSIP:      newJitterBuffer(int(cfg.JitterDelay/FrameDuration), int(cfg.JitterMax/FrameDuration)),
 		jRTC:      newJitterBuffer(int(cfg.JitterDelay/FrameDuration), int(cfg.JitterMax/FrameDuration)),
+		dump:      newDumpSink(os.Getenv("JMPCHAT_MEDIA_DUMP")),
 		stopCh:    make(chan struct{}),
 		done:      make(chan struct{}),
 		startTime: cfg.Clock.Now(),
@@ -207,6 +212,7 @@ func (b *bridge) sipToRTCStep() {
 		clear(pcm)
 		b.cnt.concealedS2R.Add(1)
 	}
+	b.dump.addS2R(pcm)
 	n, err := b.enc.encode(pcm, b.s2rOut[:])
 	if err == nil {
 		t := time.Now()
@@ -259,6 +265,7 @@ func (b *bridge) sendSilence() {
 
 // writeAudio sends b.frame as the next PCMU packet (marker on the first packet of the call).
 func (b *bridge) writeAudio() {
+	b.dump.addR2S(b.frame[:])
 	marker := !b.sentFirst
 	b.sentFirst = true
 	err := b.sip.WriteRTP(b.frame[:], FrameSamples, marker)
@@ -358,5 +365,6 @@ func (b *bridge) Stop() {
 		b.rtc.SetReceiver(nil)
 		b.connMu.Unlock()
 		b.finish(nil)
+		b.dump.flush(dumpTag(b.startTime))
 	})
 }

@@ -17,6 +17,8 @@ func (b *bridge) traceTick(now time.Time) {
 	if n%traceInterval != 0 {
 		return
 	}
+	sipLost, sipLate := b.jSIP.stats()
+	rtcLost, rtcLate := b.jRTC.stats()
 	ev := b.log.Debug().
 		Uint64("trace_n", n).
 		Uint64("sip_rx", b.cnt.sipRx.Load()).
@@ -27,6 +29,10 @@ func (b *bridge) traceTick(now time.Time) {
 		Uint64("concealed_r2s", b.cnt.concealedR2S.Load()).
 		Int("jitter_sip_frames", b.jSIP.Depth()).
 		Int("jitter_rtc_frames", b.jRTC.Depth()).
+		Uint64("jitter_sip_lost", sipLost).
+		Uint64("jitter_sip_late", sipLate).
+		Uint64("jitter_rtc_lost", rtcLost).
+		Uint64("jitter_rtc_late", rtcLate).
 		Uint64("write_us", b.writeUS.Load())
 	if ca := b.connectedAt.Load(); ca != 0 {
 		ev = ev.Int64("since_connect_ms", now.Sub(time.Unix(0, ca)).Milliseconds())

@@ -184,7 +184,7 @@ func (j *joiner) Join(ctx context.Context, p JoinParams) (sess Session, err erro
 
 	// 3. Connect.
 	track, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{
-		MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2,
+		MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 1,
 	})
 	if err != nil {
 		return nil, fail("connect_error", err)
