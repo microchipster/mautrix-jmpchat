@@ -134,3 +134,5 @@ require (
 )
 
 tool go.mau.fi/util/cmd/maubuild
+
+replace github.com/williamkray/mrtc-sip-bridge => ./third_party/mrtc-sip-bridge
