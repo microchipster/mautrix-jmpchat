@@ -58,10 +58,12 @@ type bridge struct {
 	connectedAt atomic.Int64 // unix nanoseconds, 0 = never connected
 	connMu      sync.Mutex   // serialises Connect and the receiver detach in Stop
 	// media trace (per-second diagnostics; locate growing buffers in live calls)
-	traceN     atomic.Uint64
-	writtenRTC atomic.Uint64
-	writeUS    atomic.Uint64
-	ringback   toneGen
+	traceN            atomic.Uint64
+	writtenRTC        atomic.Uint64
+	writeUS           atomic.Uint64
+	s2rAge, s2rAgeMax atomic.Uint64 // ms from SIP arrival to publish write
+	r2sAge, r2sAgeMax atomic.Uint64 // ms from LiveKit arrival to SIP send
+	ringback          toneGen
 
 	// optional PCM capture for offline audio-quality analysis (JMPCHAT_MEDIA_DUMP)
 	dump *dumpSink
@@ -202,7 +204,8 @@ func (b *bridge) sipToRTCStep() {
 	pcm := b.s2rPCM[:]
 	if early && now.Sub(last) >= b.cfg.EarlyFillAfter {
 		b.ringback.frame(pcm)
-	} else if payload, ok := b.jSIP.pop(); ok {
+	} else if payload, at, ok := b.jSIP.pop(); ok {
+		b.recordAge(&b.s2rAge, &b.s2rAgeMax, at)
 		if len(payload) > FrameSamples {
 			payload = payload[:FrameSamples]
 		}
@@ -284,7 +287,8 @@ func (b *bridge) logR2S(err error) {
 
 // refill appends decoded or concealed owner audio to the FIFO.
 func (b *bridge) refill() {
-	if payload, ok := b.jRTC.pop(); ok {
+	if payload, at, ok := b.jRTC.pop(); ok {
+		b.recordAge(&b.r2sAge, &b.r2sAgeMax, at)
 		m, err := b.dec.decode(payload, b.r2sPCM[:])
 		if err == nil && m > 0 {
 			copy(b.fifo[b.fifoN:], b.r2sPCM[:m])

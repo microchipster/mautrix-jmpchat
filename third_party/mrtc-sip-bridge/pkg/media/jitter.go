@@ -1,6 +1,9 @@
 package media
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 const jitterSlotSize = 1500
 
@@ -14,6 +17,7 @@ const (
 type jitterSlot struct {
 	used bool
 	n    int
+	at   int64 // unix nanoseconds: arrival time (metrics only)
 	buf  [jitterSlotSize]byte
 }
 
@@ -66,6 +70,7 @@ func (j *jitterBuffer) storeLocked(p *RTPPacket) {
 	s := &j.slots[p.Seq&j.mask]
 	s.used = true
 	s.n = copy(s.buf[:], p.Payload)
+	s.at = time.Now().UnixNano()
 	j.count++
 }
 
@@ -141,13 +146,14 @@ func (j *jitterBuffer) push(p *RTPPacket) {
 	j.storeLocked(p)
 }
 
-// pop returns the payload for the next playout tick (valid until the next pop) or ok=false for a
-// concealed frame. Called from the ticker goroutine.
-func (j *jitterBuffer) pop() (payload []byte, ok bool) {
+// pop returns the payload for the next playout tick (valid until the next pop), the frame's arrival
+// time (unix nanoseconds, 0 when unknown), or ok=false for a concealed frame. Called from the ticker
+// goroutine.
+func (j *jitterBuffer) pop() (payload []byte, at int64, ok bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if !j.started {
-		return nil, false
+		return nil, 0, false
 	}
 	if j.count > j.delay+latencySlack {
 		j.over++
@@ -171,7 +177,7 @@ func (j *jitterBuffer) pop() (payload []byte, ok bool) {
 		// resumes at the packet's own seq). Keep playing state so speech resumes without the
 		// multi-frame re-buffering pause.
 		j.underruns++
-		return nil, false
+		return nil, 0, false
 	}
 	s := &j.slots[j.next&j.mask]
 	j.next++
@@ -179,11 +185,12 @@ func (j *jitterBuffer) pop() (payload []byte, ok bool) {
 	if s.used {
 		s.used = false
 		j.count--
+		at := s.at
 		n := copy(j.out[:], s.buf[:s.n])
-		return j.out[:n], true
+		return j.out[:n], at, true
 	}
 	j.lost++
-	return nil, false
+	return nil, 0, false
 }
 
 func (j *jitterBuffer) stats() (lost, late uint64) {

@@ -1,11 +1,24 @@
 package media
 
 import (
+	"sync/atomic"
 	"time"
 )
 
 // traceInterval is one log line per second of media time (50 ticks of 20 ms).
 const traceInterval = 50
+
+// recordAge stores the residence time (ms) of the frame that just left a playout buffer.
+func (b *bridge) recordAge(age, max *atomic.Uint64, at int64) {
+	if at == 0 {
+		return
+	}
+	ms := uint64(time.Since(time.Unix(0, at)).Milliseconds())
+	age.Store(ms)
+	if ms > max.Load() {
+		max.Store(ms)
+	}
+}
 
 // traceTick emits one per-second DEBUG line with the media counters and playout buffer depths.
 // It exists to locate growing media buffers in live calls: compare the sip_rx / rtc_written deltas
@@ -33,7 +46,11 @@ func (b *bridge) traceTick(now time.Time) {
 		Uint64("jitter_sip_late", sipLate).
 		Uint64("jitter_rtc_lost", rtcLost).
 		Uint64("jitter_rtc_late", rtcLate).
-		Uint64("write_us", b.writeUS.Load())
+		Uint64("write_us", b.writeUS.Load()).
+		Uint64("s2r_age_ms", b.s2rAge.Load()).
+		Uint64("s2r_age_max_ms", b.s2rAgeMax.Load()).
+		Uint64("r2s_age_ms", b.r2sAge.Load()).
+		Uint64("r2s_age_max_ms", b.r2sAgeMax.Load())
 	if ca := b.connectedAt.Load(); ca != 0 {
 		ev = ev.Int64("since_connect_ms", now.Sub(time.Unix(0, ca)).Milliseconds())
 	}

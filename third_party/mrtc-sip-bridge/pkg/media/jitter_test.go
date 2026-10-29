@@ -8,7 +8,7 @@ func pk(seq uint16) *RTPPacket {
 
 func popSeq(t *testing.T, j *jitterBuffer, want int) {
 	t.Helper()
-	p, ok := j.pop()
+	p, _, ok := j.pop()
 	if want < 0 {
 		if ok {
 			t.Fatalf("expected concealment, got %v", p)
@@ -112,7 +112,7 @@ func TestJitterSSRCReset(t *testing.T) {
 	p.SSRC = 2
 	j.push(p)
 	popSeq(t, j, 900&0xFF)
-	if _, ok := j.pop(); ok {
+	if _, _, ok := j.pop(); ok {
 		t.Fatal("old packets should be flushed")
 	}
 }
@@ -196,7 +196,7 @@ func TestJitterLatencyBound(t *testing.T) {
 	for i := 0; i < latencyPops; i++ {
 		j.push(pk(uint16(seq)))
 		seq++
-		if _, ok := j.pop(); !ok {
+		if _, _, ok := j.pop(); !ok {
 			t.Fatal("unexpected concealment")
 		}
 	}
