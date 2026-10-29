@@ -53,6 +53,7 @@ func NewCallStack(br *bridgev2.Bridge, cfg *Config, deps CallStackDeps) (*calls.
 		RingTimeout:        cfg.RingTimeout(),
 		RTPTimeout:         cfg.RTPTimeout(),
 		DefaultCountryCode: cfg.DefaultCountryCode,
+		DeviceID:           cfg.CallDeviceID,
 
 		Dial:                deps.Dial,
 		LoginNumber:         deps.LoginNumber,

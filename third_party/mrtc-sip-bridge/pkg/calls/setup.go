@@ -114,8 +114,8 @@ func (c *call) setup() bool {
 	c.logFor(ctx).Info().Str("from", e164).Str("to", c.info.ToUser).Stringer("room_id", room.RoomID).
 		Msg("Inbound call")
 
-	// 6. Encrypted-room guard (D18).
-	if room.Encrypted {
+	// 6. Encrypted-room guard (D18): encrypted rooms are usable only with frame crypto.
+	if room.Encrypted && room.Crypto == nil {
 		c.logFor(ctx).Error().Stringer("room_id", room.RoomID).Msg("Refusing to ring in an encrypted room")
 		c.reject(480, "Temporarily Unavailable")
 		c.fail(failSpec{outcome: outcomeRejected, reason: reasonRejected, notice: noticeEncrypted})
@@ -369,6 +369,7 @@ func (c *call) startJoin() {
 		Owner:      c.owner,
 		CallID:     c.id,
 		Attempt:    attempt,
+		Crypto:     c.room.Crypto,
 	}
 	joiner, results := c.cfg.Joiner, c.joinResults
 	go func() {

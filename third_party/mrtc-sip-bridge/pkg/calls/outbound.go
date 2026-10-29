@@ -139,7 +139,7 @@ func (c *call) setupOutbound() bool {
 		c.failOutbound(failSpec{outcome: outcomeRejected, reason: reasonRejected, notice: noticeOutSelf, decline: true})
 		return false
 	}
-	if c.room.Encrypted {
+	if c.room.Encrypted && c.room.Crypto == nil {
 		c.logFor(ctx).Error().Stringer("room_id", c.room.RoomID).Msg("Refusing to place a call in an encrypted room")
 		c.failOutbound(failSpec{outcome: outcomeRejected, reason: reasonRejected, notice: noticeOutEncrypted, decline: true})
 		return false

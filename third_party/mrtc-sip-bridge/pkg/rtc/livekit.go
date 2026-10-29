@@ -1,6 +1,7 @@
 package rtc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -33,12 +34,14 @@ const (
 type roomConn interface {
 	Name() string
 	LocalIdentity() string
-	Publish(track *lksdk.LocalTrack) error
+	Publish(track *lksdk.LocalTrack, encrypted bool) error
 	// ScanRemote calls fn for every remote participant already present; for those where fn returns true
 	// (owner) the audio publications are subscribed (never inline in an SDK callback).
 	ScanRemote(fn func(identity string) bool)
 	// HasParticipant reports whether a remote participant with this identity is currently in the room.
 	HasParticipant(identity string) bool
+	// SifTrailer returns the room's SIF trailer (nil when the room does not use E2EE).
+	SifTrailer() []byte
 	Disconnect()
 }
 
@@ -60,11 +63,16 @@ func (r *realRoom) LocalIdentity() string { return r.r.LocalParticipant.Identity
 func (r *realRoom) HasParticipant(identity string) bool {
 	return r.r.GetParticipantByIdentity(identity) != nil
 }
-func (r *realRoom) Disconnect() { r.r.Disconnect() }
-func (r *realRoom) Publish(track *lksdk.LocalTrack) error {
-	_, err := r.r.LocalParticipant.PublishTrack(track, &lksdk.TrackPublicationOptions{
+func (r *realRoom) Disconnect()        { r.r.Disconnect() }
+func (r *realRoom) SifTrailer() []byte { return r.r.SifTrailer() }
+func (r *realRoom) Publish(track *lksdk.LocalTrack, encrypted bool) error {
+	opts := &lksdk.TrackPublicationOptions{
 		Name: "audio", Source: livekit.TrackSource_MICROPHONE, DisableDTX: true,
-	})
+	}
+	if encrypted {
+		opts.Encryption = livekit.Encryption_GCM
+	}
+	_, err := r.r.LocalParticipant.PublishTrack(track, opts)
 	return err
 }
 func (r *realRoom) ScanRemote(fn func(identity string) bool) {
@@ -192,7 +200,18 @@ func (j *joiner) Join(ctx context.Context, p JoinParams) (sess Session, err erro
 		return nil, fail("connect_error", err)
 	}
 	s := newSession(p, log, j.clk)
+	sealer := s.sealer()
 	s.leg = &rtcLeg{s: s, write: func(frame []byte, d time.Duration) error {
+		if sealer != nil {
+			if len(frame) == 0 {
+				return nil
+			}
+			enc, err := sealer(frame)
+			if err != nil {
+				return err
+			}
+			frame = enc
+		}
 		return track.WriteSample(pionmedia.Sample{Data: frame, Duration: d}, nil)
 	}}
 	lkHost := ""
@@ -230,7 +249,7 @@ func (j *joiner) Join(ctx context.Context, p JoinParams) (sess Session, err erro
 
 	// 4. Publish.
 	_, s4 := obs.StartChild(ctx, "rtc.track.publish", trace.WithSpanKind(trace.SpanKindInternal))
-	if err := room.Publish(track); err != nil {
+	if err := room.Publish(track, sealer != nil); err != nil {
 		obs.Fail(s4, err)
 		s4.End()
 		s.abort()
@@ -305,6 +324,30 @@ func (s *session) LiveKitRoom() string   { return s.roomName }
 func (s *session) ServerAddress() string { return s.server }
 func (s *session) Audio() media.RTCLeg   { return s.leg }
 func (s *session) Events() <-chan Event  { return s.events }
+
+// sealer returns the frame sealer for this session, or nil for plaintext media.
+func (s *session) sealer() func([]byte) ([]byte, error) {
+	if s.p.Crypto == nil {
+		return nil
+	}
+	return s.p.Crypto.Sealer()
+}
+
+// openerFor returns the frame opener for a participant identity, or nil (plaintext or unknown sender).
+func (s *session) openerFor(identity string) func([]byte) ([]byte, error) {
+	if s.p.Crypto == nil {
+		return nil
+	}
+	return s.p.Crypto.Opener(identity)
+}
+
+// sifTrailer returns the room's SIF trailer (nil before dial or when the room does not use E2EE).
+func (s *session) sifTrailer() []byte {
+	if h := s.roomPtr.Load(); h != nil && h.r != nil {
+		return h.r.SifTrailer()
+	}
+	return nil
+}
 
 // emit never blocks; an event that does not fit (or arrives after close) is dropped.
 func (s *session) emit(ev Event) {
@@ -473,8 +516,22 @@ func (s *session) readLoop(ot *ownerTrack) {
 		if pkt.Unmarshal(buf[:n]) != nil {
 			continue
 		}
+		payload := pkt.Payload
+		if len(payload) == 0 {
+			continue
+		}
+		if trailer := s.sifTrailer(); len(trailer) > 0 && bytes.HasSuffix(payload, trailer) {
+			continue // SIF frame: server-injected, never encrypted by the sender
+		}
+		if opener := s.openerFor(ot.identity); opener != nil {
+			plain, err := opener(payload)
+			if err != nil || len(plain) == 0 {
+				continue // no key for this sender yet: drop the frame, keep the stream
+			}
+			payload = plain
+		}
 		mp.SSRC, mp.Seq, mp.Timestamp = pkt.SSRC, pkt.SequenceNumber, pkt.Timestamp
-		mp.PayloadType, mp.Marker, mp.Payload = pkt.PayloadType, pkt.Marker, pkt.Payload
+		mp.PayloadType, mp.Marker, mp.Payload = pkt.PayloadType, pkt.Marker, payload
 		rb.r.ReceiveRTP(&mp)
 	}
 }

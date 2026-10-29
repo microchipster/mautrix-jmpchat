@@ -36,9 +36,12 @@ type CallRoom struct {
 	RoomID     id.RoomID
 	RemoteE164 string
 	Ghost      GhostIntent
-	// Encrypted is true if the room has m.room.encryption. Calls refuse to ring in encrypted rooms
-	// (Element Call would use SFrame E2EE and the bridged audio would decode to silence, ADR-002).
+	// Encrypted is true if the room has m.room.encryption. Calls ring in encrypted rooms only when
+	// Crypto is set (else Element Call's SFrame E2EE would decode the bridged audio to silence, ADR-002).
 	Encrypted bool
+	// Crypto, when non-nil, encrypts outgoing media frames and decrypts incoming ones for this call
+	// (SFrame). Hosts set it for encrypted rooms once they can distribute call keys.
+	Crypto FrameCrypto
 	// Created is true when ResolveCallRoom created the Matrix room in this call (clients may not have
 	// synced it yet). Always false from LookupCallRoom.
 	Created bool

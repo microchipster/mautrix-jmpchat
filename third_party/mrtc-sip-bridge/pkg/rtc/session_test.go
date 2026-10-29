@@ -51,9 +51,10 @@ func (f *fakeRoom) HasParticipant(id string) bool {
 	return f.present[id]
 }
 
-func (f *fakeRoom) Name() string                    { return "hashedroom" }
-func (f *fakeRoom) LocalIdentity() string           { return "@ghost:s:DEV" }
-func (f *fakeRoom) Publish(*lksdk.LocalTrack) error { return f.pubErr }
+func (f *fakeRoom) Name() string                          { return "hashedroom" }
+func (f *fakeRoom) LocalIdentity() string                 { return "@ghost:s:DEV" }
+func (f *fakeRoom) Publish(*lksdk.LocalTrack, bool) error { return f.pubErr }
+func (f *fakeRoom) SifTrailer() []byte                    { return nil }
 func (f *fakeRoom) ScanRemote(fn func(string) bool) {
 	fn("@o:s:PHONE")
 	fn("@other:s:X")

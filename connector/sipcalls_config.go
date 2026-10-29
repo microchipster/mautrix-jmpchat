@@ -8,6 +8,7 @@ package connector
 
 import (
 	"github.com/williamkray/mrtc-sip-bridge/pkg/hostkit"
+	"jmpchat/pkg/callcrypto"
 )
 
 // toHostkit converts the bridge's `network.calls` config into the library's hostkit.Config.
@@ -32,6 +33,7 @@ func (c CallsConfig) toHostkit() hostkit.Config {
 		DialAllowedPrefixes:    c.DialAllowedPrefixes,
 		DialNumberFormat:       c.DialNumberFormat,
 		AllowSelfDial:          c.AllowSelfDial,
+		CallDeviceID:           string(callcrypto.CallDeviceID),
 		DTMFRedactCommand:      c.DTMFRedactCommand,
 		Widget: hostkit.WidgetConfig{
 			Enabled:            c.Widget.Enabled,

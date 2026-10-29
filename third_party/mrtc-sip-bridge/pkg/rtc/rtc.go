@@ -24,6 +24,8 @@ type JoinParams struct {
 	Owner      id.UserID // only this user's audio tracks are subscribed
 	CallID     string    // logs and spans only
 	Attempt    int       // 1-based join attempt, rtc.join.attempt span attribute (0 = unset, omitted)
+	// Crypto, when non-nil, enables SFrame media encryption for this session (nil = plaintext).
+	Crypto core.FrameCrypto
 }
 
 // Joiner joins LiveKit rooms. Join blocks until the track is published or fails (bounded by

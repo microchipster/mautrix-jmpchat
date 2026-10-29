@@ -55,14 +55,18 @@ const (
 	callRoomRefuse
 )
 
-// decideCallRoom picks the ringing target from the portal's encryption state and the linked call
-// room (if any). A linked call room always wins; an encrypted portal without one is refused.
-func decideCallRoom(portalEncrypted bool, callRoom id.RoomID) callRoomDecision {
-	if callRoom != "" {
-		return callRoomUseCallRoom
-	}
-	if portalEncrypted {
-		return callRoomRefuse
+// decideCallRoom picks the ringing target for a portal. In portal mode (the default) calls ring in
+// the phone number's own chat room, encrypted or not. The legacy call room is used when the mode is
+// call-room, or when the portal is encrypted and call encryption is turned off. A linked call room
+// wins over refusing.
+func decideCallRoom(mode CallRoomMode, portalEncrypted bool, callRoom id.RoomID, e2ee bool) callRoomDecision {
+	if mode == CallRoomModeCallRoom || (portalEncrypted && !e2ee) {
+		if callRoom != "" {
+			return callRoomUseCallRoom
+		}
+		if portalEncrypted {
+			return callRoomRefuse
+		}
 	}
 	return callRoomUsePortal
 }
@@ -118,7 +122,7 @@ func (h *callHost) ResolveCallRoom(ctx context.Context, login core.LoginRef, e16
 	if portal.MXID != "" {
 		portalEncrypted = hostkit.RoomEncrypted(ctx, h.x.br, portal.MXID)
 	}
-	switch decideCallRoom(portalEncrypted, callRoom) {
+	switch decideCallRoom(h.x.cfg.CallRoomMode(), portalEncrypted, callRoom, h.x.cfg.E2EEEnabled()) {
 	case callRoomUseCallRoom:
 		if hostkit.RoomEncrypted(ctx, h.x.br, callRoom) {
 			err := fmt.Errorf("the call room for %s is encrypted; recreate it with `%s call-room --remove %s` and `%s call-room %s`", e164, h.x.commandPrefix(), e164, h.x.commandPrefix(), e164)
@@ -187,11 +191,21 @@ func (h *callHost) roomForRoom(ctx context.Context, ul *bridgev2.UserLogin, e164
 	if err != nil {
 		return nil, err
 	}
+	encrypted := hostkit.RoomEncrypted(ctx, h.x.br, roomID)
+	var frameCrypto core.FrameCrypto
+	if encrypted && h.x.cfg.E2EEEnabled() && h.x.keys != nil {
+		sess, err := h.x.keys.EnsureSession(ctx, roomID, id.UserID(MakeUserID(e164+"@cheogram.com")))
+		if err != nil {
+			return nil, fmt.Errorf("set up call encryption keys for %s: %w", roomID, err)
+		}
+		frameCrypto = sess
+	}
 	return &core.CallRoom{
 		RoomID:     roomID,
 		RemoteE164: e164,
 		Ghost:      gi,
-		Encrypted:  hostkit.RoomEncrypted(ctx, h.x.br, roomID),
+		Encrypted:  encrypted,
+		Crypto:     frameCrypto,
 		Created:    created,
 	}, nil
 }

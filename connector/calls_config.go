@@ -8,6 +8,10 @@ package connector
 // (mrtc-sip-bridge hostkit configuration). It lives in the default build so the YAML
 // config parses everywhere; the `sipcalls` build converts it to hostkit.Config
 // (connector/sipcalls_config.go). Field names and defaults follow the library.
+import (
+	"strings"
+)
+
 type CallsConfig struct {
 	// Enabled turns the SIP calling support on. The image always ships the
 	// feature and it defaults to on; unset means "available" (accounts still
@@ -40,8 +44,43 @@ type CallsConfig struct {
 	// point to the `call-room` command instead.
 	AutoCreateCallRoom *bool `yaml:"auto_create_call_room,omitempty"`
 
+	// RoomMode selects the room calls ring in. The default ("portal") rings in the
+	// phone number's own chat room, including encrypted ones: the bridge distributes
+	// SFrame call keys to the room members. Set "call-room" to keep the legacy
+	// separate unencrypted call room.
+	RoomMode string `yaml:"room_mode,omitempty"`
+	// E2EE controls SFrame call encryption in encrypted rooms. "auto" (the default)
+	// encrypts; "off" disables it, and encrypted portals then fall back to a call room.
+	E2EE string `yaml:"e2ee,omitempty"`
+	// PickleKey protects the call-device Olm accounts in the database. Leave empty to
+	// derive a key from the appservice token.
+	PickleKey string `yaml:"pickle_key,omitempty"`
+
 	// Widget configures the optional Dialpad widget/PWA served by the bridge.
 	Widget CallsWidgetConfig `yaml:"widget,omitempty"`
+}
+
+// CallRoomMode is the room calls ring in.
+type CallRoomMode string
+
+const (
+	// CallRoomModePortal rings in the phone number's chat room (default).
+	CallRoomModePortal CallRoomMode = "portal"
+	// CallRoomModeCallRoom keeps the legacy separate unencrypted call room.
+	CallRoomModeCallRoom CallRoomMode = "call-room"
+)
+
+// CallRoomMode returns the configured room mode (portal unless call-room was asked for).
+func (c CallsConfig) CallRoomMode() CallRoomMode {
+	if strings.EqualFold(strings.TrimSpace(c.RoomMode), string(CallRoomModeCallRoom)) {
+		return CallRoomModeCallRoom
+	}
+	return CallRoomModePortal
+}
+
+// E2EEEnabled reports whether call media should be SFrame-encrypted in encrypted rooms.
+func (c CallsConfig) E2EEEnabled() bool {
+	return !strings.EqualFold(strings.TrimSpace(c.E2EE), "off")
 }
 
 // IsEnabled reports whether the SIP calling runtime should start. The zero

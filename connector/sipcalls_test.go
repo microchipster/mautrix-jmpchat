@@ -183,18 +183,24 @@ func TestDecideCallRoom(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name            string
+		mode            CallRoomMode
 		portalEncrypted bool
 		callRoom        id.RoomID
+		e2ee            bool
 		want            callRoomDecision
 	}{
-		{name: "plain portal", want: callRoomUsePortal},
-		{name: "encrypted portal refused", portalEncrypted: true, want: callRoomRefuse},
-		{name: "linked call room wins", callRoom: "!call:example.com", want: callRoomUseCallRoom},
-		{name: "linked call room wins even for plain portal", callRoom: "!call:example.com", want: callRoomUseCallRoom},
-		{name: "linked call room wins for encrypted portal", portalEncrypted: true, callRoom: "!call:example.com", want: callRoomUseCallRoom},
+		{name: "portal mode rings in a plain portal", mode: CallRoomModePortal, e2ee: true, want: callRoomUsePortal},
+		{name: "portal mode rings in an encrypted portal", mode: CallRoomModePortal, portalEncrypted: true, e2ee: true, want: callRoomUsePortal},
+		{name: "portal mode refuses an encrypted portal without e2ee", mode: CallRoomModePortal, portalEncrypted: true, want: callRoomRefuse},
+		{name: "portal mode ignores a linked call room", mode: CallRoomModePortal, portalEncrypted: true, callRoom: "!call:example.com", e2ee: true, want: callRoomUsePortal},
+		{name: "portal mode ignores a linked call room for a plain portal", mode: CallRoomModePortal, callRoom: "!call:example.com", e2ee: true, want: callRoomUsePortal},
+		{name: "call-room mode keeps the portal when nothing is linked", mode: CallRoomModeCallRoom, e2ee: true, want: callRoomUsePortal},
+		{name: "call-room mode uses the linked call room", mode: CallRoomModeCallRoom, callRoom: "!call:example.com", e2ee: true, want: callRoomUseCallRoom},
+		{name: "call-room mode refuses an encrypted portal", mode: CallRoomModeCallRoom, portalEncrypted: true, e2ee: true, want: callRoomRefuse},
+		{name: "call-room mode uses a linked call room for an encrypted portal", mode: CallRoomModeCallRoom, portalEncrypted: true, callRoom: "!call:example.com", e2ee: true, want: callRoomUseCallRoom},
 	}
 	for _, tc := range cases {
-		if got := decideCallRoom(tc.portalEncrypted, tc.callRoom); got != tc.want {
+		if got := decideCallRoom(tc.mode, tc.portalEncrypted, tc.callRoom, tc.e2ee); got != tc.want {
 			t.Fatalf("%s: expected %v, got %v", tc.name, tc.want, got)
 		}
 	}

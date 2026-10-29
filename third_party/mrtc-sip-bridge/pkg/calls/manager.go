@@ -27,8 +27,12 @@ type Config struct {
 	RingTimeout        time.Duration                             // ring lifetime and timer [30 s]
 	RTPTimeout         time.Duration                             // passed to media.Config [60 s]
 	DefaultCountryCode string                                    // for phone.Normalize ["1"]
-	Clock              clock.Clock                               // [clock.Real()]
-	Log                zerolog.Logger                            // clean logger
+	// DeviceID is the stable Matrix device ID every ghost uses for its call.member state event and
+	// its call E2E device (one device for all calls, so clients can address key deliveries to it).
+	// Empty falls back to a per-call ID (deviceIDFor).
+	DeviceID string
+	Clock    clock.Clock    // [clock.Real()]
+	Log      zerolog.Logger // clean logger
 	// StartMedia starts the audio bridge; nil = media.Start. Tests inject fakes.
 	StartMedia func(cfg media.Config, sip media.SIPLeg, rtc media.RTCLeg) (media.Bridge, error)
 

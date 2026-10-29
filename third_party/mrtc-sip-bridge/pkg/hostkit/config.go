@@ -31,6 +31,8 @@ type Config struct {
 	RTPTimeoutSeconds      int    `yaml:"rtp_timeout_seconds"`
 	LiveKitServiceURL      string `yaml:"livekit_service_url"`
 	DefaultCountryCode     string `yaml:"default_country_code"`
+	// CallDeviceID is the stable Matrix device ID used for ghost call memberships and call E2EE.
+	CallDeviceID string `yaml:"call_device_id"`
 
 	// Outbound calls (Phase 3).
 	OutboundTrigger     string   `yaml:"outbound_trigger"`

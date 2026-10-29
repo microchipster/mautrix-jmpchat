@@ -157,12 +157,16 @@ func newCall(m *Manager, login core.LoginRef, localE164 string, sc sipua.Inbound
 
 // newActor returns a call with the fields shared by both directions.
 func newActor(m *Manager, login core.LoginRef, cid, direction string, log zerolog.Logger) *call {
+	deviceID := m.cfg.DeviceID
+	if deviceID == "" {
+		deviceID = deviceIDFor(cid)
+	}
 	c := &call{
 		m:         m,
 		cfg:       &m.cfg,
 		login:     login,
 		id:        cid,
-		deviceID:  deviceIDFor(cid),
+		deviceID:  deviceID,
 		log:       log,
 		direction: direction,
 		events:    make(chan event, callEventBuffer),

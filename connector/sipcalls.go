@@ -20,6 +20,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
+	"crypto/sha256"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/calls"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/hostkit"
@@ -27,6 +28,10 @@ import (
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipua"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/widget"
+	"go.mau.fi/util/dbutil"
+	"jmpchat/pkg/callcrypto"
+	"maunium.net/go/mautrix/crypto"
+	"strings"
 )
 
 func init() {
@@ -57,7 +62,8 @@ type callsExt struct {
 	cfgErr  error
 	enabled bool
 
-	rtc *core.Ingest
+	rtc  *core.Ingest
+	keys *callcrypto.Manager
 
 	mu        sync.Mutex
 	saveMu    sync.Mutex
@@ -172,6 +178,13 @@ func (x *callsExt) postInit(br *bridgev2.Bridge, proc *commands.Processor) {
 	}
 	x.rtc = core.NewIngest(core.LogSink{Log: &x.log})
 	x.rtc.SetLocalNumber(x.loginNumber)
+	x.keys = callcrypto.NewManager(callcrypto.ManagerOptions{
+		Log:    x.log.With().Str("component", "callcrypto").Logger(),
+		Device: x.callDeviceProvider(mc),
+	})
+	mc.EventProcessor.On(event.ToDeviceEncrypted, func(ctx context.Context, evt *event.Event) {
+		x.keys.HandleToDevice(ctx, evt)
+	})
 	// Register the MatrixRTC handlers ourselves instead of core.RegisterMatrixRTCHandlers so a
 	// dispatch cannot miss because of the event's TypeClass: unstable event types are absent from
 	// the mautrix GuessClass table, and the class an event carries at dispatch time depends on
@@ -193,6 +206,13 @@ func (x *callsExt) postInit(br *bridgev2.Bridge, proc *commands.Processor) {
 						Msg("MatrixRTC event handed to the call core")
 				}
 				x.rtc.HandleMatrixRTCEvent(ctx, login, evt)
+				if x.keys != nil {
+					if parsed, ok := matrixrtc.FromMatrixEvent(evt); ok {
+						if mem, ok := matrixrtc.ParseMembership(parsed, time.Now()); ok {
+							x.keys.HandleMemberships(ctx, evt.RoomID, []matrixrtc.Membership{mem})
+						}
+					}
+				}
 			})
 		}
 	}
@@ -549,4 +569,43 @@ func (x *callsExt) commandPrefix() string {
 		return x.br.Config.CommandPrefix
 	}
 	return "!jmpchat"
+}
+
+// callDeviceProvider builds the call E2E device for a ghost: a stable Matrix device that
+// holds the Olm account used for call key distribution. Shared across all calls of the ghost.
+func (x *callsExt) callDeviceProvider(mc *matrix.Connector) callcrypto.DeviceProvider {
+	return func(ctx context.Context, userID id.UserID) (callcrypto.Device, error) {
+		cli := mc.AS.Client(userID)
+		if cli.DeviceID != callcrypto.CallDeviceID {
+			if err := cli.CreateDeviceMSC4190(ctx, callcrypto.CallDeviceID, callcrypto.CallDeviceName); err != nil {
+				return callcrypto.Device{}, fmt.Errorf("create the call device: %w", err)
+			}
+		}
+		log := x.log.With().Str("component", "callcrypto").Str("user_id", userID.String()).Logger()
+		store := crypto.NewSQLCryptoStore(x.br.DB.Database, dbutil.ZeroLogger(log),
+			userID.String()+":"+string(callcrypto.CallDeviceID), callcrypto.CallDeviceID, x.callPickleKey(mc))
+		if err := store.DB.Upgrade(ctx); err != nil {
+			return callcrypto.Device{}, fmt.Errorf("upgrade the call crypto store: %w", err)
+		}
+		mach := crypto.NewOlmMachine(cli, &log, store, mc.StateStore)
+		if err := mach.Load(ctx); err != nil {
+			return callcrypto.Device{}, fmt.Errorf("load the call crypto machine: %w", err)
+		}
+		if err := mach.ShareKeys(ctx, -1); err != nil {
+			log.Warn().Err(err).Msg("Failed to share the call device keys")
+		}
+		return callcrypto.Device{Client: cli, Machine: mach}, nil
+	}
+}
+
+// callPickleKey returns the key protecting the stored call-device Olm accounts. An explicit
+// pickle_key is hashed; otherwise the appservice token is used, so the key is stable and
+// never stored next to the database.
+func (x *callsExt) callPickleKey(mc *matrix.Connector) []byte {
+	secret := strings.TrimSpace(x.cfg.PickleKey)
+	if secret == "" && mc.AS != nil && mc.AS.Registration != nil {
+		secret = mc.AS.Registration.AppToken
+	}
+	sum := sha256.Sum256([]byte("jmpchat-call-e2ee:" + secret))
+	return sum[:]
 }
