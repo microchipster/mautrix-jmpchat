@@ -194,7 +194,10 @@ func (h *callHost) roomForRoom(ctx context.Context, ul *bridgev2.UserLogin, e164
 	encrypted := hostkit.RoomEncrypted(ctx, h.x.br, roomID)
 	var frameCrypto core.FrameCrypto
 	if encrypted && h.x.cfg.E2EEEnabled() && h.x.keys != nil {
-		sess, err := h.x.keys.EnsureSession(ctx, roomID, id.UserID(MakeUserID(e164+"@cheogram.com")))
+		// Sign the call keys as this ghost. Its Matrix user ID is needed here, not the network
+		// user ID: the latter is not a valid Matrix user and the device creation as it fails
+		// with "Application service cannot masquerade as this user".
+		sess, err := h.x.keys.EnsureSession(ctx, roomID, gi.UserID())
 		if err != nil {
 			return nil, fmt.Errorf("set up call encryption keys for %s: %w", roomID, err)
 		}
