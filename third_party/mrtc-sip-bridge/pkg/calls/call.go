@@ -68,15 +68,16 @@ type call struct {
 	setupSpan  trace.Span
 	setupEnded bool
 
-	ringSpan      trace.Span
-	ringOpen      bool
-	ringSentAt    time.Time
-	ringEndedAt   time.Time
-	ringEventID   id.EventID
-	ringRead      bool // the owner's read receipt for the ring was sent
-	memberEventID id.EventID
-	memberCreated time.Time
-	memberExpires time.Duration
+	ringSpan       trace.Span
+	ringOpen       bool
+	ringSentAt     time.Time
+	ringEndedAt    time.Time
+	ringEventID    id.EventID
+	ringMsgEventID id.EventID // the "incoming call" message next to the ring
+	ringRead       bool       // the owner's read receipt for the ring was sent
+	memberEventID  id.EventID
+	memberCreated  time.Time
+	memberExpires  time.Duration
 
 	joinAttempt  int
 	joinInFlight bool

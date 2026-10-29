@@ -51,12 +51,21 @@ type RTCLeg interface {
 	SetReceiver(r PacketReceiver)
 }
 
+const (
+	// DefaultJitterDelay is the initial playout delay per media direction. Deliberately small: the
+	// PSTN leg is jitter-buffered upstream and the RTC leg has its own client-side buffering, so
+	// every millisecond here is end-to-end call latency. The call sites set it explicitly.
+	DefaultJitterDelay = 25 * time.Millisecond
+	// DefaultJitterMax caps the buffered audio per direction before frames start being dropped.
+	DefaultJitterMax = 120 * time.Millisecond
+)
+
 // Config configures Start. Zero values get the defaults in brackets.
 type Config struct {
 	Clock       clock.Clock    // [clock.Real()]
 	Log         zerolog.Logger // clean logger with call_id
-	JitterDelay time.Duration  // initial playout delay per direction [60 ms]
-	JitterMax   time.Duration  // max buffered audio per direction [400 ms]
+	JitterDelay time.Duration  // initial playout delay per direction [DefaultJitterDelay]
+	JitterMax   time.Duration  // max buffered audio per direction [DefaultJitterMax]
 	RTPTimeout  time.Duration  // no SIP RTP for this long ends the bridge with ErrRTPTimeout [60 s]
 	// Early starts the bridge in early-media mode (D10): SIP audio is relayed to LiveKit with ringback
 	// filling silence, nothing from the owner is sent to SIP (mu-law silence instead), the RTC receiver is

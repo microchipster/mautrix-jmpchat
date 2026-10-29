@@ -379,7 +379,14 @@ func (c *call) onProvisional(ev sipua.CallEvent) {
 
 // mediaConfig returns the media configuration of this call.
 func (c *call) mediaConfig(early bool) media.Config {
-	return media.Config{Clock: c.cfg.Clock, Log: c.log, RTPTimeout: c.cfg.RTPTimeout, Early: early}
+	return media.Config{
+		Clock:       c.cfg.Clock,
+		Log:         c.log,
+		JitterDelay: media.DefaultJitterDelay,
+		JitterMax:   media.DefaultJitterMax,
+		RTPTimeout:  c.cfg.RTPTimeout,
+		Early:       early,
+	}
 }
 
 // startRingback plays the generated ringback into LiveKit unless a tone or an early bridge is running.

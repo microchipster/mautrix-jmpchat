@@ -74,10 +74,10 @@ func (c Config) withDefaults() Config {
 		c.Clock = clock.Real()
 	}
 	if c.JitterDelay <= 0 {
-		c.JitterDelay = 25 * time.Millisecond
+		c.JitterDelay = DefaultJitterDelay
 	}
 	if c.JitterMax <= 0 {
-		c.JitterMax = 120 * time.Millisecond
+		c.JitterMax = DefaultJitterMax
 	}
 	if c.RTPTimeout <= 0 {
 		c.RTPTimeout = 60 * time.Second

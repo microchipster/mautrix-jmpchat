@@ -32,6 +32,17 @@ func assertNotices(t *testing.T, h *harness, want ...string) {
 	}
 }
 
+func assertMgmt(t *testing.T, h *harness, want ...string) {
+	t.Helper()
+	got := h.host.mgmtList()
+	if len(want) == 0 && len(got) == 0 {
+		return
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("management notices = %q, want %q", got, want)
+	}
+}
+
 // 1. Happy path.
 func TestAnsweredCallRemoteBye(t *testing.T) {
 	run(t, func(t *testing.T) {
@@ -87,7 +98,7 @@ func TestAnsweredCallRemoteBye(t *testing.T) {
 		}
 
 		sess := h.answer(sc, "OWNERDEV")
-		if reads := h.host.readList(); len(reads) != 1 || reads[0] != h.ringID() {
+		if reads := h.host.readList(); len(reads) != 2 || reads[0] != h.ringID() || reads[1] != h.ringMsgID() {
 			t.Errorf("read receipts = %v", reads)
 		}
 		br := h.media.bridge(0)
@@ -308,6 +319,7 @@ func TestBusy(t *testing.T) {
 			t.Errorf("first call affected: %v", cmds)
 		}
 		assertNotices(t, h, noticeBusy)
+		assertMgmt(t, h, "Incoming call from +15559998888: Missed call (line busy)")
 		if got := h.env.Sum(t, "mrtcsip.call.ended", "call.outcome", "busy", "sip.response.status_class", "4xx"); got != 1 {
 			t.Errorf("busy ended = %v", got)
 		}
@@ -374,6 +386,7 @@ func TestWithheldCaller(t *testing.T) {
 			t.Error("room resolved for a withheld caller")
 		}
 		assertNotices(t, h)
+		assertMgmt(t, h, "Incoming call: rejected: the caller number is withheld")
 		h.assertEnded("rejected", "4xx")
 		if got := h.setupAttr("call.remote.withheld"); got != "true" {
 			t.Errorf("withheld attr = %q", got)
@@ -798,6 +811,7 @@ func TestResolveFailures(t *testing.T) {
 				t.Errorf("commands %v", sc.commands())
 			}
 			assertNotices(t, h)
+			assertMgmt(t, h, "Incoming call from +15552345678: failed: could not set up the call room")
 			h.assertEnded("failed", "4xx")
 		})
 	})
@@ -809,6 +823,7 @@ func TestResolveFailures(t *testing.T) {
 			if !sc.has("reject:480") || len(h.host.resolveList()) != 0 {
 				t.Errorf("commands %v", sc.commands())
 			}
+			assertMgmt(t, h, "Incoming call from +15552345678: failed: the SIP login has no owner configured")
 			h.assertEnded("failed", "4xx")
 		})
 	})

@@ -163,7 +163,7 @@ func TestAnswerBeforeReadReceipt(t *testing.T) {
 		answeredAtRead := false
 		h.host.readHook = func() { answeredAtRead = sc.has("answer") }
 		h.answer(sc, "D1")
-		if len(h.host.readList()) != 1 {
+		if len(h.host.readList()) != 2 {
 			t.Fatalf("reads = %v", h.host.readList())
 		}
 		if !answeredAtRead {

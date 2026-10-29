@@ -111,6 +111,24 @@ func (c *call) markRingRead() {
 	}
 }
 
+// markRingMessageRead sends the owner's read receipt for the "incoming call" message next to the
+// ring (sendRingMessage) once the call is answered, so the nudge does not stay unread. Missed calls
+// keep the message unread on purpose: it is their unread trail. Best effort, like the ring receipt.
+func (c *call) markRingMessageRead() {
+	if c.ringMsgEventID == "" || c.room == nil {
+		return
+	}
+	mctx, cancel := context.WithTimeout(c.setupCtx, matrixOpTimeout)
+	err := c.cfg.Host.MarkReadAsOwner(mctx, c.login, c.room.RoomID, c.ringMsgEventID)
+	cancel()
+	switch {
+	case errors.Is(err, core.ErrNoDoublePuppet):
+		c.logFor(c.setupCtx).Debug().Msg("Owner has no double puppet, not marking the call message read")
+	case err != nil:
+		c.logFor(c.setupCtx).Warn().Str("error", scrubErr(err)).Msg("Failed to mark the call message read as the owner")
+	}
+}
+
 // ownerDeviceLeft records one of several owner devices leaving an active call (call.owner.left linked
 // root plus a buffered call.session event).
 func (c *call) ownerDeviceLeft(device string) {

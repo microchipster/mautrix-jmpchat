@@ -369,6 +369,7 @@ func (c *call) sendRingMessage(ctx context.Context) {
 		c.endSpan(span)
 		return
 	}
+	c.ringMsgEventID = evID
 	span.SetAttributes(obs.AttrMatrixEventID.String(evID.String()))
 	c.endSpan(span)
 }
@@ -576,7 +577,13 @@ func (c *call) activate(ev sipua.CallEvent) {
 	}
 	mattrs = append(mattrs, obs.AttrCallID.String(c.id))
 	_, mspan := c.child(c.answerCtx, "media.start", trace.SpanKindInternal, mattrs...)
-	br, err := c.cfg.StartMedia(media.Config{Clock: c.cfg.Clock, Log: c.log, RTPTimeout: c.cfg.RTPTimeout},
+	br, err := c.cfg.StartMedia(media.Config{
+		Clock:       c.cfg.Clock,
+		Log:         c.log,
+		JitterDelay: media.DefaultJitterDelay,
+		JitterMax:   media.DefaultJitterMax,
+		RTPTimeout:  c.cfg.RTPTimeout,
+	},
 		ev.Media, c.session.Audio())
 	if err != nil {
 		obs.Fail(mspan, err)
@@ -604,6 +611,7 @@ func (c *call) activate(ev sipua.CallEvent) {
 	}
 	c.logFor(c.setupCtx).Info().Str("codec", ev.Answer.Codec).Str("remote_rtp", ev.Answer.RemoteRTP).
 		Msg("Call connected")
+	c.markRingMessageRead()
 }
 
 // scheduleRefresh arms the ghost membership refresh at created_ts + expires - lead (D15).

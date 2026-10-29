@@ -596,6 +596,12 @@ func (h *fakeHost) noticeList() []string {
 	return append([]string(nil), h.notices...)
 }
 
+func (h *fakeHost) mgmtList() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.mgmt...)
+}
+
 func (h *fakeHost) resolveList() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -913,6 +919,9 @@ func declineEvent(sender id.UserID, target id.EventID, room id.RoomID) *mevent.E
 
 // ringID returns the event id of the (first) ring.
 func (h *harness) ringID() id.EventID { return "$ring1" }
+
+// ringMsgID returns the event id of the "incoming call" message next to the first ring.
+func (h *harness) ringMsgID() id.EventID { return "$ring2" }
 
 func (h *harness) callCount() int {
 	h.m.mu.Lock()
