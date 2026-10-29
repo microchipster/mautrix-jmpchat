@@ -722,6 +722,9 @@ func (c *call) failOutbound(f failSpec) {
 	if c.room != nil && f.notice != "" {
 		c.sendNotice(ctx, f.notice, f.outcome)
 	}
+	// 9b. Management notice: a call that never connects is reported to the management room
+	// too, so a busy line or a failed dial is never silent.
+	c.notifyManagement(ctx, c.mgmtNoticeText(f))
 
 	// 10. End call.ring and call.outbound.
 	c.endRing(trace.SpanContext{}, f.outcome)

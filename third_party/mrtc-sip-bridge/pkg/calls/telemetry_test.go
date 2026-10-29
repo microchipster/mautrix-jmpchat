@@ -200,7 +200,7 @@ func TestTelemetryCancel(t *testing.T) {
 		h.assertEnded("cancelled", "4xx")
 		setup := checkTraceShape(t, h)
 		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring",
-			"matrixrtc.ring.redact", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send"}
+			"matrixrtc.ring.redact", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("children %v, want %v", got, want)
 		}
@@ -227,7 +227,7 @@ func TestTelemetryDecline(t *testing.T) {
 		h.assertEnded("declined", "6xx")
 		setup := checkTraceShape(t, h)
 		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring",
-			"matrixrtc.membership.clear", "rtc.leave", "call.notice.send"}
+			"matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("children %v, want %v", got, want)
 		}
@@ -248,7 +248,7 @@ func TestTelemetryTimeout(t *testing.T) {
 		h.assertEnded("timeout", "4xx")
 		setup := checkTraceShape(t, h)
 		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring",
-			"matrixrtc.ring.redact", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send"}
+			"matrixrtc.ring.redact", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("children %v, want %v", got, want)
 		}
@@ -269,7 +269,7 @@ func TestTelemetryBusy(t *testing.T) {
 		if setup == nil || obstest.Attr(setup, "call.outcome").AsString() != "busy" {
 			t.Fatalf("busy call.inbound %+v", setup)
 		}
-		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, []string{"call.resolve_room", "call.notice.send"}) {
+		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, []string{"call.resolve_room", "call.notice.send", "call.notice.management"}) {
 			t.Errorf("children %v", got)
 		}
 		if got := eventStatuses(setup, "sip.response.sent"); !reflect.DeepEqual(got, []int64{100, 486}) {
@@ -483,7 +483,7 @@ func TestTelemetryOutboundBusy(t *testing.T) {
 
 		out := checkOutTraceShape(t, h, notifIngest(t, h))
 		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "sip.invite", "call.ringback",
-			"matrixrtc.decline.send", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send"}
+			"matrixrtc.decline.send", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(out)); !reflect.DeepEqual(got, want) {
 			t.Errorf("call.outbound children %v, want %v", got, want)
 		}
@@ -529,7 +529,7 @@ func TestTelemetryOutboundOwnerCancel(t *testing.T) {
 		h.assertEnded("cancelled", "4xx")
 		out := checkOutTraceShape(t, h, notifIngest(t, h))
 		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "sip.invite", "call.ringback",
-			"matrixrtc.membership.clear", "rtc.leave", "call.notice.send"}
+			"matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(out)); !reflect.DeepEqual(got, want) {
 			t.Errorf("call.outbound children %v, want %v", got, want)
 		}

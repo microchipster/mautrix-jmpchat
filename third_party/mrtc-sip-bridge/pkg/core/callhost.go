@@ -57,6 +57,10 @@ type CallHost interface {
 	LookupCallRoom(ctx context.Context, login LoginRef, roomID id.RoomID) (*CallRoom, error)
 	// SendCallNotice posts a short text notice ("Missed call", "Call · 1m20s") in the room.
 	SendCallNotice(ctx context.Context, room *CallRoom, text string) error
+	// NotifyManagement posts a short text to the login owner's management room (the host picks
+	// the room; hosts without one may only log it). Unanswered calls are reported there so a
+	// failure or a miss never ends silently.
+	NotifyManagement(ctx context.Context, login LoginRef, text string) error
 	// OwnerMXID returns the Matrix user who owns the login, or "" if the login is unknown.
 	OwnerMXID(login LoginRef) id.UserID
 	// MarkReadAsOwner sends a read receipt for eventID as the owner (double puppet).

@@ -330,6 +330,13 @@ func (x *callsExt) createCallRoomForPortal(ctx context.Context, ul *bridgev2.Use
 // SendCallNotice posts a plain text notice in the call room as the number's ghost.
 // When the call room is a linked room for an encrypted portal, the notice is
 // also mirrored into the portal room so the call is visible where the chat lives.
+// NotifyManagement posts a call notice (missed, busy, failed) to the owner's management room so
+// call problems are never silent.
+func (h *callHost) NotifyManagement(_ context.Context, login core.LoginRef, text string) error {
+	h.x.notifyCallMgmt(networkid.UserLoginID(login), text)
+	return nil
+}
+
 func (h *callHost) SendCallNotice(ctx context.Context, room *core.CallRoom, text string) error {
 	if room == nil || room.Ghost == nil {
 		return fmt.Errorf("no call room for the notice")

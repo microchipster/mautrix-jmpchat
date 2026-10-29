@@ -173,6 +173,7 @@ type failSpec struct {
 	outcome string
 	reason  string
 	notice  string // "" = no notice
+	mgmt    string // management-room body for otherwise-silent ends ("": derived from notice/reason)
 	// Outbound only (PHASE3-SPEC §6.6): failure tone (0 = none) and whether the owner's notification is
 	// declined.
 	tone    media.TonePattern

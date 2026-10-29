@@ -64,7 +64,8 @@ func (c *call) setup() bool {
 		c.logFor(ctx).Info().Bool("withheld", true).Str("to", c.info.ToUser).
 			Msg("Rejected inbound call: caller number withheld or not a phone number")
 		c.reject(480, "Temporarily Unavailable")
-		c.fail(failSpec{outcome: outcomeRejected, reason: reasonRejected, notice: ""})
+		c.fail(failSpec{outcome: outcomeRejected, reason: reasonRejected, notice: "",
+			mgmt: "rejected: the caller number is withheld"})
 		return false
 	}
 	c.e164 = e164
@@ -94,14 +95,16 @@ func (c *call) setup() bool {
 	c.owner = c.cfg.Host.OwnerMXID(c.login)
 	if c.owner == "" {
 		c.logFor(ctx).Error().Msg("Rejected inbound call: login has no owner")
-		c.fail(failSpec{outcome: outcomeFailed, reason: reasonError, notice: ""})
+		c.fail(failSpec{outcome: outcomeFailed, reason: reasonError, notice: "",
+			mgmt: "failed: the SIP login has no owner configured"})
 		return false
 	}
 	c.setupSpan.SetAttributes(obs.AttrMatrixOwnerID.String(c.owner.String()))
 	room, err := c.resolveRoom(ctx)
 	if err != nil {
 		c.logFor(ctx).Error().Str("from", e164).Str("error", scrubErr(err)).Msg("Failed to resolve the call room")
-		c.fail(failSpec{outcome: outcomeFailed, reason: reasonError, notice: ""})
+		c.fail(failSpec{outcome: outcomeFailed, reason: reasonError, notice: "",
+			mgmt: "failed: could not set up the call room"})
 		return false
 	}
 	c.room = room

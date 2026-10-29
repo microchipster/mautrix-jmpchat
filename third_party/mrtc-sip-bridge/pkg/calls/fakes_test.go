@@ -494,6 +494,7 @@ type fakeHost struct {
 	lookupErr   error  // LookupCallRoom error
 	lookupGate  chan struct{}
 	lookups     []id.RoomID
+	mgmt        []string // management-room texts [NotifyManagement]
 	resolveErr  error
 	resolveGate chan struct{}
 	readErr     error
@@ -560,6 +561,14 @@ func (h *fakeHost) SendCallNotice(_ context.Context, _ *core.CallRoom, text stri
 	h.notices = append(h.notices, text)
 	h.mu.Unlock()
 	h.ops.add("notice")
+	return nil
+}
+
+func (h *fakeHost) NotifyManagement(_ context.Context, _ core.LoginRef, text string) error {
+	h.mu.Lock()
+	h.mgmt = append(h.mgmt, text)
+	h.mu.Unlock()
+	h.ops.add("mgmt")
 	return nil
 }
 

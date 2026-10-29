@@ -246,7 +246,28 @@ func (x *callsExt) resolveRTCLogin(br *bridgev2.Bridge) core.LoginResolver {
 		if login, ok := x.loginForCallRoom(ctx, evt.RoomID); ok {
 			return login, true
 		}
-		return fallback(ctx, evt)
+		if login, ok := fallback(ctx, evt); ok {
+			return login, true
+		}
+		// The stock resolver cannot see the owning login of a portal room in single-login
+		// deployments: bridgev2 leaves the portal receiver empty and such rooms are not in the
+		// call-room index. Resolve them the way loginForCallRoom does (the only login with a SIP
+		// account), so answer memberships, declines and outbound triggers are not dropped.
+		portal, err := br.GetPortalByMXID(ctx, evt.RoomID)
+		if err != nil || portal == nil {
+			x.log.Debug().Err(err).Str("rtc_room", evt.RoomID.String()).Msg("MatrixRTC portal lookup failed")
+			return "", false
+		}
+		loginID := portal.Receiver
+		if loginID == "" {
+			loginID = x.singleAccountLogin()
+		}
+		if loginID == "" || !x.hasAccount(loginID) {
+			x.log.Debug().Str("rtc_room", evt.RoomID.String()).Msg("MatrixRTC event in a room without a SIP login")
+			return "", false
+		}
+		x.log.Debug().Str("rtc_login_id", string(loginID)).Msg("resolved MatrixRTC event via the portal")
+		return core.LoginRef(loginID), true
 	}
 }
 

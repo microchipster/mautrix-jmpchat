@@ -61,6 +61,9 @@ func (c *call) fail(f failSpec) {
 	if c.room != nil && f.notice != "" {
 		c.sendNotice(ctx, f.notice, f.outcome)
 	}
+	// 6b. Management notice: unanswered calls are reported to the management room too, so a
+	// miss or a failure is never silent (the room notice alone is easy to miss).
+	c.notifyManagement(ctx, c.mgmtNoticeText(f))
 	// 7. End call.ring and call.inbound.
 	c.endRing(trace.SpanContext{}, f.outcome)
 	c.endedAt = c.now()
@@ -175,6 +178,36 @@ func (c *call) sendNotice(ctx context.Context, text, kind string) {
 	if err != nil {
 		obs.Fail(span, err)
 		c.logFor(sctx).Warn().Str("error", scrubErr(err)).Msg("Failed to send the call notice")
+	}
+	c.endSpan(span)
+}
+
+// mgmtNoticeText builds the management-room text for an unanswered call end.
+func (c *call) mgmtNoticeText(f failSpec) string {
+	body := f.mgmt
+	if body == "" {
+		body = f.notice
+	}
+	if body == "" {
+		if f.reason == reasonRejected {
+			body = "call rejected"
+		} else {
+			body = "call failed (" + f.reason + ")"
+		}
+	}
+	return mgmtNotice(c.direction, c.e164, body)
+}
+
+// notifyManagement reports an unanswered call to the host's management room (best effort).
+func (c *call) notifyManagement(ctx context.Context, text string) {
+	sctx, span := c.child(ctx, "call.notice.management", trace.SpanKindInternal,
+		obs.AttrCallID.String(c.id))
+	octx, cancel := context.WithTimeout(sctx, matrixOpTimeout)
+	err := c.cfg.Host.NotifyManagement(octx, c.login, text)
+	cancel()
+	if err != nil {
+		obs.Fail(span, err)
+		c.logFor(sctx).Warn().Str("error", scrubErr(err)).Msg("Failed to notify the management room about the call")
 	}
 	c.endSpan(span)
 }

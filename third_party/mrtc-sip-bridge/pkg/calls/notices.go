@@ -30,6 +30,23 @@ const (
 	noticeOutEncrypted   = "Call not placed: calls need an unencrypted room. This room is encrypted."
 )
 
+// mgmtNotice builds the management-room text for an unanswered call: a direction and number
+// prefix plus the body (notice text or an explicit failure summary).
+func mgmtNotice(direction, remote, body string) string {
+	var where string
+	switch {
+	case direction == dirOutbound && remote != "":
+		where = "Outgoing call to " + remote
+	case remote != "":
+		where = "Incoming call from " + remote
+	case direction == dirOutbound:
+		where = "Outgoing call"
+	default:
+		where = "Incoming call"
+	}
+	return where + ": " + body
+}
+
 // Fixed "Call failed: <reason>" reasons that are not SIP statuses.
 const (
 	failReasonNoAudio       = "could not connect audio"

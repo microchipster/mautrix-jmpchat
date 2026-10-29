@@ -88,6 +88,14 @@ func (h *callHost) SendCallNotice(ctx context.Context, room *core.CallRoom, text
 	return err
 }
 
+// NotifyManagement logs the notice for the management room: the standalone bridge runs without a
+// management room, so the log is the only place the failure summary can go.
+func (h *callHost) NotifyManagement(_ context.Context, ref core.LoginRef, text string) error {
+	h.c.br.Log.Info().Str("login_id", string(ref)).Str("call_notice", text).
+		Msg("Call notice for the management room")
+	return nil
+}
+
 // LookupCallRoom returns the call room for an existing 1:1 number portal of ref. It creates nothing.
 func (h *callHost) LookupCallRoom(ctx context.Context, ref core.LoginRef, roomID id.RoomID) (*core.CallRoom, error) {
 	portal, err := h.c.br.GetPortalByMXID(ctx, roomID)

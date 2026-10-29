@@ -210,6 +210,29 @@ func (x *callsExt) notifyManagement(loginID networkid.UserLoginID, text string) 
 	sendNotice(x.br.Bot, roomID, text)
 }
 
+// notifyCallMgmt sends a call-failure notice to the management room, rate-limited per distinct
+// message so repeated misses and failures do not spam it.
+func (x *callsExt) notifyCallMgmt(loginID networkid.UserLoginID, text string) {
+	key := "call|" + string(loginID) + "|" + text
+	now := time.Now()
+	x.filteredNoticeMu.Lock()
+	if x.filteredNotices == nil {
+		x.filteredNotices = map[string]time.Time{}
+	}
+	for k, at := range x.filteredNotices {
+		if now.Sub(at) > callNoticeQuiet {
+			delete(x.filteredNotices, k)
+		}
+	}
+	if at, ok := x.filteredNotices[key]; ok && now.Sub(at) < callNoticeQuiet {
+		x.filteredNoticeMu.Unlock()
+		return
+	}
+	x.filteredNotices[key] = now
+	x.filteredNoticeMu.Unlock()
+	x.notifyManagement(loginID, text)
+}
+
 // managementRoom returns the management room of the login's owner ("" when unknown).
 func (x *callsExt) managementRoom(loginID networkid.UserLoginID) id.RoomID {
 	if x.br == nil {
@@ -250,6 +273,7 @@ func (x *callsExt) onInvite(loginID networkid.UserLoginID, localE164 string) fun
 const (
 	filteredCallNoticeQuiet = 2 * time.Minute
 	filteredCallNoticeMax   = 256
+	callNoticeQuiet         = 10 * time.Minute // rate limit for call-failure management notices
 )
 
 // incomingCallFiltered reports whether an incoming call must be rejected
