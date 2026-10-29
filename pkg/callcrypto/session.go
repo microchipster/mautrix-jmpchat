@@ -31,6 +31,10 @@ const (
 	shareTimeout = 30 * time.Second
 )
 
+// sharedKID maps a media key index to the value stored in the shared bookkeeping. Media key
+// indices start at 0, so the stored value is always KID+1 and 0 means "never shared".
+func sharedKID(kid uint8) int { return int(kid) + 1 }
+
 var (
 	errNoMemberKey = errors.New("callcrypto: no media key for this participant yet")
 	errNoDevice    = errors.New("callcrypto: media key event without a sender device")
@@ -54,10 +58,12 @@ type RoomSession struct {
 
 	own *sframe.KeyTable
 
-	mu        sync.Mutex
-	members   map[string]*sframe.KeyTable
-	targets   map[Target]struct{}
-	shared    map[Target]uint8
+	mu      sync.Mutex
+	members map[string]*sframe.KeyTable
+	targets map[Target]struct{}
+	// shared records the media key index last distributed to each target, as KID+1 so that a
+	// missing entry (the zero value) means "never shared" even for the initial KID 0.
+	shared    map[Target]int
 	sharing   bool
 	lastShare time.Time
 }
@@ -74,7 +80,7 @@ func newRoomSession(log zerolog.Logger, now func() time.Time, roomID id.RoomID, 
 		own:     sframe.NewKeyTable(),
 		members: make(map[string]*sframe.KeyTable),
 		targets: make(map[Target]struct{}),
-		shared:  make(map[Target]uint8),
+		shared:  make(map[Target]int),
 	}
 }
 
@@ -256,7 +262,7 @@ func (s *RoomSession) rotate() error {
 	if _, err := s.own.Rotate(secret, s.now()); err != nil {
 		return err
 	}
-	s.shared = make(map[Target]uint8)
+	s.shared = make(map[Target]int)
 	return nil
 }
 
@@ -276,7 +282,7 @@ func (s *RoomSession) hasUnsharedLocked() bool {
 		return false
 	}
 	for t := range s.targets {
-		if s.shared[t] != key.KID {
+		if s.shared[t] != sharedKID(key.KID) {
 			return true
 		}
 	}
@@ -333,7 +339,7 @@ func (s *RoomSession) ShareOwnKey(ctx context.Context) error {
 	s.mu.Lock()
 	var need []Target
 	for t := range s.targets {
-		if s.shared[t] != key.KID {
+		if s.shared[t] != sharedKID(key.KID) {
 			need = append(need, t)
 		}
 	}
@@ -359,7 +365,7 @@ func (s *RoomSession) ShareOwnKey(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	for _, t := range need {
-		s.shared[t] = key.KID
+		s.shared[t] = sharedKID(key.KID)
 	}
 	s.mu.Unlock()
 	s.log.Info().Int("devices", len(need)).Uint8("key_index", key.KID).Msg("callcrypto: distributed the media key")
