@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
@@ -344,5 +345,59 @@ func TestCallsConfigAutoCreateCallRoomDefault(t *testing.T) {
 	}
 	if !(CallsConfig{AutoCreateCallRoom: ptr.Ptr(true)}).IsAutoCreateCallRoom() {
 		t.Fatal("explicit true should enable auto-creation")
+	}
+}
+
+func TestPortalCallLogin(t *testing.T) {
+	t.Parallel()
+	loginA := networkid.UserLoginID("loginA")
+	loginB := networkid.UserLoginID("loginB")
+	acct := func() *sipaccount.Account { return new(sipaccount.Account) }
+	tests := []struct {
+		name     string
+		accounts map[networkid.UserLoginID]*loginCalls
+		receiver networkid.UserLoginID
+		want     core.LoginRef
+		ok       bool
+	}{
+		{
+			name:     "single account falls back to it",
+			accounts: map[networkid.UserLoginID]*loginCalls{loginA: {acct: acct()}},
+			want:     core.LoginRef(loginA),
+			ok:       true,
+		},
+		{
+			name:     "the receiver wins when it has an account",
+			accounts: map[networkid.UserLoginID]*loginCalls{loginA: {acct: acct()}, loginB: {acct: acct()}},
+			receiver: loginB,
+			want:     core.LoginRef(loginB),
+			ok:       true,
+		},
+		{
+			name:     "a receiver without an account is refused",
+			accounts: map[networkid.UserLoginID]*loginCalls{loginA: {acct: acct()}},
+			receiver: loginB,
+		},
+		{
+			name:     "several accounts without a receiver are ambiguous",
+			accounts: map[networkid.UserLoginID]*loginCalls{loginA: {acct: acct()}, loginB: {acct: acct()}},
+		},
+		{
+			name:     "an account without a SIP account does not count",
+			accounts: map[networkid.UserLoginID]*loginCalls{loginA: {}},
+		},
+		{
+			name: "no accounts",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			x := &callsExt{accounts: tc.accounts}
+			got, ok := x.portalCallLogin(tc.receiver)
+			if ok != tc.ok || got != tc.want {
+				t.Errorf("portalCallLogin(%q) = (%q, %v), want (%q, %v)", tc.receiver, got, ok, tc.want, tc.ok)
+			}
+		})
 	}
 }

@@ -258,17 +258,28 @@ func (x *callsExt) resolveRTCLogin(br *bridgev2.Bridge) core.LoginResolver {
 			x.log.Debug().Err(err).Str("rtc_room", evt.RoomID.String()).Msg("MatrixRTC portal lookup failed")
 			return "", false
 		}
-		loginID := portal.Receiver
-		if loginID == "" {
-			loginID = x.singleAccountLogin()
+		if login, ok := x.portalCallLogin(portal.Receiver); ok {
+			x.log.Debug().Str("rtc_login_id", string(login)).Msg("resolved MatrixRTC event via the portal")
+			return login, true
 		}
-		if loginID == "" || !x.hasAccount(loginID) {
-			x.log.Debug().Str("rtc_room", evt.RoomID.String()).Msg("MatrixRTC event in a room without a SIP login")
-			return "", false
-		}
-		x.log.Debug().Str("rtc_login_id", string(loginID)).Msg("resolved MatrixRTC event via the portal")
-		return core.LoginRef(loginID), true
+		x.log.Debug().Str("rtc_room", evt.RoomID.String()).Msg("MatrixRTC event in a room without a SIP login")
+		return "", false
 	}
+}
+
+// portalCallLogin resolves the login that owns calls in a portal room from the portal's receiver,
+// falling back to the only login with a SIP account: single-login deployments leave the receiver
+// empty, and such rooms are not in the call-room index either (loginForCallRoom falls back the
+// same way for the calls it hosts).
+func (x *callsExt) portalCallLogin(receiver networkid.UserLoginID) (core.LoginRef, bool) {
+	loginID := receiver
+	if loginID == "" {
+		loginID = x.singleAccountLogin()
+	}
+	if loginID == "" || !x.hasAccount(loginID) {
+		return "", false
+	}
+	return core.LoginRef(loginID), true
 }
 
 // loginForCallRoom maps a linked call room to the login that should receive its call events.
