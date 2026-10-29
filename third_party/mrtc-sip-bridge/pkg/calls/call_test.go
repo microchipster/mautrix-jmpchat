@@ -62,8 +62,11 @@ func TestAnsweredCallRemoteBye(t *testing.T) {
 			t.Errorf("membership content = %v\nwant %v", st.content, want)
 		}
 		msgs := h.ghost.msgCalls()
-		if len(msgs) != 1 || msgs[0].typ != matrixrtc.RTCNotification {
+		if len(msgs) != 2 || msgs[0].typ != matrixrtc.RTCNotification {
 			t.Fatalf("ring messages = %+v", msgs)
+		}
+		if msgs[1].typ.Type != "m.room.message" || msgs[1].content["msgtype"] != "m.text" {
+			t.Errorf("call message = %+v", msgs[1])
 		}
 		if got := msgs[0].content[matrixrtc.FieldLifetime]; got != int64(30000) {
 			t.Errorf("ring lifetime = %v (%T)", got, got)

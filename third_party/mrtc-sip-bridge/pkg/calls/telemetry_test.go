@@ -130,7 +130,7 @@ func TestTelemetryAnswer(t *testing.T) {
 		if !setup.EndTime().Equal(ackAt) {
 			t.Errorf("call.inbound ends %v, want ACK %v", setup.EndTime(), ackAt)
 		}
-		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring", "call.answer"}
+		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "matrixrtc.ring.message", "call.ring", "call.answer"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("call.inbound children %v, want %v", got, want)
 		}
@@ -199,7 +199,7 @@ func TestTelemetryCancel(t *testing.T) {
 		synctest.Wait()
 		h.assertEnded("cancelled", "4xx")
 		setup := checkTraceShape(t, h)
-		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring",
+		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "matrixrtc.ring.message", "call.ring",
 			"matrixrtc.ring.redact", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("children %v, want %v", got, want)
@@ -226,7 +226,7 @@ func TestTelemetryDecline(t *testing.T) {
 		h.matrix(declineEvent(testOwner, h.ringID(), testRoom))
 		h.assertEnded("declined", "6xx")
 		setup := checkTraceShape(t, h)
-		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring",
+		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "matrixrtc.ring.message", "call.ring",
 			"matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("children %v, want %v", got, want)
@@ -247,7 +247,7 @@ func TestTelemetryTimeout(t *testing.T) {
 		h.advance(30 * time.Second)
 		h.assertEnded("timeout", "4xx")
 		setup := checkTraceShape(t, h)
-		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "call.ring",
+		want := []string{"call.resolve_room", "matrixrtc.membership.publish", "matrixrtc.ring.send", "matrixrtc.ring.message", "call.ring",
 			"matrixrtc.ring.redact", "matrixrtc.membership.clear", "rtc.leave", "call.notice.send", "call.notice.management"}
 		if got := names(h.env.Children(setup)); !reflect.DeepEqual(got, want) {
 			t.Errorf("children %v, want %v", got, want)

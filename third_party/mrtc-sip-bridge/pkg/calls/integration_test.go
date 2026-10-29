@@ -207,7 +207,7 @@ func TestIntegrationAnsweredCall(t *testing.T) {
 		sc.leg = sipLeg
 		h.m.HandleInvite(testLogin, testLocal, sc)
 		synctest.Wait()
-		if !sc.has("ringing") || len(h.ghost.msgCalls()) != 1 {
+		if !sc.has("ringing") || len(h.ghost.msgCalls()) != 2 {
 			t.Fatalf("not ringing: %v", sc.commands())
 		}
 		it.reg.deliver(t, ownerJoinFixture(h.clk.Now()))

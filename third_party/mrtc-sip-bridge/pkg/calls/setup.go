@@ -10,6 +10,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	mevent "maunium.net/go/mautrix/event"
+
 	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/matrixrtc"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/media"
@@ -335,7 +337,40 @@ func (c *call) sendRing(ctx context.Context) error {
 	c.ringSentAt = c.now()
 	span.SetAttributes(obs.AttrMatrixEventID.String(evID.String()))
 	c.endSpan(span)
+	c.sendRingMessage(ctx)
 	return nil
+}
+
+// sendRingMessage posts a plain message next to the ring notification. Clients that do not act on
+// the MSC4075 ring event (no call UI, no push rule for it) still get a push notification and an
+// unread conversation entry that points into the room where the call can be answered. Best effort:
+// a failure only warns, the MSC4075 ring notification has already been sent.
+func (c *call) sendRingMessage(ctx context.Context) {
+	if c.isOutbound() {
+		// Outbound calls are triggered by the owner; only incoming calls need the nudge.
+		return
+	}
+	_, span := c.child(ctx, "matrixrtc.ring.message", trace.SpanKindClient,
+		obs.AttrCallID.String(c.id),
+		obs.AttrMatrixRoomID.String(c.room.RoomID.String()))
+	content := map[string]any{
+		"msgtype": "m.text",
+		"body":    "📞 Incoming call from " + c.e164 + " — open this room to answer.",
+		"m.mentions": map[string]any{
+			"user_ids": []any{string(c.owner)},
+		},
+	}
+	octx, cancel := context.WithTimeout(ctx, matrixOpTimeout)
+	evID, err := c.room.Ghost.SendMessage(octx, c.room.RoomID, mevent.EventMessage, content)
+	cancel()
+	if err != nil {
+		obs.Fail(span, err)
+		c.logFor(ctx).Warn().Str("error", scrubErr(err)).Msg("Failed to send the call message")
+		c.endSpan(span)
+		return
+	}
+	span.SetAttributes(obs.AttrMatrixEventID.String(evID.String()))
+	c.endSpan(span)
 }
 
 // endRing ends call.ring once, linking the ingest span that ended it (if any).
