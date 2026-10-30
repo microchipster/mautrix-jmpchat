@@ -72,6 +72,9 @@ func (c *MyConnector) PostInitExtensions(br *bridgev2.Bridge) {
 	}
 	proc, _ := br.Commands.(*commands.Processor)
 	c.extensionPostInit(br, proc)
+	// Everything has registered its commands by now (extensions included); wrap the processor so the
+	// management room can answer keywords and typos with the built-in guides.
+	c.installIntelligentProcessor(br, proc)
 }
 
 // extensionStart starts the extension, if any.

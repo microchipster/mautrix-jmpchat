@@ -78,6 +78,7 @@ func myCommandHandlers() []*commands.FullHandler {
 		CommandSyncStatus,
 		CommandStartChat,
 		CommandJMPAccount,
+		CommandHelpGuide,
 		CommandListContacts,
 		CommandListContacted,
 		CommandBlockContact,
