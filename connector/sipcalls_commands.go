@@ -118,7 +118,8 @@ func (x *callsExt) commandLoginWithAccount(ce *commands.Event) (*bridgev2.UserLo
 		return nil, fmt.Sprintf("Your SIP account is not registered right now. Use `%s sip-status`, or `%s sip-login` to set it up again.",
 			x.commandPrefix(), x.commandPrefix())
 	}
-	return nil, fmt.Sprintf("No SIP account is set up for this login. Use `%s sip-login`.", x.commandPrefix())
+	return nil, fmt.Sprintf("No SIP account is set up for this login. Use `%s sip-login`; its prompts explain how to get credentials from the JMP account bot chat (`%s jmp`).",
+		x.commandPrefix(), x.commandPrefix())
 }
 
 func (x *callsExt) cmdSIPLogin(ce *commands.Event) {
@@ -154,10 +155,11 @@ func (x *callsExt) cmdSIPLogin(ce *commands.Event) {
 		ce.Reply("Log in to JMP.chat first.")
 		return
 	}
-	ce.Reply("Enter your SIP account details. Answer each prompt as its own message (passwords may contain spaces). " +
-		"You can create a SIP account for your JMP number in the JMP.chat account settings. Registering takes over " +
-		"incoming calls for this account; if another device (desk phone, ATA) uses the same account, calls may stop " +
-		"reaching it. Calls ring in the number's Cheogram room, which must be unencrypted.")
+	ce.Reply("Enter your SIP account details. Answer each prompt as its own message (passwords may contain spaces). "+
+		"To get credentials, open your JMP account bot chat with `%s jmp` and send it `reset sip account`: it "+
+		"replies with the username, password, server and transport. Registering takes over incoming calls for "+
+		"this account; if another device (desk phone, ATA) uses the same account, calls may stop reaching it. "+
+		"Calls ring in the number's own room, encrypted or not.", x.commandPrefix())
 	hostkit.PromptFields(ce, "SIP login", hostkit.LoginFields(x.cfg.DefaultCountryCode),
 		func(ce *commands.Event, input map[string]string) { x.submitSIPLogin(ce, ul, input) }, nil)
 }

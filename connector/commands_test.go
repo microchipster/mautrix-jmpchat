@@ -208,6 +208,9 @@ func TestNormalizeJID(t *testing.T) {
 		{input: "555-123-4567", want: "+15551234567@cheogram.com"},
 		{input: "555.123.4567", want: "+15551234567@cheogram.com"},
 		{input: "(555) 123 4567", want: "+15551234567@cheogram.com"},
+		{input: "cheogram.com", want: "cheogram.com"},
+		{input: "CHEOGRAM.COM", want: "cheogram.com"},
+		{input: "cheogram.com/phone", want: "cheogram.com"},
 		{input: "invalid_no_digits!", want: ""},
 	}
 

@@ -312,6 +312,49 @@ var CommandStartChat = &commands.FullHandler{
 	RequiresLogin: true,
 }
 
+// CommandJMPAccount opens the chat with the JMP account bot (the bare cheogram.com JID), where the
+// account management lives: info, usage, transactions, call settings, voicemail, SIP credentials.
+var CommandJMPAccount = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		login, _ := selectCommandLogin(ce)
+		if login == nil {
+			ce.Reply("No login found")
+			return
+		}
+		client, ok := login.Client.(*MyNetworkClient)
+		if !ok || client == nil {
+			ce.Reply("Network client not available")
+			return
+		}
+		const jid = "cheogram.com"
+		ce.Reply("Your JMP account bot is the `cheogram.com` contact from the Cheogram/JMP app. It answers here too: " +
+			"send `help` in its chat for the full list — account info, usage, transactions, call forwarding " +
+			"(`configure calls`), voicemail greeting (`ogm`), plan settings, and `reset sip account` for SIP " +
+			"credentials.")
+		portal, err := findExistingPortalByJID(ce.Ctx, ce, login, jid)
+		if err != nil {
+			ce.Reply("Failed to check for the account chat: %v", err)
+			return
+		}
+		if portal != nil && portal.MXID != "" {
+			ce.ReplyAdvanced(existingRoomNotice("Account chat", jid, portalLinkLabel(portal, jid), portal.MXID), false, true)
+			return
+		}
+		if err := client.createDM(ce.Ctx, jid); err != nil {
+			ce.Reply("Failed to create the account chat: %v", err)
+			return
+		}
+		go notifyWhenPortalReady(ce, login, jid, "Account chat")
+	},
+	Name:    "jmp",
+	Aliases: []string{"account", "jmp-account"},
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionChats,
+		Description: "Open your JMP account bot chat (cheogram.com): account info, usage, calls, voicemail, SIP credentials, billing",
+	},
+	RequiresLogin: true,
+}
+
 var CommandListUsers = &commands.FullHandler{
 	Func: func(ce *commands.Event) {
 		login := ce.User.GetDefaultLogin()
@@ -1502,10 +1545,23 @@ var CommandLogout = &commands.FullHandler{
 
 func normalizeJID(input string) string {
 	input = strings.TrimSpace(UnescapeJID(input))
-	if input == "" || (!strings.Contains(input, "@") && !isPhoneLike(input)) {
+	if input == "" {
 		return ""
 	}
-	return CanonicalBareJID(input)
+	canonical := CanonicalBareJID(input)
+	if canonical == "" {
+		return ""
+	}
+	if strings.Contains(canonical, "@") || isPhoneLike(canonical) {
+		return canonical
+	}
+	// The bare Cheogram gateway JID (the JMP account bot at cheogram.com) has no local part and
+	// is not phone-like, but it is a valid chat target: the whole JMP account management
+	// conversation can be bridged from it.
+	if isCheogramGatewayJID(canonical) {
+		return "cheogram.com"
+	}
+	return ""
 }
 
 func splitCheogramGroupContacts(jid string) []string {
