@@ -67,7 +67,7 @@ func registerCallCommands(x *callsExt, proc *commands.Processor) {
 		RequiresLogin: true,
 		Help: commands.HelpMeta{
 			Section:     commands.HelpSectionChats,
-			Description: "Create (or list/remove) the dedicated unencrypted call room of a phone number; needed for calls when the portal room is encrypted.",
+			Description: "Create (or list/remove) the legacy dedicated unencrypted call room of a phone number; only needed when `room_mode` is `call-room`, or when call encryption is off in an encrypted portal.",
 		},
 	})
 	proc.AddHandler(&commands.FullHandler{
@@ -319,9 +319,6 @@ func (x *callsExt) cmdSIPStatus(ce *commands.Event) {
 	if x.cfgErr != nil {
 		lines = append(lines, "Config error: "+x.cfgErr.Error())
 	}
-	if x.enabled && x.encryptionDefault() {
-		lines = append(lines, "Warning: matrix.encryption.default is on; calls only ring in unencrypted rooms.")
-	}
 	creds, ok := sipCreds(loginMeta(ul))
 	acct := x.account(ul.ID)
 	if acct != nil {
@@ -508,7 +505,7 @@ func (x *callsExt) cmdCallRoom(ce *commands.Event) {
 			return
 		}
 		x.purgeCallRoomIndex(roomID)
-		ce.Reply("Unlinked the call room for %s. You can leave or delete %s yourself; calls will not ring until a new call room is created.", number, roomID.URI().MatrixToURL())
+		ce.Reply("Unlinked the call room for %s. You can leave or delete %s yourself; calls now follow the `room_mode`/`e2ee` settings again.", number, roomID.URI().MatrixToURL())
 		return
 	}
 	portal, err := x.br.GetPortalByKey(ctx, portalKey)
@@ -529,7 +526,7 @@ func (x *callsExt) cmdCallRoom(ce *commands.Event) {
 		ce.Reply("Failed to create the call room: %v", err)
 		return
 	}
-	ce.Reply("Created unencrypted call room for %s: %s\n\nThe encrypted portal room is unchanged; calls to and from this number ring in the call room.", number, roomID.URI().MatrixToURL())
+	ce.Reply("Created unencrypted call room for %s: %s\n\nThe portal room is unchanged; calls use the call room only when `room_mode` is `call-room`, or when call encryption is off in an encrypted portal.", number, roomID.URI().MatrixToURL())
 }
 
 // replyCallRoomList lists the portals that have a linked call room.

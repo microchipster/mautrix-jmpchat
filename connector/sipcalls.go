@@ -378,9 +378,6 @@ func (x *callsExt) start(ctx context.Context) error {
 	if x.cfgErr != nil {
 		return x.cfgErr
 	}
-	if x.encryptionDefault() {
-		x.log.Warn().Msg("matrix.encryption.default is enabled: SIP calls only ring in unencrypted rooms (Element Call would use SFrame E2EE in encrypted ones)")
-	}
 	netCfg := x.hkCfg.NetConfig()
 	netCfg.KeyPrefix = "network.calls."
 	rt, err := sipaccount.NewRuntime(ctx, netCfg, x.log)
@@ -528,18 +525,6 @@ func (x *callsExt) suppressCallNotice(loginID networkid.UserLoginID, peerBareJID
 	defer x.mu.Unlock()
 	lc := x.accounts[loginID]
 	return lc != nil && lc.acct != nil && lc.registered
-}
-
-// encryptionDefault reports matrix.encryption.default of the bridge config.
-func (x *callsExt) encryptionDefault() bool {
-	if x.br == nil {
-		return false
-	}
-	mc, ok := x.br.Matrix.(*matrix.Connector)
-	if !ok || mc == nil || mc.Config == nil {
-		return false
-	}
-	return mc.Config.Encryption.Default
 }
 
 // --- accessors used by the accounts/commands/host files ---
