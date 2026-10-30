@@ -233,10 +233,16 @@ func (u *diagoUA) start(ctx context.Context) error {
 	loop := &registerLoop{
 		cfg:     cfg,
 		startSC: trace.SpanContextFromContext(ctx),
-		txn:     &diagoTxn{rt: rt, onDest: func(hostport string) { u.dest.Store(&hostport) }},
-		pin:     pin,
-		log:     cfg.Log.With().Str("component", "sipua").Logger(),
-		emit:    u.tracker.emit,
+		txn: &diagoTxn{
+			rt:          rt,
+			onDest:      func(hostport string) { u.dest.Store(&hostport) },
+			pinContact:  cfg.PinContact,
+			contactHost: cfg.ExternalIP,
+			contactPort: cfg.ExternalPort,
+		},
+		pin:  pin,
+		log:  cfg.Log.With().Str("component", "sipua").Logger(),
+		emit: u.tracker.emit,
 	}
 	loopCtx, loopCancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -300,15 +306,30 @@ func (u *diagoUA) rejectInbound(d *diago.DialogServerSession) {
 type diagoTxn struct {
 	rt     *diago.RegisterTransaction
 	onDest func(hostport string) // also told every pinned destination (outbound INVITEs use it, D9)
+
+	// pinContact keeps ExternalIP:ExternalPort in the REGISTER Contact (see pinContactHeader).
+	pinContact  bool
+	contactHost string
+	contactPort int
 }
 
 func (t *diagoTxn) Register(ctx context.Context) error {
+	t.pinContactHeader()
+	if t.pinContact {
+		// Qualify runs the same REGISTER + digest-auth sequence but skips diago's rport/received
+		// Contact rewrite, which would replace the pinned Contact with the NAT-observed address.
+		return mapErr(t.rt.Qualify(ctx))
+	}
 	// diago's register() does not drop Via, so a second Register would reuse the old branch (D10).
 	t.rt.Origin.RemoveHeader("Via")
 	return mapErr(t.rt.Register(ctx))
 }
 
 func (t *diagoTxn) Refresh(ctx context.Context) error {
+	t.pinContactHeader()
+	if t.pinContact {
+		return mapErr(t.rt.Qualify(ctx))
+	}
 	// A full Register (fresh Via) rather than Qualify, so Contact keeps following the response's
 	// Via rport/received after a NAT rebinding.
 	t.rt.Origin.RemoveHeader("Via")
@@ -316,8 +337,26 @@ func (t *diagoTxn) Refresh(ctx context.Context) error {
 }
 
 func (t *diagoTxn) Unregister(ctx context.Context) error {
+	t.pinContactHeader()
 	prepareUnregister(t.rt.Origin)
 	return mapErr(t.rt.Qualify(ctx))
+}
+
+// pinContactHeader resets the origin's Contact to the configured external address. diago rewrites the
+// Contact from the response's Via rport/received after the first REGISTER; behind a fixed published
+// mapping that observed port is often an unpublished NAT port, so with PinContact the rewrite is
+// skipped and the published address is restored before every send.
+func (t *diagoTxn) pinContactHeader() {
+	if !t.pinContact || t.contactHost == "" || t.contactPort == 0 || t.rt == nil {
+		return
+	}
+	c := t.rt.Origin.Contact()
+	if c == nil {
+		return
+	}
+	c.Address.Host = t.contactHost
+	c.Address.Port = t.contactPort
+	t.rt.Origin.ReplaceHeader(c)
 }
 
 func (t *diagoTxn) SetDestination(hostport string) {

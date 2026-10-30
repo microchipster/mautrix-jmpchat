@@ -47,6 +47,11 @@ type Config struct {
 	BindPort     int    // Local SIP port, shared by REGISTER and inbound requests. Required.
 	ExternalIP   string // Public IPv4 for Contact and SDP c=; "" = BindIP.
 	ExternalPort int    // 0 = BindPort.
+	// PinContact keeps ExternalIP:ExternalPort in the REGISTER Contact instead of following the
+	// response's Via rport/received. Set it when the external address is a fixed published mapping
+	// (e.g. Docker port publishing): the NAT-observed port is often an unpublished ephemeral host
+	// port, so following it would advertise an unreachable Contact.
+	PinContact bool
 
 	Expiry          time.Duration // REGISTER Expires requested; 0 = 60s.
 	RefreshInterval time.Duration // Re-REGISTER interval after success; 0 = 25s. Must be >= 5s and < Expiry.

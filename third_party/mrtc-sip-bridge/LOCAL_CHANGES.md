@@ -28,4 +28,8 @@ When bumping the module, rebase these changes onto the new upstream revision. Ev
 
 - `core.CallHost.NotifyManagement` + `fail`/`failOutbound` management notices: missed, busy, rejected and otherwise silent call ends are reported to the owner's management room (rate-limited by the host).
 - The ring is accompanied by an urgent room message ("Incoming call from …") so clients without MatrixRTC notification support still get a push and an unread; it is marked read once the call is answered (missed calls keep it unread on purpose).
+
+## SIP registration (pkg/sipua, pkg/sipaccount)
+
+- `sipua.Config.PinContact` (set by the connector whenever `calls.external_ip` is configured): the REGISTER Contact is pinned to `external_ip:bind_port` and diago's rport/received rewrite is skipped (`Register`/`Refresh` call `Qualify`). Docker port publishing makes the NAT-observed source port an unpublished ephemeral host port, so following it would advertise an unreachable Contact and break inbound calls. Without an explicit `external_ip` (STUN or bind-IP fallback) the upstream NAT-following behavior is kept.
 - `answerAckTimeout = 10 s` (`pkg/calls/state.go`, armed in `doAnswer`): once the SIP 200 OK is issued, the caller must ACK it within that window. When the caller's INVITE transaction had already expired, no ACK ever comes; the call now fails after 10 s with "Missed call (could not connect audio)" instead of leaving the owner in dead air until the SIP transaction expires (Timer H, 64*T1 ≈ 32 s).

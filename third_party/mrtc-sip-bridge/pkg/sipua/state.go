@@ -51,7 +51,7 @@ type StateEvent struct {
 	Reason        string        // SIP reason phrase or short error text; never contains credentials
 	Err           error         // underlying error for logs; may be nil
 	RegistrarAddr string        // pinned "ip:port" used for the attempt ("" if DNS failed)
-	Contact       string        // our Contact "host:port" after success (NAT-rewritten by rport/received)
+	Contact       string        // our Contact "host:port" after success (pinned when configured, else NAT-rewritten by rport/received)
 	NextRetry     time.Duration // for AuthFailed/TransientError: delay before the next attempt
 }
 

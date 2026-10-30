@@ -104,6 +104,7 @@ func (a *Account) Start(ctx context.Context) error {
 			BindIP:          rt.bindIP.String(),
 			BindPort:        port,
 			ExternalIP:      rt.externalIP.String(),
+			PinContact:      rt.ExternalIPExplicit(),
 			Expiry:          rt.cfg.RegisterExpiry,
 			RefreshInterval: rt.cfg.RegisterRefresh,
 			Log:             a.cfg.Log,

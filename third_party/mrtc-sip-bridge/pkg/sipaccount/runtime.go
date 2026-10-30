@@ -32,8 +32,10 @@ type Runtime struct {
 	cfg        NetConfig
 	bindIP     net.IP
 	externalIP net.IP
-	ports      *portPool
-	plain      zerolog.Logger // the logger passed to NewRuntime (no component key)
+	// externalIPExplicit is true when ExternalIP was configured (a fixed published mapping), not STUN or the bind IP fallback.
+	externalIPExplicit bool
+	ports              *portPool
+	plain              zerolog.Logger // the logger passed to NewRuntime (no component key)
 
 	// UAs read by the registrations gauge and its callback handle.
 	uaMu     sync.Mutex
@@ -78,6 +80,7 @@ func NewRuntime(ctx context.Context, cfg NetConfig, log zerolog.Logger) (*Runtim
 		if rt.externalIP == nil {
 			return nil, fmt.Errorf("%sexternal_ip: %q is not a valid IP address", keyPrefix, cfg.ExternalIP)
 		}
+		rt.externalIPExplicit = true
 	case cfg.STUNServer != "":
 		stunCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		ip, err := sipua.DiscoverPublicIP(stunCtx, cfg.STUNServer)
@@ -113,6 +116,10 @@ func (rt *Runtime) BindIP() net.IP { return rt.bindIP }
 
 // ExternalIP returns the IP advertised in Contact/Via and SDP.
 func (rt *Runtime) ExternalIP() net.IP { return rt.externalIP }
+
+// ExternalIPExplicit reports whether external_ip was configured explicitly (a fixed published
+// mapping) instead of discovered via STUN or falling back to the bind IP.
+func (rt *Runtime) ExternalIPExplicit() bool { return rt.externalIPExplicit }
 
 // Close unregisters the gauge callback. Idempotent (and nil-safe). Accounts must be stopped first.
 func (rt *Runtime) Close() {
