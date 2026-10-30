@@ -1,5 +1,5 @@
 # -- Build mautrix-jmpchat (with Go) --
-FROM golang:1.27-alpine3.24 AS go-builder
+FROM golang:1.27.3-alpine3.24 AS go-builder
 RUN apk add --no-cache git ca-certificates build-base opus-dev pkgconf
 
 # The image is always built with pure-Go Matrix E2BE ("goolm", no libolm) and
