@@ -15,7 +15,8 @@ const (
 	resolveRoomTimeout    = 15 * time.Second // ResolveCallRoom (may create the portal)
 	joinTimeout           = 10 * time.Second // one rtc.Join attempt (cancelled by the actor's join timer)
 	maxJoinAttempts       = 2
-	answerTimeout         = 40 * time.Second // owner joined -> EventAnswered (covers rtc join + 32 s ACK wait)
+	answerTimeout         = 40 * time.Second // owner joined -> SIP answer issued (covers the rtc join)
+	answerAckTimeout      = 10 * time.Second // SIP 200 OK issued -> ACK; a caller whose INVITE transaction is gone never ACKs
 	ownerRTCGrace         = 10 * time.Second // no owner participant in LiveKit after answer -> rtc_lost
 	ringKeepalive         = 60 * time.Second // re-send 180 while ringing
 	statsInterval         = 5 * time.Second

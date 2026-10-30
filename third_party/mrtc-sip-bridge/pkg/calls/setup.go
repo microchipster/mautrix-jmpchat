@@ -548,6 +548,13 @@ func (c *call) doAnswer() {
 		obs.AttrMediaPtimeMS.Int(20),
 		obs.AttrMediaTelephoneEvent.Bool(c.info.Offer.TelephoneEvent))
 	c.in.Answer()
+	// The 200 OK is going out: the caller must ACK it soon (EventAnswered). Realistic ACKs arrive in
+	// a couple of seconds; when the caller's INVITE transaction had already expired, none ever does.
+	// Tighten the timer so the call fails fast with noticeNoAudio instead of waiting for the SIP
+	// transaction itself to expire (Timer H, 64*T1 ≈ 32 s of dead air).
+	if c.answerTimer != nil {
+		c.answerTimer.Reset(answerAckTimeout)
+	}
 }
 
 // activate runs on EventAnswered: start media, end call.answer and call.inbound (at ACK).

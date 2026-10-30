@@ -28,3 +28,4 @@ When bumping the module, rebase these changes onto the new upstream revision. Ev
 
 - `core.CallHost.NotifyManagement` + `fail`/`failOutbound` management notices: missed, busy, rejected and otherwise silent call ends are reported to the owner's management room (rate-limited by the host).
 - The ring is accompanied by an urgent room message ("Incoming call from …") so clients without MatrixRTC notification support still get a push and an unread; it is marked read once the call is answered (missed calls keep it unread on purpose).
+- `answerAckTimeout = 10 s` (`pkg/calls/state.go`, armed in `doAnswer`): once the SIP 200 OK is issued, the caller must ACK it within that window. When the caller's INVITE transaction had already expired, no ACK ever comes; the call now fails after 10 s with "Missed call (could not connect audio)" instead of leaving the owner in dead air until the SIP transaction expires (Timer H, 64*T1 ≈ 32 s).

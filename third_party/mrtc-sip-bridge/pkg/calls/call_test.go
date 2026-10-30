@@ -697,6 +697,28 @@ func TestAnswerTimeout(t *testing.T) {
 	})
 }
 
+// The SIP 200 OK is never ACKed (the caller's INVITE transaction died before the owner answered):
+// the call fails answerAckTimeout after the answer was issued instead of waiting out Timer H.
+func TestAnswerNotConfirmed(t *testing.T) {
+	run(t, func(t *testing.T) {
+		h := newHarness(t)
+		sc := h.newSIPCall()
+		sc.autoAnswer = false
+		h.m.HandleInvite(testLogin, testLocal, sc)
+		synctest.Wait()
+		h.matrix(h.ownerMember("D1", true))
+		if !sc.has("answer") {
+			t.Fatal("answer not issued")
+		}
+		h.advance(answerAckTimeout)
+		if !sc.has("hangup") {
+			t.Fatalf("commands %v", sc.commands())
+		}
+		h.assertEnded("failed", "4xx")
+		assertNotices(t, h, noticeNoAudio)
+	})
+}
+
 // 27. Owner joins then leaves before the join completes.
 func TestOwnerLeavesBeforeJoin(t *testing.T) {
 	run(t, func(t *testing.T) {

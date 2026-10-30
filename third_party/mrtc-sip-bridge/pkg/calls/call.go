@@ -416,8 +416,12 @@ func (c *call) onAnswerTimeout() {
 	if c.state != stAnswering {
 		return
 	}
+	msg := "Call was not connected in time after the owner answered"
+	if c.answerIssued {
+		msg = "SIP answer was not confirmed in time (no ACK from the caller)"
+	}
 	c.logFor(c.setupCtx).Warn().Bool("rtc_ready", c.session != nil).Bool("answer_issued", c.answerIssued).
-		Msg("Call was not connected in time after the owner answered")
+		Msg(msg)
 	c.sipHangup()
 	c.fail(failSpec{outcome: outcomeFailed, reason: reasonError, notice: noticeNoAudio})
 }
