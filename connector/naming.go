@@ -34,6 +34,7 @@ type SimpleConfig struct {
 	// HistoryTTL configures the Matrix-history retention cleanup.
 	HistoryTTL HistoryTTLConfig `yaml:"history_ttl,omitempty"`
 	Calls      CallsConfig      `yaml:"calls,omitempty"`
+	Cdn        CdnConfig        `yaml:"cdn,omitempty"`
 }
 
 // sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.

@@ -309,6 +309,17 @@ func (nc *MyNetworkClient) uploadMatrixMediaToXMPP(ctx context.Context, msg *bri
 		mimeType = msg.Content.Info.MimeType
 	}
 
+	if cdn := nc.simpleConfig().Cdn; cdn.Enabled() {
+		link, err := uploadMediaToCDN(ctx, cdn, data)
+		if err == nil {
+			desc := msg.Content.Body
+			if desc == "" {
+				desc = fileName
+			}
+			return link, desc, nil
+		}
+		nc.log.Warn().Err(err).Msg("CDN upload failed; falling back to the XMPP file upload service")
+	}
 	serviceJID, err := nc.ensureHTTPUploadService(ctx)
 	if err != nil {
 		return "", "", err
