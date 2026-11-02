@@ -19,12 +19,10 @@ import (
 func TestUploadMediaToCDN(t *testing.T) {
 	var (
 		gotAuth string
-		gotView string
 		gotBody []byte
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
-		gotView = r.URL.Query().Get("view")
 		gotBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -39,9 +37,6 @@ func TestUploadMediaToCDN(t *testing.T) {
 	}
 	if gotAuth != "Bearer token-1" {
 		t.Fatalf("authorization = %q", gotAuth)
-	}
-	if gotView != "public" {
-		t.Fatalf("view = %q, want public", gotView)
 	}
 	if !strings.HasPrefix(link, server.URL+"/f/abc123#") {
 		t.Fatalf("link = %q", link)
@@ -68,24 +63,6 @@ func TestUploadMediaToCDN(t *testing.T) {
 	}
 	if string(plain) != "hello cdn" {
 		t.Fatalf("plain = %q", plain)
-	}
-}
-
-func TestUploadMediaToCDNView(t *testing.T) {
-	gotView := ""
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotView = r.URL.Query().Get("view")
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"x"}`))
-	}))
-	defer server.Close()
-
-	cfg := CdnConfig{BaseURL: server.URL, UploadToken: "t", SendView: "first"}
-	if _, err := uploadMediaToCDN(context.Background(), cfg, []byte("x")); err != nil {
-		t.Fatalf("uploadMediaToCDN: %v", err)
-	}
-	if gotView != "first" {
-		t.Fatalf("view = %q, want first", gotView)
 	}
 }
 

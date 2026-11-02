@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
@@ -50,7 +49,7 @@ func uploadMediaToCDN(ctx context.Context, cdn CdnConfig, data []byte) (string, 
 	body = append(body, sealed...)
 
 	base := strings.TrimRight(strings.TrimSpace(cdn.BaseURL), "/")
-	uploadURL := base + "/f?view=" + url.QueryEscape(cdn.View())
+	uploadURL := base + "/f"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("build cdn request: %w", err)
