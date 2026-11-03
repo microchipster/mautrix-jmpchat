@@ -90,6 +90,13 @@ type MyNetworkClient struct {
 	login     *bridgev2.UserLogin
 	connector *MyConnector
 
+	ownInitialMu    sync.Mutex
+	ownInitialCache string
+	ownInitialAt    time.Time
+
+	autoSyncMu   sync.Mutex
+	autoSyncStop chan struct{}
+
 	manualNameMu sync.Mutex
 	manualNames  map[string]bool
 
@@ -1494,6 +1501,7 @@ func (nc *MyNetworkClient) Connect(ctx context.Context) {
 		Int("attempt", attempt).
 		Dur("retry_in", 0).
 		Msg("Starting XMPP connection attempt")
+	nc.startCardDAVAutoSync()
 	nc.sendBridgeState(status.StateConnecting, "Connecting to XMPP server", 0)
 	nc.connectMu.Lock()
 	if nc.connectionGeneration != generation || nc.stopReconnect == nil {
@@ -4266,6 +4274,7 @@ func (nc *MyNetworkClient) Disconnect() {
 // LogoutRemote logs the user out.
 func (nc *MyNetworkClient) LogoutRemote(ctx context.Context) {
 	nc.log.Info().Msg("MyNetworkClient LogoutRemote called")
+	nc.stopCardDAVAutoSync()
 	nc.Disconnect()
 }
 

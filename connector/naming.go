@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -12,12 +13,14 @@ import (
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 )
 
 const defaultContactNameSuffix = "jmp"
 const defaultCardDAVCountryCode = "1"
+const groupNameSoftLimit = 28
 
 // SimpleConfig stores connector-specific network configuration.
 type SimpleConfig struct {
@@ -335,18 +338,25 @@ func initialsLikeName(name string, contacts int) bool {
 	return count >= 1 && count <= contacts
 }
 
-func groupRoomNameFromParticipants(ctx context.Context, bridge *bridgev2.Bridge, participants []string, explicit, suffix string) string {
+func groupRoomNameFromParticipants(ctx context.Context, bridge *bridgev2.Bridge, participants []string, explicit, suffix, ownInitial string) string {
 	if name := strings.TrimSpace(explicit); name != "" {
 		return name
 	}
-	labels := make([]string, 0, len(participants))
-	allNamed := len(participants) > 0
-	for _, participant := range participants {
-		label := contactDisplayName(ctx, bridge, participant)
-		labels = append(labels, label)
-		if strings.TrimSpace(label) == "" {
-			// A participant without any usable label means the room name
-			// cannot be expressed as initials yet.
+	if len(participants) == 0 {
+		return appendContactNameSuffix("JMPChat Group", suffix)
+	}
+	labels := make([]string, len(participants))
+	names := make([]string, len(participants))
+	allNamed := true
+	for index, participant := range participants {
+		label := strings.TrimSpace(contactDisplayName(ctx, bridge, participant))
+		labels[index] = label
+		name := label
+		if name == "" {
+			name = participant
+		}
+		names[index] = name
+		if label == "" {
 			allNamed = false
 			continue
 		}
@@ -354,17 +364,66 @@ func groupRoomNameFromParticipants(ctx context.Context, bridge *bridgev2.Bridge,
 			allNamed = false
 		}
 	}
-	name := strings.Join(nonEmptyLabels(labels), ",")
-	if allNamed {
-		name = groupInitialsFromLabels(labels)
+	full := strings.Join(nonEmptyLabels(names), ",")
+	if len([]rune(full)) <= groupNameSoftLimit {
+		return appendContactNameSuffix(full, suffix)
 	}
+	firsts := make([]string, len(names))
+	for index, name := range names {
+		firsts[index] = firstWord(name)
+	}
+	firstsList := strings.Join(nonEmptyLabels(firsts), ",")
+	if firstsList != full && len([]rune(firstsList)) <= groupNameSoftLimit {
+		return appendContactNameSuffix(firstsList, suffix)
+	}
+	if allNamed {
+		if initials := groupInitialsFromLabels(labels) + ownInitial; initials != "" {
+			return appendContactNameSuffix(initials, suffix)
+		}
+	}
+	name := jmpFitLabelList(names)
 	if name == "" {
 		name = "JMPChat Group"
 	}
 	return appendContactNameSuffix(name, suffix)
 }
 
-func groupRoomNameFromJID(ctx context.Context, bridge *bridgev2.Bridge, roomJID, explicit, suffix string) string {
+// firstWord returns the first whitespace-delimited word of a label.
+func firstWord(label string) string {
+	if index := strings.IndexAny(label, " \t"); index > 0 {
+		return label[:index]
+	}
+	return label
+}
+
+// jmpFitLabelList fits as many labels as possible into groupNameSoftLimit and
+// collapses the remainder into ", and N more".
+func jmpFitLabelList(labels []string) string {
+	nonEmpty := nonEmptyLabels(labels)
+	if len(nonEmpty) == 0 {
+		return ""
+	}
+	fitted := 0
+	length := 0
+	for index, label := range nonEmpty {
+		added := len([]rune(label))
+		if index > 0 {
+			added += 1 // ","
+		}
+		if fitted > 0 && length+added > groupNameSoftLimit {
+			break
+		}
+		length += added
+		fitted++
+	}
+	if fitted >= len(nonEmpty) {
+		return strings.Join(nonEmpty, ",")
+	}
+	return strings.Join(nonEmpty[:fitted], ",") +
+		", and " + strconv.Itoa(len(nonEmpty)-fitted) + " more"
+}
+
+func groupRoomNameFromJID(ctx context.Context, bridge *bridgev2.Bridge, roomJID, explicit, suffix, ownInitial string) string {
 	if name := strings.TrimSpace(explicit); name != "" {
 		return name
 	}
@@ -376,7 +435,7 @@ func groupRoomNameFromJID(ctx context.Context, bridge *bridgev2.Bridge, roomJID,
 		}
 		return roomJID
 	}
-	return groupRoomNameFromParticipants(ctx, bridge, contacts, "", suffix)
+	return groupRoomNameFromParticipants(ctx, bridge, contacts, "", suffix, ownInitial)
 }
 
 func portalUsesGroupChat(portal *bridgev2.Portal) bool {
@@ -501,10 +560,10 @@ func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
 	if name == strings.Join(phoneLabels, ",") {
 		return true
 	}
-	return initialsLikeName(name, len(contacts))
+	return initialsLikeName(name, len(contacts)+1)
 }
 
-func portalDesiredName(ctx context.Context, bridge *bridgev2.Bridge, portal *bridgev2.Portal, suffix string) string {
+func portalDesiredName(ctx context.Context, bridge *bridgev2.Bridge, portal *bridgev2.Portal, suffix string, ownInitial string) string {
 	if portal == nil {
 		return ""
 	}
@@ -520,7 +579,7 @@ func portalDesiredName(ctx context.Context, bridge *bridgev2.Bridge, portal *bri
 		}
 		return dmRoomName(ctx, bridge, jid, "", suffix)
 	}
-	if name := groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix); name != "" {
+	if name := groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix, ownInitial); name != "" {
 		return name
 	}
 	if name := strings.TrimSpace(portal.Name); name != "" {
@@ -562,6 +621,12 @@ func refreshAllPortalNames(ctx context.Context, bridge *bridgev2.Bridge, login *
 }
 
 func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridge, login *bridgev2.UserLogin, suffix string, match func(*bridgev2.Portal) bool) (int, error) {
+	ownInitial := ""
+	if login != nil {
+		if client, ok := login.Client.(*MyNetworkClient); ok {
+			ownInitial = client.ownInitial(ctx)
+		}
+	}
 	if bridge == nil || login == nil {
 		return 0, nil
 	}
@@ -582,9 +647,9 @@ func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridg
 		if match == nil && !portalLooksAutoNamed(portal, suffix) {
 			continue
 		}
-		name := portalDesiredName(ctx, bridge, portal, suffix)
+		name := portalDesiredName(ctx, bridge, portal, suffix, ownInitial)
 		if match != nil {
-			name = portalGeneratedName(ctx, bridge, portal, suffix)
+			name = portalGeneratedName(ctx, bridge, portal, suffix, ownInitial)
 		}
 		if name == "" || strings.TrimSpace(portal.Name) == name {
 			continue
@@ -595,16 +660,53 @@ func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridg
 	return count, nil
 }
 
-func portalGeneratedName(ctx context.Context, bridge *bridgev2.Bridge, portal *bridgev2.Portal, suffix string) string {
+func portalGeneratedName(ctx context.Context, bridge *bridgev2.Bridge, portal *bridgev2.Portal, suffix string, ownInitial string) string {
 	if portal == nil {
 		return ""
 	}
 	if portalUsesGroupChat(portal) {
-		return groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix)
+		return groupRoomNameFromJID(ctx, bridge, UnescapeJID(string(portal.ID)), "", suffix, ownInitial)
 	}
 	jid := strings.TrimSpace(string(portal.OtherUserID))
 	if jid == "" {
 		jid = UnescapeJID(string(portal.ID))
 	}
 	return dmRoomName(ctx, bridge, jid, "", suffix)
+}
+
+// ownInitial returns the initial of the bridge owner's own name: the contact
+// name of the bridge's own JID when known, else the Matrix display name of
+// the account. The value is cached briefly so refreshes do not refetch it.
+func (nc *MyNetworkClient) ownInitial(ctx context.Context) string {
+	if nc == nil || nc.bridge == nil {
+		return ""
+	}
+	nc.ownInitialMu.Lock()
+	if !nc.ownInitialAt.IsZero() && time.Since(nc.ownInitialAt) < 5*time.Minute {
+		initial := nc.ownInitialCache
+		nc.ownInitialMu.Unlock()
+		return initial
+	}
+	nc.ownInitialMu.Unlock()
+
+	initial := ""
+	if own := nc.ownBareJID(); own != "" {
+		label := contactDisplayName(ctx, nc.bridge, own)
+		phone := phoneSubscriberLabel(strings.TrimSuffix(bareJID(own), "@cheogram.com"))
+		if label != "" && label != phone {
+			initial = contactInitial(label)
+		}
+	}
+	if initial == "" && nc.login != nil && nc.login.User != nil {
+		if matrixConnector, ok := nc.bridge.Matrix.(*matrix.Connector); ok && matrixConnector.Bot != nil {
+			if profile, err := matrixConnector.Bot.GetProfile(ctx, nc.login.User.MXID); err == nil && profile != nil {
+				initial = contactInitial(profile.DisplayName)
+			}
+		}
+	}
+	nc.ownInitialMu.Lock()
+	nc.ownInitialCache = initial
+	nc.ownInitialAt = time.Now()
+	nc.ownInitialMu.Unlock()
+	return initial
 }

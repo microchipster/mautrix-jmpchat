@@ -53,7 +53,7 @@ func (nc *MyNetworkClient) initiateGroupChat(ctx context.Context, name string, p
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		name = groupRoomNameFromParticipants(ctx, nc.bridge, participants, "", nc.contactNameSuffix())
+		name = groupRoomNameFromParticipants(ctx, nc.bridge, participants, "", nc.contactNameSuffix(), nc.ownInitial(ctx))
 	}
 
 	if !isCheogramGatewayJID(roomJID) {

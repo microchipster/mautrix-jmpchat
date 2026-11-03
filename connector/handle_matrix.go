@@ -486,7 +486,7 @@ func (nc *MyNetworkClient) GetChatInfo(ctx context.Context, portal *bridgev2.Por
 	if portalUsesGroupChat(portal) {
 		roomType = ptr.Ptr(database.RoomTypeDefault)
 	}
-	name := portalDesiredName(ctx, nc.bridge, portal, nc.contactNameSuffix())
+	name := portalDesiredName(ctx, nc.bridge, portal, nc.contactNameSuffix(), nc.ownInitial(ctx))
 
 	chatInfo := &bridgev2.ChatInfo{
 		Name:        &name,

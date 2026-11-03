@@ -143,7 +143,7 @@ func TestCheogramGroupFallbackWithoutMetadata(t *testing.T) {
 		t.Fatal("did not expect cheogram group room to match an unrelated contact")
 	}
 
-	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp"); got != "+15551230001,+15551230002 (jmp)" {
+	if got := groupRoomNameFromJID(context.Background(), nil, roomJID, "", "jmp", ""); got != "+15551230001,+15551230002 (jmp)" {
 		t.Fatalf("groupRoomNameFromJID() = %q, want %q", got, "+15551230001,+15551230002 (jmp)")
 	}
 }
@@ -218,7 +218,7 @@ func TestAutoRenameDetectionWithPhoneContextAndCustomFlag(t *testing.T) {
 		t.Fatal("expected portal with phone-context to be recognized as auto-named")
 	}
 
-	desired := portalDesiredName(context.Background(), nil, portal, "jmp")
+	desired := portalDesiredName(context.Background(), nil, portal, "jmp", "")
 	if desired != "69061 (jmp)" {
 		t.Fatalf("portalDesiredName() = %q, want %q", desired, "69061 (jmp)")
 	}
@@ -316,7 +316,7 @@ func TestGroupRoomNameExplicitSpecialChars(t *testing.T) {
 	t.Parallel()
 
 	participants := []string{"+15551230001@cheogram.com", "+15551230002@cheogram.com"}
-	got := groupRoomNameFromParticipants(context.Background(), nil, participants, "The O'Brien Family", "jmp")
+	got := groupRoomNameFromParticipants(context.Background(), nil, participants, "The O'Brien Family", "jmp", "")
 	if got != "The O'Brien Family" {
 		t.Fatalf("groupRoomNameFromParticipants() = %q, want %q", got, "The O'Brien Family")
 	}

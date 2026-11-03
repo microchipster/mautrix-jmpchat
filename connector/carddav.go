@@ -26,6 +26,7 @@ const (
 	cardDAVFetchTimeout       = 60 * time.Second
 	cardDAVSyncMaxAdds        = 500
 	cardDAVSyncAddInterval    = 200 * time.Millisecond // 5 adds/s
+	cardDAVAutoSyncInterval   = 6 * time.Hour
 )
 
 // CardDAVConfig stores CardDAV import configuration (network config section).
@@ -432,6 +433,7 @@ type cardDAVSyncResult struct {
 	Numbers    int
 	Candidates int
 	Added      int
+	Updated    int
 	Skipped    int
 	Conflicts  int
 	Photos     int
@@ -476,6 +478,14 @@ func (nc *MyNetworkClient) syncCardDAV(ctx context.Context, apply bool) (cardDAV
 			}
 			seen[jid] = true
 			contactJIDs = append(contactJIDs, jid)
+			if existing[jid] && apply {
+				if meta := nc.cardDAVGhostMeta(ctx, jid); meta != nil && strings.TrimSpace(meta.CardDAVName) != "" && meta.CardDAVName != contact.Name {
+					if conflict := nc.setGhostCardDAVName(ctx, jid, contact.Name); conflict {
+						result.Conflicts++
+					}
+					result.Updated++
+				}
+			}
 			if existing[jid] {
 				result.Skipped++
 				continue
@@ -563,4 +573,72 @@ func (nc *MyNetworkClient) applyCardDAVPhoto(ctx context.Context, jids []string,
 		applied++
 	}
 	return applied
+}
+
+// cardDAVGhostMeta loads the ghost metadata of a CardDAV contact JID.
+func (nc *MyNetworkClient) cardDAVGhostMeta(ctx context.Context, jid string) *GhostMetadata {
+	if nc == nil || nc.bridge == nil || nc.bridge.DB == nil {
+		return nil
+	}
+	canonical := CanonicalBareJID(jid)
+	if canonical == "" {
+		return nil
+	}
+	ghost, err := nc.bridge.GetExistingGhostByID(ctx, MakeUserID(canonical))
+	if err != nil || ghost == nil {
+		return nil
+	}
+	meta, _ := ghost.Metadata.(*GhostMetadata)
+	return meta
+}
+
+// startCardDAVAutoSync launches the background address book refresh loop once.
+func (nc *MyNetworkClient) startCardDAVAutoSync() {
+	nc.autoSyncMu.Lock()
+	defer nc.autoSyncMu.Unlock()
+	if nc.autoSyncStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	nc.autoSyncStop = stop
+	go nc.cardDAVAutoSyncLoop(stop)
+}
+
+// stopCardDAVAutoSync stops the background address book refresh loop.
+func (nc *MyNetworkClient) stopCardDAVAutoSync() {
+	nc.autoSyncMu.Lock()
+	stop := nc.autoSyncStop
+	nc.autoSyncStop = nil
+	nc.autoSyncMu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
+}
+
+// cardDAVAutoSyncLoop refreshes the address book import in the background so
+// contact names added anywhere (for example in a phone's contacts app synced
+// to CardDAV) reach the auto-named rooms without a manual `carddav-sync`.
+func (nc *MyNetworkClient) cardDAVAutoSyncLoop(stopCh <-chan struct{}) {
+	timer := time.NewTimer(30 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-timer.C:
+		}
+		if creds := nc.cardDAVCredentials(); creds != nil && strings.TrimSpace(creds.URL) != "" && nc.isXMPPConnected() {
+			result, err := nc.syncCardDAV(context.Background(), true)
+			if err != nil {
+				nc.log.Warn().Err(err).Msg("Background CardDAV sync failed")
+			} else if result.Added > 0 || result.Updated > 0 || result.Photos > 0 {
+				if changed, err := refreshAutoNamedPortals(context.Background(), nc.bridge, nc.login, nc.contactNameSuffix()); err != nil {
+					nc.log.Warn().Err(err).Msg("Background room name refresh failed")
+				} else if changed > 0 {
+					nc.log.Info().Int("rooms", changed).Msg("Renamed auto-named rooms after a background CardDAV sync")
+				}
+			}
+		}
+		timer.Reset(cardDAVAutoSyncInterval)
+	}
 }

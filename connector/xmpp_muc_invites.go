@@ -327,7 +327,7 @@ func (nc *MyNetworkClient) queueInviteResync(ctx context.Context, inv mucInvite,
 			}
 			info := &bridgev2.ChatInfo{}
 			if create {
-				name := groupRoomNameFromJID(ctx, nc.bridge, inv.room, "", nc.contactNameSuffix())
+				name := groupRoomNameFromJID(ctx, nc.bridge, inv.room, "", nc.contactNameSuffix(), nc.ownInitial(ctx))
 				roomType := database.RoomTypeDefault
 				info.Name = &name
 				info.Type = &roomType
