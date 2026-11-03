@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 	"gosrc.io/xmpp/stanza"
 	"maunium.net/go/mautrix/bridgev2"
@@ -527,6 +528,11 @@ func portalMatchesContact(portal *bridgev2.Portal, jid string) bool {
 }
 
 func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
+	if portal != nil {
+		if meta, _ := portal.Metadata.(*PortalMetadata); meta != nil && meta.AutoName != "" && strings.TrimSpace(stripContactNameSuffix(portal.Name, suffix)) == meta.AutoName {
+			return true
+		}
+	}
 	if portal == nil {
 		return false
 	}
@@ -558,6 +564,9 @@ func portalLooksAutoNamed(portal *bridgev2.Portal, suffix string) bool {
 		phoneLabels = append(phoneLabels, contactLabelFromJID(contact))
 	}
 	if name == strings.Join(phoneLabels, ",") {
+		return true
+	}
+	if nameTokensLookGenerated(name, phoneLabels) {
 		return true
 	}
 	return initialsLikeName(name, len(contacts)+1)
@@ -651,10 +660,21 @@ func refreshAutoNamedPortalsMatching(ctx context.Context, bridge *bridgev2.Bridg
 		if match != nil {
 			name = portalGeneratedName(ctx, bridge, portal, suffix, ownInitial)
 		}
-		if name == "" || strings.TrimSpace(portal.Name) == name {
+		if name == "" {
+			continue
+		}
+		meta, _ := portal.Metadata.(*PortalMetadata)
+		generated := strings.TrimSpace(stripContactNameSuffix(name, suffix))
+		if strings.TrimSpace(portal.Name) == name {
+			if meta != nil && meta.AutoName == "" {
+				rememberAutoName(ctx, portal, meta, generated)
+			}
 			continue
 		}
 		queuePortalNameChange(ctx, bridge, login, portal, name)
+		if meta != nil {
+			rememberAutoName(ctx, portal, meta, generated)
+		}
 		count++
 	}
 	return count, nil
@@ -709,4 +729,53 @@ func (nc *MyNetworkClient) ownInitial(ctx context.Context) string {
 	nc.ownInitialAt = time.Now()
 	nc.ownInitialMu.Unlock()
 	return initial
+}
+
+// nameTokensLookGenerated reports whether a room name looks like one the
+// bridge generated: every comma-separated token matches a known label (or
+// number), or at least two of them do while the rest are stale labels from
+// an earlier contact set.
+func nameTokensLookGenerated(name string, known []string) bool {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	if index := strings.Index(trimmed, ", and "); index >= 0 && strings.HasSuffix(trimmed, " more") {
+		trimmed = trimmed[:index]
+	}
+	tokens := 0
+	matches := 0
+	for _, token := range strings.Split(trimmed, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		tokens++
+		for _, candidate := range known {
+			if candidate != "" && strings.EqualFold(candidate, token) {
+				matches++
+				break
+			}
+		}
+	}
+	if tokens == 0 {
+		return false
+	}
+	if matches == tokens {
+		return true
+	}
+	return tokens >= 2 && matches >= 2
+}
+
+// rememberAutoName stores the generated room name on the portal metadata so a
+// later contact change still recognises the room as auto-named.
+func rememberAutoName(ctx context.Context, portal *bridgev2.Portal, meta *PortalMetadata, generated string) {
+	if portal == nil || meta == nil || generated == "" || meta.AutoName == generated {
+		return
+	}
+	meta.AutoName = generated
+	portal.Metadata = meta
+	if err := portal.Save(ctx); err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Str("portal_id", string(portal.ID)).Msg("Failed to remember the generated room name")
+	}
 }

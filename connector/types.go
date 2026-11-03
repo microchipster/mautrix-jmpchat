@@ -131,6 +131,10 @@ type PortalMetadata struct {
 	Notes               map[string]string   `json:"notes,omitempty"`
 	IsMUC               bool                `json:"is_muc,omitempty"`
 	CallRoomMXID        id.RoomID           `json:"call_room_mxid,omitempty"` // Optional unencrypted room used for calls when the portal room is encrypted
+
+	// AutoName remembers the last room name the bridge generated for this
+	// portal, so later contact changes (add, rename, clear) always refresh it.
+	AutoName string `json:"auto_name,omitempty"`
 	// MUCLeft is set when the user intentionally left the XMPP room, so
 	// auto-rejoin, the join watchdog and bookmark imports leave it alone.
 	MUCLeft bool `json:"muc_left,omitempty"`
