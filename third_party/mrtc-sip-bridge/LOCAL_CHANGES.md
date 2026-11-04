@@ -26,7 +26,7 @@ When bumping the module, rebase these changes onto the new upstream revision. Ev
 
 ## Call UX (pkg/calls)
 
-- `core.CallHost.NotifyManagement` + `fail`/`failOutbound` management notices: missed, busy, rejected and otherwise silent call ends are reported to the owner's management room (rate-limited by the host).
+- `core.CallHost.NotifyManagement` + `fail`/`failOutbound` management notices: missed, busy, rejected and otherwise silent call ends are reported to the owner's management room (rate-limited by the host). The withheld-caller rejection notice explains why: no routable number means the call cannot be routed to a room, and such calls are usually spam hiding their number.
 - The ring is accompanied by an urgent room message ("Incoming call from …") so clients without MatrixRTC notification support still get a push and an unread; it is marked read once the call is answered (missed calls keep it unread on purpose).
 
 ## SIP registration (pkg/sipua, pkg/sipaccount)

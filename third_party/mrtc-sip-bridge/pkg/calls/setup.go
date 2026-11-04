@@ -64,10 +64,11 @@ func (c *call) setup() bool {
 	if err != nil {
 		c.setupSpan.SetAttributes(obs.AttrCallRemoteWith.Bool(true))
 		c.logFor(ctx).Info().Bool("withheld", true).Str("to", c.info.ToUser).
+			Str("from", c.info.FromUser).Str("from_display", c.info.FromDisplay).
 			Msg("Rejected inbound call: caller number withheld or not a phone number")
 		c.reject(480, "Temporarily Unavailable")
 		c.fail(failSpec{outcome: outcomeRejected, reason: reasonRejected, notice: "",
-			mgmt: "rejected: the caller number is withheld"})
+			mgmt: "rejected: the caller number is withheld — without a number the bridge cannot route the call to a room, so the call was declined; these are usually spam or robocalls hiding their number"})
 		return false
 	}
 	c.e164 = e164

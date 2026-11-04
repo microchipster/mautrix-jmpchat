@@ -386,7 +386,7 @@ func TestWithheldCaller(t *testing.T) {
 			t.Error("room resolved for a withheld caller")
 		}
 		assertNotices(t, h)
-		assertMgmt(t, h, "Incoming call: rejected: the caller number is withheld")
+		assertMgmt(t, h, "Incoming call: rejected: the caller number is withheld — without a number the bridge cannot route the call to a room, so the call was declined; these are usually spam or robocalls hiding their number")
 		h.assertEnded("rejected", "4xx")
 		if got := h.setupAttr("call.remote.withheld"); got != "true" {
 			t.Errorf("withheld attr = %q", got)
