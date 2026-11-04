@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/williamkray/mrtc-sip-bridge/pkg/core"
 	"github.com/williamkray/mrtc-sip-bridge/pkg/sipaccount"
@@ -399,5 +400,30 @@ func TestPortalCallLogin(t *testing.T) {
 				t.Errorf("portalCallLogin(%q) = (%q, %v), want (%q, %v)", tc.receiver, got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+func TestCallNoticeCoalescing(t *testing.T) {
+	x := &callsExt{callNotices: map[string]*callNotice{}}
+	room := id.RoomID("!room:example.com")
+	other := id.RoomID("!other:example.com")
+	key := "call|login|hello"
+	now := time.Now()
+	if eventID, count := x.callNoticeStep(key, room, now); eventID != "" || count != 0 {
+		t.Fatalf("expected no coalescible notice, got %q %d", eventID, count)
+	}
+	x.recordCallNotice(key, room, id.EventID("$evt:example.com"), now)
+	eventID, count := x.callNoticeStep(key, room, now.Add(1*time.Minute))
+	if eventID != "$evt:example.com" || count != 2 {
+		t.Fatalf("expected first repeat to reach count 2, got %q %d", eventID, count)
+	}
+	if _, count = x.callNoticeStep(key, room, now.Add(2*time.Minute)); count != 3 {
+		t.Fatalf("expected second repeat to reach count 3, got %d", count)
+	}
+	if eventID, count = x.callNoticeStep(key, other, now.Add(3*time.Minute)); eventID != "" || count != 0 {
+		t.Fatalf("expected another room to not reuse the notice, got %q %d", eventID, count)
+	}
+	if eventID, count = x.callNoticeStep(key, room, now.Add(12*time.Minute+30*time.Second)); eventID != "" || count != 0 {
+		t.Fatalf("expected the notice to expire after the quiet window, got %q %d", eventID, count)
 	}
 }

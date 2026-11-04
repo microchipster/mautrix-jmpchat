@@ -1749,6 +1749,42 @@ func sendNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) {
 	_, _ = bot.SendMessage(context.Background(), roomID, event.EventMessage, &event.Content{Parsed: content}, nil)
 }
 
+// sendNoticeID sends a notice and returns its event ID, or "" if it could not
+// be sent.
+func sendNoticeID(bot bridgev2.MatrixAPI, roomID id.RoomID, msg string) id.EventID {
+	if bot == nil || roomID == "" || msg == "" {
+		return ""
+	}
+	content := &event.MessageEventContent{
+		MsgType: event.MsgNotice,
+		Body:    msg,
+	}
+	resp, err := bot.SendMessage(context.Background(), roomID, event.EventMessage, &event.Content{Parsed: content}, nil)
+	if err != nil || resp == nil {
+		return ""
+	}
+	return resp.EventID
+}
+
+// updateNotice replaces an existing notice with a new body. It returns false
+// when the edit could not be delivered, so callers can fall back to a new
+// message.
+func updateNotice(bot bridgev2.MatrixAPI, roomID id.RoomID, eventID id.EventID, msg string) bool {
+	if bot == nil || roomID == "" || eventID == "" || msg == "" {
+		return false
+	}
+	rel := &event.RelatesTo{}
+	rel.SetReplace(eventID)
+	content := &event.MessageEventContent{
+		MsgType:    event.MsgNotice,
+		Body:       "* " + msg,
+		NewContent: &event.MessageEventContent{MsgType: event.MsgNotice, Body: msg},
+		RelatesTo:  rel,
+	}
+	_, err := bot.SendMessage(context.Background(), roomID, event.EventMessage, &event.Content{Parsed: content}, nil)
+	return err == nil
+}
+
 func parseSyncArgs(args []string, fallback time.Duration) (bool, time.Duration, error) {
 	if fallback <= 0 {
 		fallback = defaultMAMLookback

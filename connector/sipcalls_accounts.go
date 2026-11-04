@@ -210,27 +210,79 @@ func (x *callsExt) notifyManagement(loginID networkid.UserLoginID, text string) 
 	sendNotice(x.br.Bot, roomID, text)
 }
 
-// notifyCallMgmt sends a call-failure notice to the management room, rate-limited per distinct
-// message so repeated misses and failures do not spam it.
-func (x *callsExt) notifyCallMgmt(loginID networkid.UserLoginID, text string) {
-	key := "call|" + string(loginID) + "|" + text
-	now := time.Now()
-	x.filteredNoticeMu.Lock()
-	if x.filteredNotices == nil {
-		x.filteredNotices = map[string]time.Time{}
+// callNotice tracks a recently sent call-failure management notice so repeats
+// can be folded into it as a count instead of posting new messages.
+type callNotice struct {
+	roomID  id.RoomID
+	eventID id.EventID
+	count   int
+	last    time.Time
+}
+
+// callNoticeStep returns the event ID of a recent identical notice to update
+// (with the new count) when one is present; otherwise it returns "".
+func (x *callsExt) callNoticeStep(key string, roomID id.RoomID, now time.Time) (id.EventID, int) {
+	x.callNoticeMu.Lock()
+	defer x.callNoticeMu.Unlock()
+	if x.callNotices == nil {
+		x.callNotices = map[string]*callNotice{}
 	}
-	for k, at := range x.filteredNotices {
-		if now.Sub(at) > callNoticeQuiet {
-			delete(x.filteredNotices, k)
+	for k, n := range x.callNotices {
+		if now.Sub(n.last) > callNoticeQuiet {
+			delete(x.callNotices, k)
 		}
 	}
-	if at, ok := x.filteredNotices[key]; ok && now.Sub(at) < callNoticeQuiet {
-		x.filteredNoticeMu.Unlock()
+	n, ok := x.callNotices[key]
+	if !ok || n.roomID != roomID || n.eventID == "" {
+		return "", 0
+	}
+	n.count++
+	n.last = now
+	return n.eventID, n.count
+}
+
+// recordCallNotice remembers a freshly sent notice so repeats can fold into it.
+func (x *callsExt) recordCallNotice(key string, roomID id.RoomID, eventID id.EventID, now time.Time) {
+	x.callNoticeMu.Lock()
+	defer x.callNoticeMu.Unlock()
+	if x.callNotices == nil {
+		x.callNotices = map[string]*callNotice{}
+	}
+	if n, ok := x.callNotices[key]; ok && n.eventID == eventID {
+		n.last = now
 		return
 	}
-	x.filteredNotices[key] = now
-	x.filteredNoticeMu.Unlock()
-	x.notifyManagement(loginID, text)
+	x.callNotices[key] = &callNotice{roomID: roomID, eventID: eventID, count: 1, last: now}
+}
+
+// forgetCallNotice drops a tracked notice whose message can no longer be edited.
+func (x *callsExt) forgetCallNotice(key string) {
+	x.callNoticeMu.Lock()
+	defer x.callNoticeMu.Unlock()
+	delete(x.callNotices, key)
+}
+
+// notifyCallMgmt sends a call-failure notice to the management room. Repeated
+// identical notices inside the quiet window update the most recent message
+// with a count instead of posting a new one.
+func (x *callsExt) notifyCallMgmt(loginID networkid.UserLoginID, text string) {
+	roomID := x.managementRoom(loginID)
+	if roomID == "" || x.br == nil || text == "" {
+		return
+	}
+	key := "call|" + string(loginID) + "|" + text
+	now := time.Now()
+	if eventID, count := x.callNoticeStep(key, roomID, now); eventID != "" {
+		if updateNotice(x.br.Bot, roomID, eventID, fmt.Sprintf("%s (%d similar calls)", text, count)) {
+			return
+		}
+		x.forgetCallNotice(key)
+	}
+	eventID := sendNoticeID(x.br.Bot, roomID, text)
+	if eventID == "" {
+		return
+	}
+	x.recordCallNotice(key, roomID, eventID, now)
 }
 
 // managementRoom returns the management room of the login's owner ("" when unknown).

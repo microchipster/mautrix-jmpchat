@@ -87,6 +87,10 @@ type callsExt struct {
 	// management notices about rejected roster-only callers.
 	filteredNoticeMu sync.Mutex
 	filteredNotices  map[string]time.Time
+	// callNoticeMu guards callNotices, recently sent call-failure notices whose
+	// repeats update the existing management-room message with a count.
+	callNoticeMu sync.Mutex
+	callNotices  map[string]*callNotice
 
 	// Dialpad widget state (see sipcalls_widget.go).
 	widgetSrv  *widget.Server
@@ -102,6 +106,7 @@ func newCallsExt(c *MyConnector) connectorExtension {
 		loginBusy:       map[networkid.UserLoginID]bool{},
 		callRoomIndex:   map[id.RoomID]networkid.PortalKey{},
 		filteredNotices: map[string]time.Time{},
+		callNotices:     map[string]*callNotice{},
 	}
 	base := zerolog.Nop()
 	if c != nil {
