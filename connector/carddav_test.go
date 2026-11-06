@@ -5,6 +5,7 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -464,5 +465,45 @@ func TestCardDAVEncryptionRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(keyFile); err != nil {
 		t.Errorf("expected the key file to exist: %v", err)
+	}
+}
+
+func TestCardDAVUnlockKeyFromSecret(t *testing.T) {
+	first := cardDAVUnlockKeyFromSecret("correct horse battery staple")
+	second := cardDAVUnlockKeyFromSecret("correct horse battery staple")
+	other := cardDAVUnlockKeyFromSecret("a different secret")
+	if len(first) != 32 {
+		t.Fatalf("expected a 32-byte key, got %d", len(first))
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("expected the same secret to derive the same key")
+	}
+	if bytes.Equal(first, other) {
+		t.Fatalf("expected different secrets to derive different keys")
+	}
+}
+
+func TestCardDAVRAMKeyPrecedence(t *testing.T) {
+	previous := cardDAVProcessKeySource
+	setCardDAVProcessKeyResolver(func() ([]byte, error) {
+		return nil, fmt.Errorf("resolver should not be consulted while unlocked")
+	})
+	defer setCardDAVProcessKeyResolver(previous)
+	clearCardDAVRAMKey()
+	if _, err := cardDAVProcessKey(); err == nil {
+		t.Fatalf("expected an error without any key material")
+	}
+	ramKey := []byte("0123456789abcdef0123456789abcdef")
+	setCardDAVRAMKey(ramKey)
+	key, err := cardDAVProcessKey()
+	if err != nil {
+		t.Fatalf("expected the in-memory key to win: %v", err)
+	}
+	if string(key) != string(ramKey) {
+		t.Fatalf("expected the in-memory key, got something else")
+	}
+	clearCardDAVRAMKey()
+	if _, err := cardDAVProcessKey(); err == nil {
+		t.Fatalf("expected an error after locking again")
 	}
 }

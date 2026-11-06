@@ -20,7 +20,10 @@ type LoginMetadata struct {
 	DefaultMUCNick      string                        `json:"default_muc_nick,omitempty"`
 	PendingGatewayForms map[string]PendingGatewayForm `json:"pending_gateway_forms,omitempty"`
 	CardDAV             *CardDAVCredentials           `json:"carddav,omitempty"`
-	SIPCalls            *SIPCallCredentials           `json:"sip_calls,omitempty"`
+	// CardDAVKeyMode records how CardDAV secrets are encrypted ("memory" =
+	// unlocked with an in-memory key; empty = legacy key file mode).
+	CardDAVKeyMode string              `json:"carddav_key_mode,omitempty"`
+	SIPCalls       *SIPCallCredentials `json:"sip_calls,omitempty"`
 	// BookmarksBackfilled marks that the one-time XEP-0402 backfill (creating
 	// bookmarks for rooms this bridge is already in) has completed.
 	BookmarksBackfilled bool `json:"bookmarks_backfilled,omitempty"`

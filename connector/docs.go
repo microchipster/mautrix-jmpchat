@@ -49,7 +49,7 @@ var topicGuides = map[string]string{
 		"- `join-room`, `muc-nick` — join Jabber (XMPP) group chats and set the nickname used there.\n" +
 		"- `block`, `report` — handle unwanted senders.\n" +
 		"- `bookmarks-sync`, `remove-bookmark` — keep your Jabber bookmarks in sync.\n" +
-		"- `carddav-login <email> <password>` and `carddav-sync` — the address-book (CardDAV) integration (common servers are auto-detected).\n" +
+		"- `carddav-login <email> <password>` / `carddav-unlock <secret>` / `carddav-sync` — the address-book (CardDAV) integration; the unlock secret keeps the encryption key in memory only (common servers are auto-detected).\n" +
 		"- `sync`, `sync-status` — refresh the network state and check the connection.",
 
 	"encryption": "**Encryption**\n\n" +
