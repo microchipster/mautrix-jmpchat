@@ -238,6 +238,12 @@ func (c *MyConnector) GetBridgeInfoVersion() (int, int) {
 
 // Start implements bridgev2.NetworkConnector.
 func (c *MyConnector) Start(ctx context.Context) error {
+	setCardDAVProcessKeyResolver(func() ([]byte, error) {
+		if c.config == nil {
+			return cardDAVEncryptionKey(CardDAVConfig{})
+		}
+		return cardDAVEncryptionKey(c.config.CardDAV)
+	})
 	c.log.Info().Msg("MyConnector Start called")
 	if c.bridge == nil {
 		c.log.Error().Msg("MyConnector started without bridge instance")
