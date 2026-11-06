@@ -142,6 +142,13 @@ func MakePortalID(jid string) networkid.PortalID {
 	return networkid.PortalID(EscapeJID(CanonicalBareJID(jid)))
 }
 
+// isBareServerAddress reports whether a JID/portal ID is a bare server address
+// (a domain without a localpart), such as the source of Snikket spam-report
+// server notices. These addresses are services, not contacts.
+func isBareServerAddress(jid string) bool {
+	return jid != "" && !strings.Contains(jid, "@") && strings.Contains(jid, ".")
+}
+
 // isCheogramGatewayJID reports whether a JID belongs to the Cheogram/JMP gateway
 // rather than to a real XMPP MUC service. Cheogram addresses always use the
 // cheogram.com domain, either for a single contact (+15551234567@cheogram.com),

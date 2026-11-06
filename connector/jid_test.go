@@ -177,3 +177,22 @@ func TestIsSelfBareJID(t *testing.T) {
 		})
 	}
 }
+
+func TestIsBareServerAddress(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"example.com", true},
+		{"cheogram.com", true},
+		{"user@example.com", false},
+		{"+15550102100@cheogram.com", false},
+		{"alice", false},
+		{"", false},
+	}
+	for _, test := range tests {
+		if got := isBareServerAddress(test.input); got != test.want {
+			t.Errorf("isBareServerAddress(%q) = %v, want %v", test.input, got, test.want)
+		}
+	}
+}

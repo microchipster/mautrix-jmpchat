@@ -33,6 +33,18 @@ func (nc *MyNetworkClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		jid = normalizeJID(jid)
 	}
 
+	// Bare server addresses (no localpart) can never receive replies: refuse
+	// locally instead of letting the XMPP server bounce the message.
+	if portalJID := UnescapeJID(string(msg.Portal.ID)); isBareServerAddress(portalJID) {
+		errMsg := fmt.Sprintf("Cannot send to %s: this address is an XMPP server/service, not a contact, so messages sent here can never be delivered.", portalJID)
+		nc.log.Warn().Str("portal_id", string(msg.Portal.ID)).Str("target_jid", jid).Msg(errMsg)
+		nc.notifyManagement(errMsg)
+		if msg.Portal != nil && msg.Portal.MXID != "" && nc.bridge != nil && nc.bridge.Bot != nil {
+			sendNotice(nc.bridge.Bot, msg.Portal.MXID, errMsg)
+		}
+		return nil, bridgev2.WrapErrorInStatus(fmt.Errorf("%s", errMsg)).WithSendNotice(true)
+	}
+
 	log := nc.log.With().
 		Str("portal_id", string(msg.Portal.ID)).
 		Str("target_jid", jid).

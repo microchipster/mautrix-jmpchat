@@ -3256,12 +3256,28 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 			errDetail = "delivery failed"
 		}
 		notice := fmt.Sprintf("Message delivery to %s failed: %s", bareFromJid, errDetail)
+		if isBareServerAddress(bareFromJid) {
+			notice += " — this address is a server/service, not a contact; nothing sent here can be delivered"
+		}
+		if msg.Id != "" {
+			notice += fmt.Sprintf(" (stanza %s)", msg.Id)
+		}
 		if nc.bridge != nil {
 			if portal, err := nc.bridge.GetPortalByKey(context.Background(), networkid.PortalKey{ID: portalID}); err == nil && portal != nil && portal.MXID != "" && nc.bridge.Bot != nil {
 				sendNotice(nc.bridge.Bot, portal.MXID, notice)
 			}
 		}
 		nc.notifyManagement(notice)
+		return
+	}
+
+	if isBareServerAddress(bareFromJid) && !isFromMe {
+		// Bare server addresses (e.g. Snikket spam-report notices) are not
+		// contacts: report them to the management room instead of creating a
+		// portal room whose messages could never be delivered.
+		if body := strings.TrimSpace(stanza.StringValue(msg.Body)); body != "" {
+			nc.notifyManagement(fmt.Sprintf("Message from your XMPP server (%s): %s", bareFromJid, body))
+		}
 		return
 	}
 
