@@ -63,6 +63,7 @@ var topicGuides = map[string]string{
 		"- `list-logins` — which accounts this bridge serves.\n" +
 		"- `prune-rooms`, `prune-duplicates` — clean up stale rooms.\n" +
 		"- `delete-all-portals` — remove every bridged room (destructive).\n" +
+		"- `delete-spam-rooms` — remove rooms for contacts you blocked or reported as spam.\n" +
 		"- Say what is wrong in this room: mentioning a keyword like \"calls\" or \"sms\" gets you the matching guide, and typos get suggestions.",
 
 	"docs": "**Guides available in this room:**\n\n" +
