@@ -4110,3 +4110,53 @@ func callRoomIDs(ce *commands.Event, login *bridgev2.UserLogin) map[id.RoomID]bo
 	}
 	return set
 }
+
+// CommandPruneLogins deletes the rooms (and login records) of logins that are
+// already logged out, so old bridges do not leave rooms behind.
+var CommandPruneLogins = &commands.FullHandler{
+	Func: func(ce *commands.Event) {
+		logins := ce.User.GetUserLogins()
+		var candidates []*bridgev2.UserLogin
+		for _, login := range logins {
+			if login == nil || login.BridgeState == nil {
+				continue
+			}
+			if login.BridgeState.GetPrev().StateEvent != status.StateLoggedOut {
+				continue
+			}
+			candidates = append(candidates, login)
+		}
+		if len(candidates) == 0 {
+			ce.Reply("No logged-out logins to prune.")
+			return
+		}
+		if len(ce.Args) == 0 || (ce.Args[0] != "yes" && ce.Args[0] != "--yes") {
+			lines := []string{fmt.Sprintf("Found %d logged-out login(s):", len(candidates))}
+			for _, login := range candidates {
+				remote := strings.TrimSpace(login.RemoteName)
+				if remote == "" {
+					remote = "(unknown)"
+				}
+				lines = append(lines, fmt.Sprintf("- %s - %s", login.ID, remote))
+			}
+			lines = append(lines, "Run: prune-logins yes to delete their rooms and spaces.")
+			ce.Reply("%s", strings.Join(lines, "\n"))
+			return
+		}
+		pruned := 0
+		for _, login := range candidates {
+			if err := deleteAllPortals(ce, login); err != nil {
+				ce.Reply("Failed to prune login %s: %v", login.ID, err)
+				return
+			}
+			pruned++
+		}
+		ce.Reply("Pruned %d logged-out login(s): their rooms and spaces were deleted and the logins removed.", pruned)
+	},
+	Name: "prune-logins",
+	Help: commands.HelpMeta{
+		Section:     commands.HelpSectionAdmin,
+		Description: "Delete the rooms and spaces of logins that are already logged out (preview; use: prune-logins yes)",
+	},
+	RequiresLogin: true,
+}

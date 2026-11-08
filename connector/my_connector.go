@@ -118,6 +118,7 @@ func myCommandHandlers() []*commands.FullHandler {
 		CommandGatewayForm,
 		CommandGatewaySubmit,
 		CommandDeleteAllPortals,
+		CommandPruneLogins,
 		CommandDeleteSpamRooms,
 		CommandPruneRooms,
 		CommandPruneDuplicates,
@@ -378,6 +379,7 @@ func managementRoomHelpText() string {
 		"- logout [login_id] purge\n" +
 		"- delete-all-portals yes\n" +
 		"- delete-spam-rooms [yes]\n" +
+		"- prune-logins [yes]\n" +
 		"- prune-rooms [empty] [dry-run|confirm] [days] (default 30d, or 'empty' for creation-only rooms)\n" +
 		"- prune-duplicates [dry-run|confirm]\n" +
 		"- ttl status | ttl run [--dry-run|--apply]\n" +
