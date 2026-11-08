@@ -341,3 +341,7 @@ This README is intentionally not a JMP marketing page. For product/user-facing i
 - `example-config.yaml` still contains some template-era naming and defaults; treat it as a starting point, not authoritative product documentation.
 - This bridge depends on local `patched-xmpp` behavior, so upstream library documentation is not always enough.
 - Full compatibility with Cheogram/JMP behavior is still in progress.
+
+## License
+
+AGPL-3.0-or-later. See [`LICENSE`](LICENSE).
