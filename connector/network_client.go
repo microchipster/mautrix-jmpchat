@@ -3068,6 +3068,10 @@ func (nc *MyNetworkClient) handleXMPPMessage(s xmpp.Sender, p stanza.Packet) {
 			}
 		}
 		fwd := *mam.Forwarded.Message
+		if isErrorBounce(fwd) {
+			nc.log.Debug().Str("from", fwd.From).Str("mam_id", mam.ID).Msg("Dropping archived MAM error bounce")
+			return
+		}
 		if !isValidMAMForwardedJID(fwd.From) {
 			nc.log.Warn().Str("from", fwd.From).Str("mam_id", mam.ID).Msg("Dropping MAM result with invalid forwarded from JID")
 			return
@@ -3230,7 +3234,7 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	}
 	logJIDNormalization(nc.log, "incoming_from", bareFromJid)
 
-	if msg.Type == stanza.MessageTypeError || msg.Error.Reason != "" || msg.Error.Text != "" {
+	if isErrorBounce(msg) {
 		nc.log.Warn().
 			Str("from", msg.From).
 			Str("id", msg.Id).

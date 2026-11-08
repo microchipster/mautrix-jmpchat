@@ -209,3 +209,23 @@ func TestMAMArchiveCursorNilLoginSafety(t *testing.T) {
 	bare.persistMAMArchiveCursor(t.Context(), "cursor")
 	bare.clearMAMArchiveCursor(t.Context())
 }
+
+func TestIsErrorBounce(t *testing.T) {
+	t.Parallel()
+	if !isErrorBounce(stanza.Message{Attrs: stanza.Attrs{Type: stanza.MessageTypeError}}) {
+		t.Fatal("expected message type error to be detected as a bounce")
+	}
+	withReason := stanza.Message{}
+	withReason.Error.Reason = "item-not-found"
+	if !isErrorBounce(withReason) {
+		t.Fatal("expected error reason to be detected as a bounce")
+	}
+	withText := stanza.Message{}
+	withText.Error.Text = "delivery failed"
+	if !isErrorBounce(withText) {
+		t.Fatal("expected error text to be detected as a bounce")
+	}
+	if isErrorBounce(stanza.Message{}) {
+		t.Fatal("expected regular message not to be detected as a bounce")
+	}
+}

@@ -606,3 +606,9 @@ func (nc *MyNetworkClient) backfillMAMStarting(ctx context.Context, toJID string
 	}
 	return nil
 }
+
+// isErrorBounce reports whether a message is a delivery error or bounce
+// rather than a regular chat message.
+func isErrorBounce(msg stanza.Message) bool {
+	return msg.Type == stanza.MessageTypeError || msg.Error.Reason != "" || msg.Error.Text != ""
+}
