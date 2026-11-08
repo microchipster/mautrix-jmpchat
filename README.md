@@ -51,7 +51,7 @@ This is still an active bridge implementation, not a finished polished product. 
 - `patched-xmpp/`: local fork of `gosrc.io/xmpp` used by this bridge
 - `docker-run.sh`: container entrypoint used by the image
 - `Dockerfile`: container build for deployment
-- `DEVEL.md`: maintainer-oriented Go/codebase walkthrough
+- `docs/DEVEL.md`: maintainer-oriented Go/codebase walkthrough
 - `docs/CHEOGRAM_ANALYSIS.md`: notes comparing this bridge to Cheogram Android and JMP behavior
 - `docs/history-ttl.md`: Matrix-history retention (TTL) configuration, `ttl` command and caveats
 
@@ -331,10 +331,11 @@ This README is intentionally not a JMP marketing page. For product/user-facing i
 
 ## Development References
 
-- `DEVEL.md` for a codebase-specific Go tutorial and maintenance guide
+- `docs/DEVEL.md` for a codebase-specific Go tutorial and maintenance guide
 - `docs/CHEOGRAM_ANALYSIS.md` for protocol and behavior notes
 - `docs/history-ttl.md` for Matrix-history retention (TTL)
 - `TODO.md` for remaining bridge-parity work
+- `docs/DEVELOPMENT.md` for the development progression, completed-work archive and design notes
 
 ## Caveats
 

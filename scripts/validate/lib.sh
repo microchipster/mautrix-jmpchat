@@ -44,7 +44,7 @@
 #   BRIDGE_RESTART_TIMEOUT  seconds to wait for the bridge to come back
 #                     (default: 90)
 #
-# Conventions (see todo.md):
+# Conventions (see TODO.md):
 #   * never log message bodies; log IDs, senders, timestamps and hashes only
 #   * script only with full !room_id values — fuzzy room names can hang iamb
 #   * sends always use --wait --reply-mode different-sender

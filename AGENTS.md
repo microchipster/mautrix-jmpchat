@@ -6,13 +6,14 @@
 - `connector/login.go` defines login flows (`bridgev2.LoginProcess`).
 - `connector/network_client.go` is the per-user remote network client.
 - `connector/types.go` defines portal/ghost/login metadata stored in the bridge database.
-- `go.mod`/`go.sum` manage dependencies; no dedicated `tests/` directory yet.
+- `go.mod`/`go.sum` manage dependencies; tests live alongside the code as `*_test.go` files.
+- `docs/DEVELOPMENT.md` records the development progression; `docs/DEVEL.md` is the Go/codebase walkthrough; `TODO.md` keeps outstanding work.
 
 ## Build, Test, and Development Commands
 - `go run . -g -c config.yaml -r registration.yaml` generates `registration.yaml`.
 - `go run . -c config.yaml -r registration.yaml` runs the bridge from source.
 - `go build` builds the binary (default name `jmpchat`).
-- `go test ./...` runs tests (currently no test files).
+- `go test ./...` runs the unit tests.
 - Toolchain: `mise install` and `mise exec -- <cmd>`.
 - Docker builds use the Go patch release hardcoded in `Dockerfile`; keep it in sync with `.mise.toml`.
 
