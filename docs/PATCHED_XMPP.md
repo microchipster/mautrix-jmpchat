@@ -15,15 +15,15 @@ The submodule URL intentionally uses public HTTPS on GitHub so deployment hosts 
 
 There are two repositories involved, and each has a distribution remote plus a private mirror:
 
-- `mautrix-jmpchat` distribution remote: `https://codeberg.org/microchipster/mautrix-jmpchat.git`
+- `mautrix-jmpchat` distribution remote: `https://github.com/microchipster/mautrix-jmpchat.git`
 - `go-xmpp` submodule distribution remote: `https://github.com/microchipster/go-xmpp.git`
 
-The playbook should clone `mautrix-jmpchat` from Codeberg. Its recursive submodule checkout should then clone `patched-xmpp/` from GitHub. The git host is kept as a mirror, not as the deploy-facing URL.
+The playbook should clone `mautrix-jmpchat` from GitHub. Its recursive submodule checkout should then clone `patched-xmpp/` from GitHub. The git host is kept as a mirror, not as the deploy-facing URL.
 
 Recommended local remotes for this bridge checkout:
 
 ```sh
-git remote set-url codeberg ssh://git@codeberg.org/microchipster/mautrix-jmpchat.git
+git remote set-url github ssh://git@github.com/microchipster/mautrix-jmpchat.git
 ```
 
 Recommended local remotes for `/home/user/src/repos/go-xmpp`:
@@ -33,10 +33,10 @@ git remote set-url origin ssh://git@github.com/microchipster/go-xmpp
 git remote set-url upstream https://github.com/FluuxIO/go-xmpp.git
 ```
 
-When publishing bridge changes, push Codeberg for distribution and the git host as the mirror:
+When publishing bridge changes, push GitHub for distribution and the git host as the mirror:
 
 ```sh
-git push codeberg main
+git push github main
 git push origin main
 ```
 
