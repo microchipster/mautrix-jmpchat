@@ -3299,7 +3299,13 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 	}
 
 	nc.respondToIncomingXMPPReceipt(msg, isFromMe, fromMAM)
-	_ = nc.handleIncomingXMPPReceipt(msg, timestamp, bareFromJid, isMUC, isFromMe)
+	// Handle inbound receipts (XEP-0184/XEP-0333) exactly once per stanza.
+	// Receipt-only stanzas (no body) stop here; stanzas that also carry body
+	// content fall through so the message itself is processed as well.
+	if nc.handleIncomingXMPPReceipt(msg, timestamp, bareFromJid, isMUC, isFromMe) &&
+		stanza.StringValue(msg.Body) == "" {
+		return
+	}
 	if nc.handleIncomingXMPPTyping(msg, bareFromJid, isMUC, isFromMe, fromMAM) {
 		return
 	}
@@ -3342,9 +3348,6 @@ func (nc *MyNetworkClient) handleIncomingXMPPMessage(msg stanza.Message, timesta
 		var reactions XMPPReactions
 		if msg.Get(&reactions) && reactions.ID != "" {
 			nc.handleIncomingXMPPReaction(msg, timestamp, reactions, isFromMe)
-			return
-		}
-		if nc.handleIncomingXMPPReceipt(msg, timestamp, bareFromJid, isMUC, isFromMe) {
 			return
 		}
 		if attachment != nil {
