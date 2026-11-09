@@ -39,6 +39,12 @@ type SimpleConfig struct {
 	HistoryTTL HistoryTTLConfig `yaml:"history_ttl,omitempty"`
 	Calls      CallsConfig      `yaml:"calls,omitempty"`
 	Cdn        CdnConfig        `yaml:"cdn,omitempty"`
+
+	// SMSDeliveryAsRead maps delivery acknowledgements from SMS gateway
+	// contacts to Matrix read receipts. SMS has no read state, so delivery
+	// is the strongest acknowledgement a PSTN handset can produce. The
+	// default is enabled.
+	SMSDeliveryAsRead *bool `yaml:"sms_delivery_as_read,omitempty"`
 }
 
 // sendTypingEnabled reports whether outgoing XEP-0085 chat states are allowed.
@@ -57,6 +63,13 @@ func (c *SimpleConfig) sendReadMarkersEnabled() bool {
 // for outgoing direct messages. The default is enabled.
 func (c *SimpleConfig) sendDeliveryReceiptsEnabled() bool {
 	return c == nil || c.SendDeliveryReceipts == nil || *c.SendDeliveryReceipts
+}
+
+// smsDeliveryAsReadEnabled reports whether delivery acknowledgements from SMS
+// gateway contacts are also surfaced as Matrix read receipts. The default
+// is enabled.
+func (c *SimpleConfig) smsDeliveryAsReadEnabled() bool {
+	return c == nil || c.SMSDeliveryAsRead == nil || *c.SMSDeliveryAsRead
 }
 
 // mucNickSyncEnabled reports whether renaming a MUC portal room also changes

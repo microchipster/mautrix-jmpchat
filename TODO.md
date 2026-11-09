@@ -22,7 +22,7 @@ Harness: `scripts/validate/lib.sh` (env-driven `IAMB_*`/`JMP_*`/`PHONE_*` contra
 - [ ] T1 login/sync after bridge restart: management room replies, `sync` finishes.
 - [ ] T3 phone -> Matrix inbound SMS appears once (no duplicates), correct sender ghost.
 - [ ] T5 group inbound from the phone side: same room id, attribution per sender.
-- [ ] T10 read receipts: Matrix -> phone marks seen; phone-side read shows in Matrix (not observable for PSTN handsets so far — capability documented).
+- [ ] T10 read receipts: Matrix -> phone marks seen; phone-side read shows in Matrix; SMS gateway delivery acknowledgements surface as read receipts (PSTN handsets have no read state).
 - [ ] T11 naming: rooms named `+E164@cheogram.com (jmp)` / contact names; `list-users`, `list-contacted`, `list-rooms` include self + first/last dates; call rooms hidden.
 - [ ] T13 MUC invites become native Matrix invites (accept joins with password) — see the WS2.6 live-validation item below.
 - [ ] T14 bookmarks: `bookmarks-sync` lists/pushes; live PEP join/leave honoured.

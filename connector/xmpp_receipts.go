@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,6 +37,26 @@ func extractXMPPReceiptTarget(msg stanza.Message) (bridgev2.RemoteEventType, str
 	return 0, "", false
 }
 
+// isCheogramSMSGatewayJID reports whether the bare JID is a phone number served
+// by the Cheogram SMS gateway (e.g. +15550100201@cheogram.com).
+func isCheogramSMSGatewayJID(jid string) bool {
+	const gatewayDomain = "@cheogram.com"
+	lower := strings.ToLower(strings.TrimSpace(jid))
+	if !strings.HasSuffix(lower, gatewayDomain) {
+		return false
+	}
+	local := strings.TrimPrefix(strings.TrimSuffix(lower, gatewayDomain), "+")
+	if local == "" {
+		return false
+	}
+	for _, r := range local {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func (nc *MyNetworkClient) handleIncomingXMPPReceipt(msg stanza.Message, timestamp time.Time, bareFromJid string, isMUC bool, isFromMe bool) bool {
 	if isMUC {
 		return false
@@ -59,20 +80,33 @@ func (nc *MyNetworkClient) handleIncomingXMPPReceipt(msg stanza.Message, timesta
 		}
 	}
 
-	nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Receipt{
-		EventMeta: simplevent.EventMeta{
-			Type:      receiptType,
-			PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
-			Sender: bridgev2.EventSender{
-				Sender:   nc.senderUserID(senderID),
-				IsFromMe: isFromMe,
+	eventTypes := []bridgev2.RemoteEventType{receiptType}
+	if receiptType == bridgev2.RemoteEventDeliveryReceipt &&
+		nc.simpleConfig().smsDeliveryAsReadEnabled() &&
+		isCheogramSMSGatewayJID(bareFromJid) {
+		// SMS gateways never send XEP-0333 displayed markers (PSTN has no
+		// read state), so delivery is the strongest acknowledgement available.
+		// Surface it as a read receipt too, so Matrix clients show a visible
+		// acknowledgement.
+		eventTypes = append(eventTypes, bridgev2.RemoteEventReadReceipt)
+	}
+
+	for _, eventType := range eventTypes {
+		nc.bridge.QueueRemoteEvent(nc.login, &simplevent.Receipt{
+			EventMeta: simplevent.EventMeta{
+				Type:      eventType,
+				PortalKey: networkid.PortalKey{ID: MakePortalID(bareFromJid)},
+				Sender: bridgev2.EventSender{
+					Sender:   nc.senderUserID(senderID),
+					IsFromMe: isFromMe,
+				},
+				Timestamp: timestamp,
 			},
-			Timestamp: timestamp,
-		},
-		LastTarget: networkid.MessageID(targetID),
-		Targets:    []networkid.MessageID{networkid.MessageID(targetID)},
-		ReadUpTo:   timestamp,
-	})
+			LastTarget: networkid.MessageID(targetID),
+			Targets:    []networkid.MessageID{networkid.MessageID(targetID)},
+			ReadUpTo:   timestamp,
+		})
+	}
 
 	return true
 }

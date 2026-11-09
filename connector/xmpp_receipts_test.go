@@ -75,3 +75,25 @@ func TestExtractXMPPReceiptTarget(t *testing.T) {
 		})
 	}
 }
+
+func TestIsCheogramSMSGatewayJID(t *testing.T) {
+	tests := []struct {
+		jid  string
+		want bool
+	}{
+		{"+15550100201@cheogram.com", true},
+		{"15550100201@cheogram.com", true},
+		{"+15550100201@Cheogram.com", true},
+		{"alice@example.com", false},
+		{"+15550100201@example.com", false},
+		{"bot@cheogram.com", false},
+		{"+@cheogram.com", false},
+		{"room@groups.cheogram.com", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isCheogramSMSGatewayJID(tt.jid); got != tt.want {
+			t.Errorf("isCheogramSMSGatewayJID(%q) = %v, want %v", tt.jid, got, tt.want)
+		}
+	}
+}
